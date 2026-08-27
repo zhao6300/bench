@@ -1,0 +1,13 @@
+# Reproducible dependencies for API benchmarks, synthetic workloads, tests, and S3 reports.
+# Install with: uv pip install -r requirements/common.txt
+requests==2.34.2
+transformers==5.16.1
+numpy==2.5.2
+pytest==9.1.1
+boto3==1.43.81
+
+# boto3 uses the standard AWS credential provider chain.
+
+# vLLM and PyTorch are deliberately excluded: select versions compatible with
+# the target CUDA driver, GPU architecture, and operating system before using
+# offline mode. See README.md for details.

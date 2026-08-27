@@ -24,19 +24,21 @@
 
 ## 安装
 
-在仓库根目录创建虚拟环境并安装 API、随机数据集与测试依赖：
+在仓库根目录使用 `uv` 创建虚拟环境并安装 API、随机数据集、测试与 hook 依赖：
 
 ```zsh
-python3 -m venv .venv
+# 若尚未安装 uv：curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv --python 3.12
 source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -r requirements.txt
-python3 -m pip install -e .
+uv pip install -r requirements/common.txt
+uv pip install -r requirements/lint.txt
+uv pip install -e .
+pre-commit install
 ```
 
-安装后可使用 `llm-benchmark` 命令；也可直接执行 `python3 benchmark/benchmark.py`。离线 vLLM 依赖与 CUDA、PyTorch 的组合强相关，请按照目标环境安装兼容版本后再使用 `offline` 模式。
+安装后可使用 `llm-benchmark` 命令；也可直接执行 `.venv/bin/python benchmark/benchmark.py`。离线 vLLM 依赖与 CUDA、PyTorch 的组合强相关，请按照目标环境安装兼容版本后再使用 `offline` 模式。
 
-需要将报告写入 S3 时，额外安装可选依赖：`python -m pip install -e '.[s3]'`。本地报告不需要 boto3。
+通用依赖已默认包含 `boto3`，本地报告与 S3 报告均无需额外安装依赖；S3 凭据和 endpoint 在运行时通过环境变量配置。
 
 验证本地安装和示例配置（不会发送模型或 API 请求）：
 
@@ -194,10 +196,11 @@ llm-benchmark \
 贡献者请先阅读 [AGENTS.md](AGENTS.md)。提交前至少执行：
 
 ```zsh
-python3 -m compileall benchmark
-python3 benchmark/benchmark.py --help
-python3 benchmark/benchmark.py --config examples/benchmark-config.example.json --validate-config
-python3 -m pytest -q
+.venv/bin/python -m compileall benchmark tests
+.venv/bin/python benchmark/benchmark.py --help
+.venv/bin/python benchmark/benchmark.py --config examples/benchmark-config.example.json --validate-config
+.venv/bin/python -m pytest -q
+.venv/bin/pre-commit run --all-files
 ```
 
 本项目当前未声明开源许可证；在复制、分发或对外发布前，请先向仓库维护者确认许可条款。
