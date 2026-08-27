@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "name": "deepseek-v4-flash-256k-concurrency-staircase",
+  "description": "DeepSeek-V4-Flash-0731 256K 输入阶梯并发测试。使用 RandomDataset 生成固定 262144 tokens 输入和 8192 tokens 输出，前缀占 70%，依次测试并发 2/4/8/16/32/64；每档发送并发数 2 倍的请求，并进行 4 轮预热。",
+  "defaults": {
+    "mode": "api",
+    "dataset": "random",
+    "api_base": "http://10.168.1.106:8001/v1",
+    "api_key_env": "BENCHMARK_API_KEY",
+    "allow_insecure_api_key": true,
+    "model": "DeepSeek-V4-Flash-0731",
+    "tokenizer": "/models/deepseek-ai/DeepSeek-V4-Flash-0731",
+    "ignore_eos": true,
+    "tokens": {
+      "input": 262144,
+      "output": 8192
+    },
+    "random_input_len": 78644,
+    "random_output_len": 8192,
+    "random_prefix_len": 183500,
+    "random_range_ratio": "0.0",
+    "slo": {
+      "ttft_seconds": 60.0,
+      "tpot_seconds": 0.05
+    },
+    "warmup": {
+      "enabled": true,
+      "rounds": 4
+    },
+    "max_failure_rate": 0.0
+  },
+  "report": {
+    "path": "deepseek-v4-flash-256k-concurrency-staircase-report-{timestamp}.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "input-256k-concurrency-2",
+      "description": "256K 输入：并发 2，总请求数 4。",
+      "tags": ["decode", "concurrency-staircase", "input-256k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 2, "count": 4}}
+    },
+    {
+      "name": "input-256k-concurrency-4",
+      "description": "256K 输入：并发 4，总请求数 8。",
+      "tags": ["decode", "concurrency-staircase", "input-256k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 4, "count": 8}}
+    },
+    {
+      "name": "input-256k-concurrency-8",
+      "description": "256K 输入：并发 8，总请求数 16。",
+      "tags": ["decode", "concurrency-staircase", "input-256k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 8, "count": 16}}
+    },
+    {
+      "name": "input-256k-concurrency-16",
+      "description": "256K 输入：并发 16，总请求数 32。",
+      "tags": ["decode", "concurrency-staircase", "input-256k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 16, "count": 32}}
+    },
+    {
+      "name": "input-256k-concurrency-32",
+      "description": "256K 输入：并发 32，总请求数 64。",
+      "tags": ["decode", "concurrency-staircase", "input-256k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 32, "count": 64}}
+    },
+    {
+      "name": "input-256k-concurrency-64",
+      "description": "256K 输入：并发 64，总请求数 128。",
+      "tags": ["decode", "concurrency-staircase", "input-256k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 64, "count": 128}}
+    }
+  ]
+}

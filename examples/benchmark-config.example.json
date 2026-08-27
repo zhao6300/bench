@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "name": "vllm-api-regression-suite",
+  "description": "覆盖冒烟、Prefill、前缀缓存、Decode、混合负载与容量扫描的示例测试套件",
+  "metadata": {
+    "owner": "inference-team",
+    "purpose": "release-comparison"
+  },
+  "continue_on_error": true,
+  "defaults": {
+    "mode": "api",
+    "api_base": "http://localhost:8000/v1",
+    "model": "your-served-model",
+    "tokenizer": "/path/to/model-or-tokenizer",
+    "ignore_eos": true,
+    "seed": 42,
+    "max_failure_rate": 0.0,
+    "min_goodput_pct": 90.0,
+    "slo": {
+      "ttft_seconds": 5.0,
+      "tpot_seconds": 0.1
+    },
+    "warmup": {
+      "enabled": true,
+      "rounds": 1
+    }
+  },
+  "report": {
+    "path": "benchmark-report.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "smoke",
+      "description": "低成本检查服务可用性与流式响应",
+      "tags": ["smoke", "latency"],
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 128,
+          "output": 32
+        },
+        "requests": {
+          "concurrency": 1,
+          "count": 2
+        }
+      }
+    },
+    {
+      "name": "prefill-prefix-cache",
+      "description": "组合不同并发与共享前缀比例，比较 Prefix Cache 命中场景",
+      "tags": ["prefill", "cache", "matrix"],
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 8192,
+          "output": 1
+        },
+        "requests": {
+          "count": 8
+        },
+        "prefix": {
+          "shared": true,
+          "randomize": false,
+          "warmup_rounds": 2
+        }
+      },
+      "matrix": {
+        "concurrency": [1, 4],
+        "prefix_ratio": [0.5, 1.0]
+      }
+    },
+    {
+      "name": "decode-throughput",
+      "description": "短输入长输出 Decode 吞吐与 TPOT/流式 Chunk 间隔测试",
+      "tags": ["decode", "matrix"],
+      "preset": "decode-max",
+      "params": {
+        "tokens": {
+          "input": 128,
+          "output": 512
+        },
+        "requests": {
+          "count": 16
+        }
+      },
+      "matrix": {
+        "concurrency": [1, 4, 8]
+      }
+    },
+    {
+      "name": "mixed-production-shape",
+      "description": "按权重混合短入长出、中等请求与长入短出",
+      "tags": ["mixed", "production"],
+      "scenario": "mixed-workload",
+      "repeat": 2,
+      "params": {
+        "requests": {
+          "concurrency": 8,
+          "count": 32
+        },
+        "workload_mix": [
+          {
+            "input_tokens": 128,
+            "output_tokens": 1024,
+            "weight": 0.3
+          },
+          {
+            "input_tokens": 4096,
+            "output_tokens": 512,
+            "weight": 0.5
+          },
+          {
+            "input_tokens": 32768,
+            "output_tokens": 32,
+            "weight": 0.2
+          }
+        ]
+      }
+    },
+    {
+      "name": "prefill-capacity-sweep",
+      "description": "逐步提升并发，寻找 Prefill 峰值吞吐",
+      "tags": ["prefill", "sweep", "expensive"],
+      "enabled": false,
+      "preset": "prefill-sweep",
+      "params": {
+        "tokens": {
+          "input": 32768,
+          "output": 1
+        },
+        "sweep": {
+          "max_concurrency": 32,
+          "requests_per_round": 16
+        }
+      }
+    },
+    {
+      "name": "pd-sizing",
+      "description": "测量 Prefill/Decode 吞吐并给出 PD 比例建议",
+      "tags": ["pd", "capacity", "expensive"],
+      "enabled": false,
+      "preset": "pd-ratio",
+      "params": {
+        "pd": {
+          "avg_input_tokens": 4096,
+          "avg_output_tokens": 1024,
+          "total_gpus": 8
+        }
+      }
+    }
+  ]
+}

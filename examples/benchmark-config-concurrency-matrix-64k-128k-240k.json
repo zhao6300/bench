@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "name": "qwen3.8-27b-concurrency-matrix-64k-128k-240k",
+  "description": "普通 API 并发测试：64K/8K、128K/8K 和 240K/16K 三组输入输出长度，所有 case 均使用约 70% 共享前缀命中。每个 case 使用 RandomDataset，明确发送并发数两倍的请求，不使用 SLO capacity sweep；允许最高 100% 请求失败以保留完整压力覆盖指标。报告路径固定为 checkpoint 文件，默认会在中断后跳过已通过 case 并继续未完成测试；传入 --no-resume 可强制从头执行。",
+  "metadata": {
+    "purpose": "concurrency-matrix-regression",
+    "workloads": [
+      "64K input / 8K output",
+      "128K input / 8K output",
+      "240K input / 16K output"
+    ],
+    "scan_type": "普通 single benchmark，不进行 SLO 自动搜索",
+    "requests_per_case": "2 × concurrency"
+  },
+  "continue_on_error": true,
+  "defaults": {
+    "mode": "api",
+    "api_base": "http://10.20.0.11:8005/v1",
+    "model": "Qwen3.8-27B-FP8",
+    "tokenizer": "/models/Qwen3.8-27B-FP8",
+    "dataset": "random",
+    "random_range_ratio": "0.0",
+    "random_prefix_len": 0,
+    "ignore_eos": true,
+    "slo": {
+      "ttft_seconds": 100.0,
+      "tpot_seconds": 0.15
+    },
+    "max_failure_rate": 1.0,
+    "min_goodput_pct": 0.0,
+    "warmup": {
+      "enabled": true,
+      "rounds": 4,
+      "requests_per_round": 1
+    }
+  },
+  "report": {
+    "path": "qwen3.8-27b-concurrency-matrix-64k-128k-240k-checkpoint.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "input-64k-output-8k-concurrency-4",
+      "description": "64K 输入、8K 输出：并发 4，发送 8 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 65536, "output": 8192}, "random_input_len": 19661, "random_prefix_len": 45875, "random_output_len": 8192, "requests": {"concurrency": 4, "count": 8}}
+    },
+    {
+      "name": "input-64k-output-8k-concurrency-8",
+      "description": "64K 输入、8K 输出：并发 8，发送 16 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 65536, "output": 8192}, "random_input_len": 19661, "random_prefix_len": 45875, "random_output_len": 8192, "requests": {"concurrency": 8, "count": 16}}
+    },
+    {
+      "name": "input-64k-output-8k-concurrency-12",
+      "description": "64K 输入、8K 输出：并发 12，发送 24 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 65536, "output": 8192}, "random_input_len": 19661, "random_prefix_len": 45875, "random_output_len": 8192, "requests": {"concurrency": 12, "count": 24}}
+    },
+    {
+      "name": "input-64k-output-8k-concurrency-16",
+      "description": "64K 输入、8K 输出：并发 16，发送 32 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 65536, "output": 8192}, "random_input_len": 19661, "random_prefix_len": 45875, "random_output_len": 8192, "requests": {"concurrency": 16, "count": 32}}
+    },
+    {
+      "name": "input-64k-output-8k-concurrency-20",
+      "description": "64K 输入、8K 输出：并发 20，发送 40 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 65536, "output": 8192}, "random_input_len": 19661, "random_prefix_len": 45875, "random_output_len": 8192, "requests": {"concurrency": 20, "count": 40}}
+    },
+    {
+      "name": "input-64k-output-8k-concurrency-30",
+      "description": "64K 输入、8K 输出：并发 30，发送 60 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 65536, "output": 8192}, "random_input_len": 19661, "random_prefix_len": 45875, "random_output_len": 8192, "requests": {"concurrency": 30, "count": 60}}
+    },
+    {
+      "name": "input-64k-output-8k-concurrency-40",
+      "description": "64K 输入、8K 输出：并发 40，发送 80 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 65536, "output": 8192}, "random_input_len": 19661, "random_prefix_len": 45875, "random_output_len": 8192, "requests": {"concurrency": 40, "count": 80}}
+    },
+    {
+      "name": "input-64k-output-8k-concurrency-50",
+      "description": "64K 输入、8K 输出：并发 50，发送 100 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 65536, "output": 8192}, "random_input_len": 19661, "random_prefix_len": 45875, "random_output_len": 8192, "requests": {"concurrency": 50, "count": 100}}
+    },
+    {
+      "name": "input-64k-output-8k-concurrency-60",
+      "description": "64K 输入、8K 输出：并发 60，发送 120 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 65536, "output": 8192}, "random_input_len": 19661, "random_prefix_len": 45875, "random_output_len": 8192, "requests": {"concurrency": 60, "count": 120}}
+    },
+    {
+      "name": "input-128k-output-8k-concurrency-4",
+      "description": "128K 输入、8K 输出：并发 4，发送 8 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 131072, "output": 8192}, "random_input_len": 39322, "random_prefix_len": 91750, "random_output_len": 8192, "requests": {"concurrency": 4, "count": 8}}
+    },
+    {
+      "name": "input-128k-output-8k-concurrency-8",
+      "description": "128K 输入、8K 输出：并发 8，发送 16 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 131072, "output": 8192}, "random_input_len": 39322, "random_prefix_len": 91750, "random_output_len": 8192, "requests": {"concurrency": 8, "count": 16}}
+    },
+    {
+      "name": "input-128k-output-8k-concurrency-12",
+      "description": "128K 输入、8K 输出：并发 12，发送 24 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 131072, "output": 8192}, "random_input_len": 39322, "random_prefix_len": 91750, "random_output_len": 8192, "requests": {"concurrency": 12, "count": 24}}
+    },
+    {
+      "name": "input-128k-output-8k-concurrency-16",
+      "description": "128K 输入、8K 输出：并发 16，发送 32 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 131072, "output": 8192}, "random_input_len": 39322, "random_prefix_len": 91750, "random_output_len": 8192, "requests": {"concurrency": 16, "count": 32}}
+    },
+    {
+      "name": "input-128k-output-8k-concurrency-20",
+      "description": "128K 输入、8K 输出：并发 20，发送 40 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 131072, "output": 8192}, "random_input_len": 39322, "random_prefix_len": 91750, "random_output_len": 8192, "requests": {"concurrency": 20, "count": 40}}
+    },
+    {
+      "name": "input-128k-output-8k-concurrency-30",
+      "description": "128K 输入、8K 输出：并发 30，发送 60 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 131072, "output": 8192}, "random_input_len": 39322, "random_prefix_len": 91750, "random_output_len": 8192, "requests": {"concurrency": 30, "count": 60}}
+    },
+    {
+      "name": "input-128k-output-8k-concurrency-40",
+      "description": "128K 输入、8K 输出：并发 40，发送 80 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 131072, "output": 8192}, "random_input_len": 39322, "random_prefix_len": 91750, "random_output_len": 8192, "requests": {"concurrency": 40, "count": 80}}
+    },
+    {
+      "name": "input-128k-output-8k-concurrency-50",
+      "description": "128K 输入、8K 输出：并发 50，发送 100 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 131072, "output": 8192}, "random_input_len": 39322, "random_prefix_len": 91750, "random_output_len": 8192, "requests": {"concurrency": 50, "count": 100}}
+    },
+    {
+      "name": "input-128k-output-8k-concurrency-60",
+      "description": "128K 输入、8K 输出：并发 60，发送 120 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 131072, "output": 8192}, "random_input_len": 39322, "random_prefix_len": 91750, "random_output_len": 8192, "requests": {"concurrency": 60, "count": 120}}
+    },
+    {
+      "name": "input-240k-output-16k-concurrency-2",
+      "description": "240K 输入、16K 输出：并发 2，发送 4 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-240k", "output-16k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 245760, "output": 16384}, "random_input_len": 73728, "random_prefix_len": 172032, "random_output_len": 16384, "requests": {"concurrency": 2, "count": 4}}
+    },
+    {
+      "name": "input-240k-output-16k-concurrency-4",
+      "description": "240K 输入、16K 输出：并发 4，发送 8 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-240k", "output-16k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 245760, "output": 16384}, "random_input_len": 73728, "random_prefix_len": 172032, "random_output_len": 16384, "requests": {"concurrency": 4, "count": 8}}
+    },
+    {
+      "name": "input-240k-output-16k-concurrency-8",
+      "description": "240K 输入、16K 输出：并发 8，发送 16 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-240k", "output-16k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 245760, "output": 16384}, "random_input_len": 73728, "random_prefix_len": 172032, "random_output_len": 16384, "requests": {"concurrency": 8, "count": 16}}
+    },
+    {
+      "name": "input-240k-output-16k-concurrency-12",
+      "description": "240K 输入、16K 输出：并发 12，发送 24 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-240k", "output-16k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 245760, "output": 16384}, "random_input_len": 73728, "random_prefix_len": 172032, "random_output_len": 16384, "requests": {"concurrency": 12, "count": 24}}
+    },
+    {
+      "name": "input-240k-output-16k-concurrency-16",
+      "description": "240K 输入、16K 输出：并发 16，发送 32 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-240k", "output-16k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 245760, "output": 16384}, "random_input_len": 73728, "random_prefix_len": 172032, "random_output_len": 16384, "requests": {"concurrency": 16, "count": 32}}
+    },
+    {
+      "name": "input-240k-output-16k-concurrency-20",
+      "description": "240K 输入、16K 输出：并发 20，发送 40 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-240k", "output-16k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 245760, "output": 16384}, "random_input_len": 73728, "random_prefix_len": 172032, "random_output_len": 16384, "requests": {"concurrency": 20, "count": 40}}
+    },
+    {
+      "name": "input-240k-output-16k-concurrency-24",
+      "description": "240K 输入、16K 输出：并发 24，发送 48 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-240k", "output-16k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 245760, "output": 16384}, "random_input_len": 73728, "random_prefix_len": 172032, "random_output_len": 16384, "requests": {"concurrency": 24, "count": 48}}
+    },
+    {
+      "name": "input-240k-output-16k-concurrency-28",
+      "description": "240K 输入、16K 输出：并发 28，发送 56 个请求。",
+      "tags": ["decode", "concurrency-matrix", "input-240k", "output-16k"],
+      "scenario": "single",
+      "params": {"tokens": {"input": 245760, "output": 16384}, "random_input_len": 73728, "random_prefix_len": 172032, "random_output_len": 16384, "requests": {"concurrency": 28, "count": 56}}
+    }
+  ]
+}

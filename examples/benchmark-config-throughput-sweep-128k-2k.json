@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "name": "throughput-sweep-128k-2k",
+  "description": "默认 128K 输入、2K 输出的峰值吞吐搜索。包含最大 Prefill 与最大 Decode 两个独立 case；Prefill case 显式覆盖为 1 输出 token，Decode case 使用 128K 全共享输入。并发按 1/2/4/... 扫描，并在合格且可验证轮次的吞吐提升不足 5% 时停止。",
+  "metadata": {
+    "purpose": "peak-throughput-search",
+    "workload": "128K input / 2K output"
+  },
+  "continue_on_error": true,
+  "defaults": {
+    "mode": "api",
+    "api_base": "http://localhost:8000/v1",
+    "model": "your-served-model",
+    "tokenizer": "/path/to/model-or-tokenizer",
+    "dataset": "random",
+    "random_input_len": 131072,
+    "random_output_len": 2048,
+    "random_prefix_len": 0,
+    "random_range_ratio": "0.0",
+    "ignore_eos": true,
+    "tokens": {
+      "input": 131072,
+      "output": 2048
+    },
+    "slo": {
+      "ttft_seconds": 60.0,
+      "tpot_seconds": 0.05
+    },
+    "max_failure_rate": 0.0,
+    "warmup": {
+      "enabled": true,
+      "rounds": 1,
+      "requests_per_round": 1
+    }
+  },
+  "report": {
+    "path": "throughput-sweep-128k-2k-report-{timestamp}.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "max-prefill-128k",
+      "description": "扫描最大 Prefill 阶段吞吐。输出显式设为 1 token，满足 Prefill 扫描语义。",
+      "tags": ["prefill", "sweep", "throughput", "input-128k"],
+      "preset": "prefill-sweep",
+      "params": {
+        "tokens": {
+          "input": 131072,
+          "output": 1
+        },
+        "random_output_len": 1,
+        "sweep": {
+          "max_concurrency": 128
+        }
+      }
+    },
+    {
+      "name": "max-decode-128k-2k",
+      "description": "扫描 128K 全共享输入、2K 输出场景下的最大 Decode 阶段吞吐。",
+      "tags": ["decode", "sweep", "throughput", "cache-hit", "input-128k", "output-2k"],
+      "preset": "decode-sweep",
+      "params": {
+        "random_input_len": 0,
+        "random_prefix_len": 131072,
+        "tokens": {
+          "input": 131072,
+          "output": 2048
+        },
+        "sweep": {
+          "max_concurrency": 128
+        }
+      }
+    }
+  ]
+}

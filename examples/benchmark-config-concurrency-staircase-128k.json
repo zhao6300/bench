@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "name": "qwen3.8-27b-128k-concurrency-staircase",
+  "description": "Qwen3.8-27B 128K 输入阶梯并发测试。使用 RandomDataset 生成固定 131072 tokens 输入和 2048 tokens 输出，前缀占 70%，依次测试并发 2/4/8/16/32/64；每档发送并发数 2 倍的请求，并进行 4 轮预热。",
+  "defaults": {
+    "mode": "api",
+    "dataset": "random",
+    "api_base": "http://10.20.0.11:8005/v1",
+    "api_key_env": "BENCHMARK_API_KEY",
+    "allow_insecure_api_key": true,
+    "model": "Qwen3.8-27B-FP8",
+    "tokenizer": "/models/Qwen3.8-27B-FP8",
+    "ignore_eos": true,
+    "tokens": {
+      "input": 131072,
+      "output": 2048
+    },
+    "random_input_len": 39322,
+    "random_output_len": 2048,
+    "random_prefix_len": 91750,
+    "random_range_ratio": "0.0",
+    "slo": {
+      "ttft_seconds": 60.0,
+      "tpot_seconds": 0.05
+    },
+    "warmup": {
+      "enabled": true,
+      "rounds": 4
+    },
+    "max_failure_rate": 0.0
+  },
+  "report": {
+    "path": "qwen3.8-27b-128k-concurrency-staircase-report-{timestamp}.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "input-128k-concurrency-2",
+      "description": "128K 输入：并发 2，总请求数 4。",
+      "tags": ["decode", "concurrency-staircase", "input-128k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 2, "count": 4}}
+    },
+    {
+      "name": "input-128k-concurrency-4",
+      "description": "128K 输入：并发 4，总请求数 8。",
+      "tags": ["decode", "concurrency-staircase", "input-128k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 4, "count": 8}}
+    },
+    {
+      "name": "input-128k-concurrency-8",
+      "description": "128K 输入：并发 8，总请求数 16。",
+      "tags": ["decode", "concurrency-staircase", "input-128k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 8, "count": 16}}
+    },
+    {
+      "name": "input-128k-concurrency-16",
+      "description": "128K 输入：并发 16，总请求数 32。",
+      "tags": ["decode", "concurrency-staircase", "input-128k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 16, "count": 32}}
+    },
+    {
+      "name": "input-128k-concurrency-32",
+      "description": "128K 输入：并发 32，总请求数 64。",
+      "tags": ["decode", "concurrency-staircase", "input-128k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 32, "count": 64}}
+    },
+    {
+      "name": "input-128k-concurrency-64",
+      "description": "128K 输入：并发 64，总请求数 128。",
+      "tags": ["decode", "concurrency-staircase", "input-128k"],
+      "scenario": "single",
+      "params": {"requests": {"concurrency": 64, "count": 128}}
+    }
+  ]
+}

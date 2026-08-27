@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "name": "slo-capacity-128k-2k-cache-hit-0.7",
+  "description": "默认 128K 输入、2K 输出、70% 共享前缀缓存命中场景的 SLO 容量搜索。RandomDataset 使用 91750 tokens 共享前缀和 39322 tokens 独有输入，目标共享前缀比例约为 0.7。同一次 sweep 运行复用同一个数据集实例，预热、正式扫描和确认轮次每次生成新的 batch；共享前缀保持一致，后缀持续随机生成。warmup.rounds 控制预热轮数，warmup.requests_per_round 控制每轮预热请求数；本配置每轮只预热一条 128K/2K 请求。随后先按并发 1/2/4/... 粗扫；linear 策略在首次 SLO 通过率或失败率不满足阈值时按步长定位边界，并逐并发确认窗口；最终候选按 confirm_rounds 进行总轮数确认（本示例为 1，不额外复测）。允许请求失败率最高为 50%（max_failure_rate=0.5），Goodput 最低为 0.5%（min_goodput_pct=0.5），TTFT <= 200 秒、TPOT <= 150ms。",
+  "metadata": {
+    "purpose": "maximum-slo-capacity-search",
+    "workload": "128K input / 2K output / 70% shared prefix",
+    "cache_hit_rate_target": 0.7,
+    "slo": "TTFT <= 200s; TPOT <= 150ms"
+  },
+  "continue_on_error": true,
+  "defaults": {
+    "mode": "api",
+    "api_base": "http://10.20.0.11:8005/v1",
+    "model": "Qwen3.8-27B-FP8",
+    "tokenizer": "/models/Qwen3.8-27B-FP8",
+    "dataset": "random",
+    "random_input_len": 39322,
+    "random_output_len": 2048,
+    "random_prefix_len": 91750,
+    "random_range_ratio": "0.0",
+    "ignore_eos": true,
+    "tokens": {
+      "input": 131072,
+      "output": 2048
+    },
+    "slo": {
+      "ttft_seconds": 200.0,
+      "tpot_seconds": 0.15
+    },
+    "max_failure_rate": 0.5,
+    "min_goodput_pct": 0.5,
+    "warmup": {
+      "enabled": true,
+      "rounds": 2,
+      "requests_per_round": 1
+    }
+  },
+  "report": {
+    "path": "slo-capacity-128k-2k-cache-hit-0.7-report-{timestamp}.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "max-slo-capacity-128k-2k-cache-hit-0.7",
+      "description": "在允许请求失败率最高 99%、Goodput 至少 0.01%、TTFT <= 200 秒、TPOT <= 150ms 的条件下，搜索 128K 输入、2K 输出、70% 共享前缀场景的最大并发。",
+      "tags": ["slo", "capacity", "sweep", "cache-hit", "cache-hit-0.7", "input-128k", "output-2k"],
+      "preset": "slo-capacity-sweep",
+      "params": {
+        "tokens": {
+          "input": 131072,
+          "output": 2048
+        },
+        "sweep": {
+          "max_concurrency": 128
+        },
+        "slo_capacity": {
+          "strategy": "linear",
+          "linear_step": 4,
+          "confirm_window": 8,
+          "confirm_rounds": 1
+        }
+      }
+    }
+  ]
+}
