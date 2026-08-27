@@ -211,7 +211,6 @@ LLM Prefill / Decode 性能基准测试工具 (benchmark.py)
 
 import argparse
 import concurrent.futures
-import fcntl
 import hashlib
 import json
 import math
@@ -243,6 +242,12 @@ try:
         create_dataset,
         parse_range_ratio,
     )
+    from .report_storage import (
+        ReportStorageError,
+        create_report_storage,
+        parse_report_location,
+        serialize_json_report,
+    )
 except ImportError:
     # Direct execution: python benchmark/benchmark.py ...
     from benchmark_datasets import (
@@ -251,6 +256,12 @@ except ImportError:
         TextDataset,
         create_dataset,
         parse_range_ratio,
+    )
+    from report_storage import (
+        ReportStorageError,
+        create_report_storage,
+        parse_report_location,
+        serialize_json_report,
     )
 
 
@@ -3522,8 +3533,13 @@ def load_suite_config(path: str) -> Dict[str, Any]:
     if not isinstance(report.get("include_request_details", False), bool):
         raise BenchmarkConfigError("report.include_request_details must be true or false")
     report_path = report.get("path")
-    if report_path is not None and (not isinstance(report_path, str) or not report_path.strip()):
-        raise BenchmarkConfigError("report.path must be a non-empty string when set")
+    if report_path is not None:
+        if not isinstance(report_path, str) or not report_path.strip():
+            raise BenchmarkConfigError("report.path must be a non-empty string when set")
+        try:
+            parse_report_location(report_path)
+        except ReportStorageError as exc:
+            raise BenchmarkConfigError(f"invalid report.path: {exc}") from exc
     indent = report.get("indent", 2)
     if not isinstance(indent, int) or isinstance(indent, bool) or indent < 0:
         raise BenchmarkConfigError("report.indent must be a non-negative integer")
@@ -4009,50 +4025,9 @@ def _strip_request_details(value):
     return value
 
 
-def _acquire_suite_checkpoint_lock(report_path: str):
-    """Acquire a process-lifetime exclusive lock for a suite checkpoint."""
-    lock_path = f"{os.path.abspath(report_path)}.lock"
-    parent = os.path.dirname(lock_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    lock_file = open(lock_path, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        lock_file.close()
-        raise BenchmarkConfigError(
-            f"checkpoint {report_path!r} is already in use by another benchmark process"
-        ) from exc
-    return lock_file
-
-
-def _release_suite_checkpoint_lock(lock_file) -> None:
-    """Release a suite checkpoint lock while retaining its stable lock inode."""
-    if lock_file is None:
-        return
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-    finally:
-        lock_file.close()
-
-
-def _write_json_report(path: str, report: Dict[str, Any], indent: int = 2) -> None:
-    report_path = os.path.abspath(path)
-    parent = os.path.dirname(report_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    temporary = f"{report_path}.tmp-{os.getpid()}"
-    try:
-        with open(temporary, "w", encoding="utf-8") as file:
-            json.dump(
-                report, file, ensure_ascii=False, indent=indent,
-                sort_keys=False, allow_nan=False,
-            )
-            file.write("\n")
-        os.replace(temporary, report_path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+def _write_json_report(storage, report: Dict[str, Any], indent: int = 2) -> None:
+    """Serialize and persist a report through its selected storage backend."""
+    storage.write_text(serialize_json_report(report, indent))
 
 
 def _checkpoint_hash(value: Any) -> str:
@@ -4108,31 +4083,40 @@ def _new_case_record(case: Dict[str, Any], args, scenario: str, case_key: str) -
     }
 
 
-def _load_resume_report(path: str, suite_name: str, plan_fingerprint: str) -> Dict[str, Any]:
-    """Load a compatible suite checkpoint or explain how to start fresh."""
+def _load_resume_report(storage, suite_name: str, plan_fingerprint: str) -> Dict[str, Any] | None:
+    """Load a compatible suite checkpoint from the selected report backend."""
     try:
-        with open(path, "r", encoding="utf-8") as file:
-            report = json.load(file)
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = storage.read_text()
+    except ReportStorageError as exc:
         raise BenchmarkConfigError(
-            f"cannot resume from report {path!r}: {exc}; use --no-resume to start fresh"
+            f"cannot resume from report {storage.location.display_name!r}: {exc}; "
+            "use --no-resume to start fresh"
+        ) from exc
+    if payload is None:
+        return None
+    try:
+        report = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise BenchmarkConfigError(
+            f"cannot resume from report {storage.location.display_name!r}: {exc}; "
+            "use --no-resume to start fresh"
         ) from exc
 
     suite = report.get("suite")
     if not isinstance(suite, dict) or suite.get("name") != suite_name:
         raise BenchmarkConfigError(
-            f"report {path!r} belongs to a different suite; use --no-resume to replace it"
+            f"report {storage.location.display_name!r} belongs to a different suite; "
+            "use --no-resume to replace it"
         )
     if suite.get("execution_plan_sha256") != plan_fingerprint:
         raise BenchmarkConfigError(
-            f"report {path!r} does not match the selected execution plan; "
+            f"report {storage.location.display_name!r} does not match the selected execution plan; "
             "use --no-resume to start fresh"
         )
     if not isinstance(report.get("cases"), list):
         raise BenchmarkConfigError(
-            f"report {path!r} has no case checkpoint data; use --no-resume to start fresh"
+            f"report {storage.location.display_name!r} has no case checkpoint data; "
+            "use --no-resume to start fresh"
         )
     return report
 
@@ -4240,34 +4224,47 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         return 0
 
     report_options = config.get("report", {})
-    report_path = cli_args.report or report_options.get("path")
+    report_target = cli_args.report or report_options.get("path")
     # Microseconds plus PID prevent colliding report names when multiple
     # benchmark processes start in the same second.
     timestamp = f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-p{os.getpid()}"
-    if not report_path:
-        report_path = f"benchmark-report-{timestamp}.json"
+    if not report_target:
+        report_target = f"benchmark-report-{timestamp}.json"
     else:
         # A report path containing {timestamp} always starts a new checkpoint.
-        report_path = report_path.replace("{timestamp}", timestamp)
-    if not os.path.isabs(report_path):
-        report_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), report_path)
+        report_target = report_target.replace("{timestamp}", timestamp)
+    try:
+        report_location = parse_report_location(
+            report_target,
+            base_dir=os.path.dirname(os.path.abspath(config_path)),
+        )
+        report_storage = create_report_storage(report_location)
+        checkpoint_lock = report_storage.acquire_checkpoint_lock()
+    except ReportStorageError as exc:
+        raise BenchmarkConfigError(f"cannot prepare report {report_target!r}: {exc}") from exc
+    if not report_location.supports_checkpoint_lock:
+        print(
+            "WARNING: S3 report checkpoints do not provide a distributed lock; "
+            "use one writer per s3:// bucket/key.",
+            file=sys.stderr,
+        )
+
     include_details = report_options.get("include_request_details", False)
     indent = report_options.get("indent", 2)
     continue_on_error = config.get("continue_on_error", True) and not cli_args.fail_fast
     plan_fingerprint = _checkpoint_plan_fingerprint(prepared)
 
-    checkpoint_lock = _acquire_suite_checkpoint_lock(report_path)
     try:
         report = None
         if not cli_args.no_resume:
             report = _load_resume_report(
-                report_path, config.get("name", "benchmark-suite"), plan_fingerprint
+                report_storage, config.get("name", "benchmark-suite"), plan_fingerprint
             )
         resumed = report is not None
         if report is None:
             report = _new_report(config.get("name", "benchmark-suite"), config_path)
     except Exception:
-        _release_suite_checkpoint_lock(checkpoint_lock)
+        report_storage.release_checkpoint_lock(checkpoint_lock)
         raise
 
     now = _now_iso()
@@ -4323,21 +4320,23 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     # can therefore never make a not-yet-started case look completed.
     _update_report_summary(report, started_perf)
     try:
-        _write_json_report(report_path, report, indent)
+        _write_json_report(report_storage, report, indent)
     except KeyboardInterrupt:
         report["suite"]["run_state"] = "interrupted"
         report["suite"]["updated_at"] = _now_iso()
         _update_report_summary(report, started_perf, terminal=True)
-        _write_json_report(report_path, report, indent)
-        _release_suite_checkpoint_lock(checkpoint_lock)
+        _write_json_report(report_storage, report, indent)
+        report_storage.release_checkpoint_lock(checkpoint_lock)
         raise
-    except (OSError, TypeError, ValueError) as exc:
-        _release_suite_checkpoint_lock(checkpoint_lock)
-        raise BenchmarkConfigError(f"cannot write report to {report_path!r}: {exc}") from exc
+    except (ReportStorageError, TypeError, ValueError) as exc:
+        report_storage.release_checkpoint_lock(checkpoint_lock)
+        raise BenchmarkConfigError(
+            f"cannot write report to {report_location.display_name!r}: {exc}"
+        ) from exc
 
     print(f"Benchmark suite: {report['suite']['name']}")
     print(f"Cases: {len(prepared)}")
-    print(f"Report: {report_path}")
+    print(f"Report: {report_location.display_name}")
     if resumed:
         skipped_passed = sum(record["status"] == "passed" for record in records)
         print(f"Resume: skipping {skipped_passed} previously passed case(s)")
@@ -4377,7 +4376,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             })
             report["suite"]["updated_at"] = _now_iso()
             _update_report_summary(report, started_perf)
-            _write_json_report(report_path, report, indent)
+            _write_json_report(report_storage, report, indent)
 
             result = execute_benchmark(args, scenario)
             if result is None:
@@ -4418,24 +4417,24 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             record["duration_seconds"] = time.perf_counter() - case_started
             report["suite"]["updated_at"] = _now_iso()
             _update_report_summary(report, started_perf, terminal=interrupted)
-            _write_json_report(report_path, report, indent)
+            _write_json_report(report_storage, report, indent)
             if interrupted:
-                _release_suite_checkpoint_lock(checkpoint_lock)
+                report_storage.release_checkpoint_lock(checkpoint_lock)
 
     try:
         report["suite"]["run_state"] = "completed" if not abort_remaining else "stopped"
         report["suite"]["updated_at"] = _now_iso()
         _update_report_summary(report, started_perf, terminal=True)
-        _write_json_report(report_path, report, indent)
+        _write_json_report(report_storage, report, indent)
     except KeyboardInterrupt:
         report["suite"]["run_state"] = "interrupted"
         report["suite"]["updated_at"] = _now_iso()
         _update_report_summary(report, started_perf, terminal=True)
-        _write_json_report(report_path, report, indent)
-        _release_suite_checkpoint_lock(checkpoint_lock)
+        _write_json_report(report_storage, report, indent)
+        report_storage.release_checkpoint_lock(checkpoint_lock)
         raise
     exit_code = 1 if report["summary"]["failed"] else 0
-    _release_suite_checkpoint_lock(checkpoint_lock)
+    report_storage.release_checkpoint_lock(checkpoint_lock)
     print()
     print(
         f"Suite complete: passed={report['summary']['passed']}, "
@@ -4445,7 +4444,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         f"skipped={report['summary']['skipped']}"
     )
     _print_failed_case_summary(report)
-    print(f"JSON report: {os.path.abspath(report_path)}")
+    print(f"JSON report: {report_location.display_name}")
     return exit_code
 
 
@@ -4464,7 +4463,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--report", default=None,
-        help="JSON 报告输出路径。配置模式下覆盖 report.path；传统单次模式下启用结果输出"
+        help="JSON 报告输出路径，可为本地路径或 s3://bucket/key；配置模式下覆盖 report.path；传统单次模式下启用结果输出"
     )
     parser.add_argument(
         "--case", action="append", default=[], dest="case_filters",
@@ -4730,13 +4729,16 @@ def main():
         "error": None,
     }
     report = None
+    report_storage = None
     if args.report:
         report = _new_report("single-benchmark")
         report["suite"]["started_at"] = started_at
         report["cases"].append(record)
         try:
-            _write_json_report(args.report, report)
-        except (OSError, TypeError, ValueError) as exc:
+            report_location = parse_report_location(args.report)
+            report_storage = create_report_storage(report_location)
+            _write_json_report(report_storage, report)
+        except (ReportStorageError, TypeError, ValueError) as exc:
             print(f"ERROR: cannot write report to {args.report!r}: {exc}", file=sys.stderr)
             return 2
 
@@ -4749,9 +4751,9 @@ def main():
         record["finished_at"] = _now_iso()
         record["duration_seconds"] = time.perf_counter() - started_perf
         _update_report_summary(report, started_perf)
-        _write_json_report(args.report, report)
+        _write_json_report(report_storage, report)
         print(f"ERROR: invalid benchmark arguments: {exc}", file=sys.stderr)
-        print(f"JSON report: {os.path.abspath(args.report)}")
+        print(f"JSON report: {report_storage.location.display_name}")
         return 2
 
     if NSYS_PROFILE:
@@ -4792,8 +4794,8 @@ def main():
         record["duration_seconds"] = time.perf_counter() - started_perf
         if report is not None:
             _update_report_summary(report, started_perf)
-            _write_json_report(args.report, report)
-            print(f"JSON report: {os.path.abspath(args.report)}")
+            _write_json_report(report_storage, report)
+            print(f"JSON report: {report_storage.location.display_name}")
     return exit_code
 
 

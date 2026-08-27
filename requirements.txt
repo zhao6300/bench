@@ -5,6 +5,10 @@ transformers==4.57.6
 numpy==2.3.5
 pytest==8.4.2
 
+# S3 report output is optional. Install with:
+# python3 -m pip install -e '.[s3]'
+# boto3 uses the standard AWS credential provider chain.
+
 # vLLM and PyTorch are deliberately excluded: select versions compatible with
 # the target CUDA driver, GPU architecture, and operating system before using
 # offline mode. See README.md for details.

@@ -36,6 +36,8 @@ python3 -m pip install -e .
 
 安装后可使用 `llm-benchmark` 命令；也可直接执行 `python3 benchmark/benchmark.py`。离线 vLLM 依赖与 CUDA、PyTorch 的组合强相关，请按照目标环境安装兼容版本后再使用 `offline` 模式。
 
+需要将报告写入 S3 时，额外安装可选依赖：`python -m pip install -e '.[s3]'`。本地报告不需要 boto3。
+
 验证本地安装和示例配置（不会发送模型或 API 请求）：
 
 ```zsh
@@ -102,7 +104,40 @@ llm-benchmark \
   --config examples/benchmark-config-throughput-sweep-128k-2k.local.json
 ```
 
-配置模式支持 `--tag`、`--case 'pattern-*'`、`--report PATH`、`--no-resume` 和 `--fail-fast`。相对报告路径以配置文件所在目录为基准；固定报告路径默认会恢复此前成功且无请求级失败的用例。
+配置模式支持 `--tag`、`--case 'pattern-*'`、`--report PATH_OR_S3_URI`、`--no-resume` 和 `--fail-fast`。相对本地报告路径以配置文件所在目录为基准；固定本地路径默认会恢复此前成功且无请求级失败的用例。
+
+## 报告输出：本地文件或 S3
+
+`report.path` 和 CLI 的 `--report` 都支持本地路径与 `s3://bucket/key`。保持 [`examples/benchmark-config.example.json`](examples/benchmark-config.example.json) 中的本地 `report.path` 作为默认选择；需要 S3 时，复制该模板为 `*.local.json`，将其中的 `report.path` 改为类似 `s3://my-benchmark-reports/reports/benchmark-{timestamp}.json`，然后运行该本地副本。
+
+```zsh
+cp examples/benchmark-config.example.json examples/benchmark-config.s3.local.json
+# 编辑本地副本：将 report.path 改为 s3://my-benchmark-reports/reports/benchmark-{timestamp}.json
+llm-benchmark --config examples/benchmark-config.s3.local.json --validate-config
+llm-benchmark --config examples/benchmark-config.s3.local.json
+```
+
+S3 优先读取以下 `BENCHMARK_S3_*` 环境变量；AK/SK 绝不会写入 JSON、报告或日志：
+
+- `BENCHMARK_S3_ACCESS_KEY_ID` 与 `BENCHMARK_S3_SECRET_ACCESS_KEY`：成对设置的访问密钥。
+- `BENCHMARK_S3_SESSION_TOKEN`：可选的临时凭据会话令牌，必须与 AK/SK 一起使用。
+- `BENCHMARK_S3_ENDPOINT_URL`：可选的 S3-compatible HTTP(S) endpoint，例如阿里云 OSS endpoint。
+- `BENCHMARK_S3_REGION`：可选区域；使用第三方服务时应设置为其对应区域。
+
+未设置自定义 AK/SK 时，boto3 继续使用标准 AWS 凭据链（`AWS_*` 环境变量、共享 credentials/config 文件、实例或 Pod IAM role 等）。阿里云 OSS 可在已复制的示例配置上按以下方式运行：
+
+```zsh
+export BENCHMARK_S3_ENDPOINT_URL='https://oss-cn-hangzhou.aliyuncs.com'
+export BENCHMARK_S3_REGION='cn-hangzhou'
+export BENCHMARK_S3_ACCESS_KEY_ID='your-access-key-id'
+export BENCHMARK_S3_SECRET_ACCESS_KEY='your-access-key-secret'
+# 将 examples/benchmark-config.s3.local.json 的 report.path 设为 s3://your-bucket/reports/benchmark-{timestamp}.json
+llm-benchmark --config examples/benchmark-config.s3.local.json
+```
+
+S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 或 URI 内嵌凭据。
+
+本地固定路径使用原子替换和 POSIX 文件锁，适合单机 checkpoint 恢复。S3 路径也支持读取同一对象来恢复 checkpoint，但没有分布式锁：同一个 `s3://bucket/key` 在任意时刻只能由一个 benchmark 进程写入。包含 `{timestamp}` 的本地或 S3 路径每次都会创建新报告，因此不会恢复旧 checkpoint。
 
 ## 数据集与长度语义
 
