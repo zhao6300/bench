@@ -38,6 +38,8 @@ python -m pytest -q
 - 保持 CLI 与配置字段向后兼容。新增参数应包含帮助文本、默认值和校验。
 - `benchmark.py` 必须同时支持直接脚本执行和安装后的 `llm-benchmark` 入口。
 - GPU、模型和网络相关依赖应按使用路径延迟导入，并提供可操作的缺失依赖错误。
+- 修改功能时按职责拆分模块和函数，复用明确的接口或扩展点；避免继续堆叠 `benchmark.py` 中不相关的分支逻辑。
+- 每项新增或变更的可观察行为都必须有对应单元测试，至少覆盖正常路径、关键边界和预期错误路径；修复缺陷时先补复现测试。
 - 基准长度以 `DatasetBatch` 实际 token 统计为准；`random_input_len` / `random_output_len` 优先于 `context_len` / `max_tokens`。
 - 保持配置 schema 的 `version: 1`、`defaults`、`cases`、`matrix`、`repeat` 和 `${VAR}` 展开行为。修改 schema 时同步更新 README、`examples/benchmark-config.example.json` 与测试。
 - JSON 使用 2 空格缩进；提交的通用示例不得新增真实密钥、内部地址或本地绝对模型路径。昂贵用例默认 `enabled: false`。
