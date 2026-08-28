@@ -178,3 +178,123 @@ def test_sglang_cache_hit_rate_gauge_remains_a_periodic_metric(monkeypatch) -> N
     assert snapshot["cache_hit_rate_source"] == "sglang:cache_hit_rate"
     assert summary["metrics"]["cache_hit_rate"]["max"] == 70.0
     assert "vllm_prefix_cache_counter_delta" not in summary
+
+
+def test_pd_ratio_uses_business_shapes_and_respects_ignore_eos(monkeypatch) -> None:
+    """Use actual batch lengths for P:D sizing and preserve EOS configuration."""
+    import sys
+    import types
+
+    args = SimpleNamespace(
+        avg_input_tokens=1000,
+        avg_output_tokens=5000,
+        total_gpus=None,
+        tokenizer="test-tokenizer",
+        model="test-model",
+        api_base="http://localhost:8000/v1",
+        api_key=None,
+        no_warmup=True,
+        dataset="random",
+        ignore_eos=False,
+        slo_ttft=60.0,
+        slo_tpot=0.05,
+        api_transport="requests",
+    )
+    batches = iter([
+        SimpleNamespace(
+            prompts=["prefill"] * 8,
+            prompt_lens=[800] * 8,
+            output_lens=[1] * 8,
+        ),
+        SimpleNamespace(
+            prompts=["decode"] * 8,
+            prompt_lens=[800] * 8,
+            output_lens=[5000] * 8,
+        ),
+    ])
+    workloads = iter([
+        {
+            "prompt_tokens": {"min": 800, "max": 800, "avg": 800.0, "total": 6400},
+            "requested_output_tokens": {"min": 1, "max": 1, "avg": 1.0, "total": 8},
+        },
+        {
+            "prompt_tokens": {"min": 800, "max": 800, "avg": 800.0, "total": 6400},
+            "requested_output_tokens": {
+                "min": 5000, "max": 5000, "avg": 5000.0, "total": 40000,
+            },
+        },
+    ])
+    round_metrics = iter([
+        {
+            "successful": 8,
+            "prefill_throughput": 100.0,
+            "avg_ttft": 0.1,
+            "p99_ttft": 0.2,
+        },
+        {
+            "successful": 8,
+            "decode_throughput": 100.0,
+            "avg_tpot": 0.01,
+            "avg_estimated_itl": None,
+        },
+    ])
+    build_calls: list[dict[str, object]] = []
+    round_calls: list[dict[str, object]] = []
+    transformers = types.ModuleType("transformers")
+    transformers.AutoTokenizer = SimpleNamespace(from_pretrained=lambda *_args, **_kwargs: object())
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+
+    def build_batch(*_args: object, **kwargs: object) -> SimpleNamespace:
+        build_calls.append(kwargs)
+        return next(batches)
+
+    def run_round(*round_args: object, **_kwargs: object) -> dict[str, object]:
+        round_calls.append({
+            "prompt_lens": round_args[1],
+            "max_tokens": round_args[5],
+            "ignore_eos": round_args[8],
+        })
+        return next(round_metrics)
+
+    monkeypatch.setattr(benchmark_module, "build_request_batch", build_batch)
+    monkeypatch.setattr(benchmark_module, "summarize_dataset_batch", lambda *_args: next(workloads))
+    monkeypatch.setattr(benchmark_module, "run_api_benchmark_round", run_round)
+
+    result = benchmark_module.run_pd_ratio_benchmark(args)
+
+    assert build_calls == [
+        {"input_len": 1000, "output_len": 1, "share_prefix": False,
+         "random_range_ratio": 0.0, "run_id": build_calls[0]["run_id"]},
+        {"input_len": 1000, "output_len": 5000, "share_prefix": False,
+         "random_range_ratio": 0.0, "run_id": build_calls[1]["run_id"]},
+    ]
+    assert round_calls == [
+        {"prompt_lens": [800] * 8, "max_tokens": [1] * 8, "ignore_eos": False},
+        {"prompt_lens": [800] * 8, "max_tokens": [5000] * 8, "ignore_eos": False},
+    ]
+    assert result["analysis"]["prefill_time_seconds"] == pytest.approx(8.0)
+    assert result["analysis"]["decode_time_seconds"] == pytest.approx(50.0)
+    assert result["analysis"]["business_workload"] == {
+        "configured_avg_input_tokens": 1000,
+        "configured_avg_output_tokens": 5000,
+        "prefill_measurement_prompt_tokens": 800.0,
+        "decode_measurement_prompt_tokens": 800.0,
+        "decode_measurement_requested_output_tokens": 5000.0,
+    }
+
+
+def test_pd_ratio_rejects_single_token_business_output() -> None:
+    """Reject a P:D workload that cannot produce a Decode throughput sample."""
+    with pytest.raises(
+        benchmark_module.BenchmarkConfigError,
+        match="avg_output_tokens must be at least 2 for pd-ratio",
+    ):
+        benchmark_module._build_case_args(
+            {"mode": "api"},
+            {
+                "name": "pd-single-token-output",
+                "preset": "pd-ratio",
+                "params": {"pd": {"avg_output_tokens": 1}},
+            },
+            {},
+        )

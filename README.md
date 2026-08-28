@@ -154,7 +154,7 @@ SLO 容量扫描的单轮只有同时满足以下条件才通过：请求总数�
 
 ### 4. P/D 分离评估
 
-[`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json) 以平均 128K 输入、2K 输出为例，先在**同一** OpenAI 兼容服务上测量 Prefill（128K 输入、1 输出）和 Decode（128 输入、最多 2K 输出）的单实例吞吐与延迟，再结合 `avg_input_tokens`、`avg_output_tokens`、`total_gpus` 和 `tp_size` 给出 P:D 实例比例、`max-num-seqs` 与 `max-num-batched-tokens` 建议。它不是实际的分离部署压测：不会启动 Prefill/Decode 实例，也不会计入 KV 传输或 router 开销。
+[`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json) 以平均 128K 输入、2K 输出为例，在**同一** OpenAI 兼容服务上分别测量 Prefill（业务输入、1 输出）和 Decode（相同业务输入、业务输出上限）的单实例客户端观测吞吐与延迟。两轮都使用发送前 `DatasetBatch` 的实际 token 长度计算初始 P:D 容量比例；`avg_output_tokens` 会完整传给 Decode 请求，不会静默截断，且 `ignore_eos` 遵循配置。它仍不是实际的分离部署压测：Decode 请求会重新执行普通 API 请求的首 token 前处理，不会启动 Prefill/Decode 实例、交接 KV Cache 或计入 KV 传输和 router 开销。因此 P:D 比例及 `max-num-seqs` / `max-num-batched-tokens` 仅是与业务形状一致的初始 sizing 建议，必须在真实分离部署和目标 SLO 下联合压测验证。
 
 该用例默认 `enabled: false`，以防产生实际 API 流量。复制后，设置服务地址、模型、tokenizer、总 GPU 数和 TP 大小；完成无流量检查后再将本地副本中的 `enabled` 改为 `true`：
 

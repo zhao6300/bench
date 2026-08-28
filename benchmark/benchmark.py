@@ -2976,8 +2976,11 @@ def run_slo_capacity_benchmark(args):
 
 def run_pd_ratio_benchmark(args):
     """
-    Automatically benchmark prefill and decode throughput on a single instance,
-    then calculate the recommended P:D disaggregation ratio based on the expected workload.
+    Automatically measure same-shape API proxies, then estimate an initial P:D sizing ratio.
+
+    The two rounds run sequentially against one endpoint and cannot measure KV
+    handoff, router overhead, or concurrent Prefill/Decode interference. Their
+    result is a deployment candidate that must be validated on a real P/D setup.
     """
     from transformers import AutoTokenizer
     import math
@@ -2988,7 +2991,7 @@ def run_pd_ratio_benchmark(args):
 
     tokenizer_path = args.tokenizer or args.model
     print("=" * 70)
-    print("  PD 分离比例自动计算")
+    print("  P:D 初始容量比例估算")
     print("=" * 70)
     print(f"  模型: {args.model}")
     print(f"  业务负载: 平均输入 {avg_input} tokens, 平均输出 {avg_output} tokens")
@@ -3034,7 +3037,7 @@ def run_pd_ratio_benchmark(args):
 
     prefill_metrics = run_api_benchmark_round(
         prefill_prompts, prefill_batch.prompt_lens, url, headers, args.model,
-        prefill_batch.output_lens, 4, tokenizer, True,
+        prefill_batch.output_lens, 4, tokenizer, args.ignore_eos,
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
@@ -3056,7 +3059,7 @@ def run_pd_ratio_benchmark(args):
     run_uuid = uuid.uuid4().hex[:8]
     n_decode = 8
     decode_batch = build_request_batch(
-        args, tokenizer, n_decode, input_len=128, output_len=min(avg_output, 4096),
+        args, tokenizer, n_decode, input_len=avg_input, output_len=avg_output,
         share_prefix=False, random_range_ratio=0.0, run_id=run_uuid,
     )
     decode_prompts = decode_batch.prompts
@@ -3069,7 +3072,7 @@ def run_pd_ratio_benchmark(args):
 
     decode_metrics = run_api_benchmark_round(
         decode_prompts, decode_batch.prompt_lens, url, headers, args.model,
-        decode_batch.output_lens, 4, tokenizer, True,
+        decode_batch.output_lens, 4, tokenizer, args.ignore_eos,
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
@@ -3089,11 +3092,13 @@ def run_pd_ratio_benchmark(args):
     if decode_avg_estimated_itl:
         print(f"      预估 ITL      : {decode_avg_estimated_itl * 1000:.1f} ms")
 
-    # ── Phase 3: Calculate optimal P:D ratio ──
-    print(f"\n[4/4] 计算最佳 PD 比例 ...")
+    # ── Phase 3: Calculate P:D sizing ratio ──
+    print(f"\n[4/4] 计算 P:D 初始容量比例 ...")
 
-    prefill_time = avg_input / max(prefill_throughput, 1.0)
-    decode_time = avg_output / max(decode_throughput, 1.0)
+    prefill_input_tokens = prefill_workload["prompt_tokens"]["avg"]
+    decode_output_tokens = decode_workload["requested_output_tokens"]["avg"]
+    prefill_time = prefill_input_tokens / max(prefill_throughput, 1.0)
+    decode_time = decode_output_tokens / max(decode_throughput, 1.0)
     total_time = prefill_time + decode_time
 
     prefill_pct = prefill_time / total_time * 100
@@ -3127,7 +3132,7 @@ def run_pd_ratio_benchmark(args):
     #   - Few concurrent requests (large context each), focus on chunked prefill
     #   - max-num-seqs: enough to keep GPU busy but not too many (memory pressure)
     #   - max-num-batched-tokens: sized for chunked prefill of large contexts
-    prefill_seqs_per_sec = prefill_throughput / max(avg_input, 1)
+    prefill_seqs_per_sec = prefill_throughput / max(prefill_input_tokens, 1.0)
     # Allow ~2-4 seconds worth of requests to be queued
     prefill_max_num_seqs = max(4, min(32, int(prefill_seqs_per_sec * 2)))
     # Round to power of 2 or nice number
@@ -3135,8 +3140,8 @@ def run_pd_ratio_benchmark(args):
         if prefill_max_num_seqs <= nice:
             prefill_max_num_seqs = nice
             break
-    # batched tokens: allow processing a full context per step
-    prefill_max_batched_tokens = max(avg_input, 8192)
+    # Batched tokens: allow processing a full measured context per step.
+    prefill_max_batched_tokens = max(math.ceil(prefill_input_tokens), 8192)
     # Round up to nearest power of 2
     for nice in [8192, 16384, 32768, 65536, 131072, 262144]:
         if prefill_max_batched_tokens <= nice:
@@ -3170,7 +3175,7 @@ def run_pd_ratio_benchmark(args):
 
     print()
     print("=" * 70)
-    print("  PD 分离比例分析结果")
+    print("  P:D 初始容量估算结果")
     print("=" * 70)
     print()
     print("  ── 吞吐量指标 ──")
@@ -3185,7 +3190,17 @@ def run_pd_ratio_benchmark(args):
     if decode_avg_estimated_itl:
         print(f"    Decode  预估 ITL         : {decode_avg_estimated_itl*1000:>10.1f} ms")
     print()
-    print("  ── 业务负载时间分析（按配置的平均输入/输出计算） ──")
+    print("  ── 业务负载时间分析（按实际测量请求长度计算） ──")
+    print(
+        f"    Prefill Prompt 平均长度  : {prefill_input_tokens:>10.1f} tokens"
+    )
+    print(
+        f"    Decode  Prompt 平均长度  : "
+        f"{decode_workload['prompt_tokens']['avg']:>10.1f} tokens"
+    )
+    print(
+        f"    Decode  请求输出上限均值 : {decode_output_tokens:>10.1f} tokens"
+    )
     print(f"    每请求 Prefill 耗时       : {prefill_time*1000:>10.1f} ms  ({prefill_pct:.1f}%)")
     print(f"    每请求 Decode  耗时       : {decode_time*1000:>10.1f} ms  ({decode_pct:.1f}%)")
     print(f"    每请求总耗时 (P+D)        : {total_time*1000:>10.1f} ms")
@@ -3211,15 +3226,22 @@ def run_pd_ratio_benchmark(args):
         pd_reasons_against.append(f"P:D 耗时比接近 1:1 ({raw_ratio:.2f})，分离后两边负载相近，无法通过不同配比优化")
         pd_recommended = False
 
-    # Latency-based factors
-    # High P99 TTFT relative to avg indicates prefill-decode contention
+    # Tail TTFT is a signal to validate P/D isolation, not proof of contention:
+    # the two proxy rounds are measured sequentially against one endpoint.
     if prefill_p99_ttft > prefill_avg_ttft * 2.5 and prefill_p99_ttft > 0.5:
-        pd_reasons_for.append(f"P99 TTFT ({prefill_p99_ttft*1000:.0f}ms) 远高于平均 ({prefill_avg_ttft*1000:.0f}ms)，"
-                              f"存在 Prefill-Decode 资源争抢，PD 分离可显著降低尾部延迟")
+        pd_reasons_for.append(
+            f"P99 TTFT ({prefill_p99_ttft*1000:.0f}ms) 远高于平均 "
+            f"({prefill_avg_ttft*1000:.0f}ms)，建议在真实联合负载下验证 "
+            "P/D 隔离是否改善尾延迟"
+        )
 
-    # High TTFT in general → prefill is bottleneck, separation helps
+    # High TTFT is likewise a sizing signal, not evidence that split deployment
+    # will improve latency for this endpoint.
     if prefill_avg_ttft > 1.0:
-        pd_reasons_for.append(f"平均 TTFT 较高 ({prefill_avg_ttft*1000:.0f}ms)，独立 Prefill 实例可消除 Decode 干扰，降低首 Token 延迟")
+        pd_reasons_for.append(
+            f"平均 TTFT 较高 ({prefill_avg_ttft*1000:.0f}ms)，建议将独立 Prefill "
+            "实例作为降低首 Token 延迟的候选方案进行联合压测"
+        )
 
     if total_gpus:
         tp_size = getattr(args, "tp_size", 2)
@@ -3231,8 +3253,8 @@ def run_pd_ratio_benchmark(args):
 
     print()
     if pd_recommended:
-        print(f"  ★ 建议: 启用 PD 分离")
-        print(f"  ★ 建议 PD 比例              : {p_count}P : {d_count}D")
+        print("  ★ 初始建议: 将 PD 分离作为候选部署方案")
+        print(f"  ★ 初始 P:D 容量比例          : {p_count}P : {d_count}D")
         if pd_reasons_for:
             print()
             print("  ── 分离收益分析 ──")
@@ -3265,7 +3287,7 @@ def run_pd_ratio_benchmark(args):
             print(f"    PD_DECODE_MAX_NUM_BATCHED_TOKENS={decode_max_batched_tokens} \\")
             print(f"    TP_SIZE={tp_size} bash docker-start-deepseek.sh")
     else:
-        print(f"  ★ 建议: 不启用 PD 分离，使用统一部署")
+        print("  ★ 初始建议: 保持统一部署作为默认方案")
         print()
         print("  ── 不建议分离的原因 ──")
         for reason in pd_reasons_against:
@@ -3294,6 +3316,11 @@ def run_pd_ratio_benchmark(args):
             "business_workload": {
                 "configured_avg_input_tokens": avg_input,
                 "configured_avg_output_tokens": avg_output,
+                "prefill_measurement_prompt_tokens": prefill_input_tokens,
+                "decode_measurement_prompt_tokens": (
+                    decode_workload["prompt_tokens"]["avg"]
+                ),
+                "decode_measurement_requested_output_tokens": decode_output_tokens,
             },
             # Legacy aliases retained for consumers of older reports.
             "avg_input_tokens": avg_input,
@@ -3419,8 +3446,8 @@ PRESET_REGISTRY: List[Preset] = [
     ),
     Preset(
         name="pd-ratio",
-        description="自动测量 P/D 吞吐量并计算最佳 PD 分离比例",
-        focus="最佳 P:D 比例, 部署建议",
+        description="按业务形状测量 P/D 初始容量比例",
+        focus="初始 P:D 容量比例、吞吐与延迟代理指标",
         params={
             "share_prefix": False,
         },
@@ -3823,6 +3850,10 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
         value = getattr(args, key, None)
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
             raise BenchmarkConfigError(f"{location}.{key} must be a positive integer when set")
+    if scenario == "pd-ratio" and args.avg_output_tokens < 2:
+        raise BenchmarkConfigError(
+            f"{location}.avg_output_tokens must be at least 2 for pd-ratio"
+        )
     if args.slo_capacity_search_strategy not in {"linear", "binary-confirm"}:
         raise BenchmarkConfigError(
             f"{location}.slo_capacity_search_strategy must be linear or binary-confirm"

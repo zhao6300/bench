@@ -1,11 +1,11 @@
 {
   "version": 1,
   "name": "pd-ratio-128k-2k",
-  "description": "以平均 128K 输入、2K 输出的业务形状评估 Prefill/Decode（P/D）分离。该用例先在同一 API 服务上分别测量 Prefill 与 Decode 吞吐及延迟，再计算推荐的 P:D 实例比例和单实例调度参数；不会启动实际分离部署或测量 KV 传输、router 开销。默认禁用，复制为本地配置、完成服务参数设置并明确接受测试流量后再启用。",
+  "description": "以平均 128K 输入、2K 输出的业务形状进行 Prefill/Decode（P/D）初始容量估算。Prefill 使用业务输入和 1 输出 token；Decode 使用相同业务输入及完整业务输出上限，两轮均遵循 ignore_eos 并按实际 DatasetBatch token 长度计算比例。它们仍在同一 API 服务上作为普通请求顺序执行，不会启动实际分离部署、交接 KV Cache 或测量 KV 传输和 router 开销；结果必须在真实 P/D 部署和目标 SLO 下联合验证。默认禁用，复制为本地配置、完成服务参数设置并明确接受测试流量后再启用。",
   "metadata": {
-    "purpose": "prefill-decode-disaggregation-sizing",
+    "purpose": "prefill-decode-disaggregation-initial-sizing",
     "workload": "128K average input / 2K average output",
-    "measurement": "single-instance prefill and decode throughput"
+    "measurement": "same-shape API prefill and decode proxy throughput"
   },
   "continue_on_error": true,
   "defaults": {
