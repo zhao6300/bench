@@ -224,6 +224,17 @@ def test_suite_config_rejects_remote_plaintext_bearer_key() -> None:
 
 def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
     observed: dict[str, Any] = {}
+    progress_snapshots: list[dict[str, Any]] = []
+
+    class _Reporter:
+        def round_started(self, _total: int, _concurrency: int) -> None:
+            pass
+
+        def request_finished(self, snapshot: dict[str, Any]) -> None:
+            progress_snapshots.append(snapshot)
+
+        def round_finished(self) -> None:
+            pass
 
     def fake_aiohttp_runner(
         prompts: list[str],
@@ -272,7 +283,7 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
     metrics = benchmark_module.run_api_benchmark_round(
         ["first", "second"], [1, 1], "http://localhost/v1/chat/completions",
         {"Content-Type": "application/json"}, "model", [2, 2], 2,
-        api_transport="aiohttp",
+        api_transport="aiohttp", progress_reporter=_Reporter(),
     )
 
     assert observed == {
@@ -286,3 +297,30 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
         "finalized_req_ids": [0, 1],
     }
     assert metrics["successful"] == 2
+    assert [
+        (snapshot["completed"], snapshot["total"], snapshot["succeeded"],
+         snapshot["failed"], snapshot["last_ttft"], snapshot["request_id"],
+         snapshot["error"])
+        for snapshot in progress_snapshots
+    ] == [
+        (1, 2, 1, 0, 0.01, 0, None),
+        (2, 2, 2, 0, 0.01, 1, None),
+    ]
+    assert all(snapshot["elapsed_seconds"] >= 0 for snapshot in progress_snapshots)
+
+
+def test_progress_parser_defaults_to_auto_and_is_not_suite_parameter() -> None:
+    """Keep progress rendering as a CLI-only concern outside suite JSON schema."""
+    parser = build_parser()
+
+    assert parser.parse_args([]).progress == "auto"
+    assert parser.parse_args(["--progress", "plain"]).progress == "plain"
+    assert parser.parse_args(["--progress", "rich"]).progress == "rich"
+    assert parser.parse_args(["--progress", "off"]).progress == "off"
+
+    with pytest.raises(BenchmarkConfigError, match="unknown benchmark parameters: progress"):
+        _build_case_args(
+            {"mode": "api", "progress": "off"},
+            {"name": "progress-is-cli-only"},
+            {},
+        )

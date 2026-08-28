@@ -253,6 +253,7 @@ try:
         run_aiohttp_chat_requests,
         send_requests_chat_request,
     )
+    from .progress import ProgressDependencyError, create_progress_reporter
 except ImportError:
     # Direct execution: python benchmark/benchmark.py ...
     from benchmark_datasets import (
@@ -273,6 +274,7 @@ except ImportError:
         run_aiohttp_chat_requests,
         send_requests_chat_request,
     )
+    from progress import ProgressDependencyError, create_progress_reporter
 
 
 # ── Nsys Profiling Control ─────────────────────────────────────────────
@@ -1583,6 +1585,7 @@ def run_api_benchmark_round(
     slo_ttft=5.0,
     slo_tpot=0.1,
     api_transport="requests",
+    progress_reporter=None,
 ):
     """
     Execute a single benchmark round: send concurrent requests, collect results, compute metrics.
@@ -1595,6 +1598,8 @@ def run_api_benchmark_round(
     Returns a dict with all computed metrics, or None if all requests failed.
     """
     total_requests = len(prompts)
+    if progress_reporter is not None:
+        progress_reporter.round_started(total_requests, concurrency)
     # Normalize to per-request lists
     if isinstance(prompt_lens, int):
         prompt_lens_list = [prompt_lens] * total_requests
@@ -1655,16 +1660,36 @@ def run_api_benchmark_round(
                 last_ttft[0] = r["ttft"]
             else:
                 failed_cnt[0] += 1
-                reason = r.get("error") or "未收到有效的首个 token"
+            elapsed = time.perf_counter() - wall_t0
+            snapshot = {
+                "completed": completed[0],
+                "total": total_requests,
+                "succeeded": succeeded[0],
+                "failed": failed_cnt[0],
+                "elapsed_seconds": elapsed,
+                "last_ttft": last_ttft[0],
+                "request_id": r.get("req_id"),
+                "error": r.get("error") if request_failed else None,
+            }
+        if progress_reporter is not None:
+            progress_reporter.request_finished(snapshot)
+        else:
+            if request_failed:
                 print(
-                    f"\n  请求失败: req_id={r.get('req_id', 'unknown')}  原因: {reason}",
+                    f"\n  请求失败: req_id={r.get('req_id', 'unknown')}  原因: "
+                    f"{snapshot['error'] or '未收到有效的首个 token'}",
                     flush=True,
                 )
-            elapsed = time.perf_counter() - wall_t0
-            ttft_str = f"  最新TTFT: {last_ttft[0]:.3f}s" if last_ttft[0] is not None else ""
+            ttft_str = (
+                f"  最新TTFT: {last_ttft[0]:.3f}s"
+                if last_ttft[0] is not None else ""
+            )
             fail_str = f"  失败: {failed_cnt[0]}" if failed_cnt[0] > 0 else ""
-            print(f"\r  进度: [{completed[0]:>{len(str(total_requests))}d}/{total_requests}]"
-                  f"  耗时: {elapsed:.1f}s{ttft_str}{fail_str}    ", end="", flush=True)
+            print(
+                f"\r  进度: [{completed[0]:>{len(str(total_requests))}d}/{total_requests}]"
+                f"  耗时: {elapsed:.1f}s{ttft_str}{fail_str}    ",
+                end="", flush=True,
+            )
 
     def _on_complete(future):
         try:
@@ -1740,9 +1765,13 @@ def run_api_benchmark_round(
     )
 
     wall_time = wall_t1 - wall_t0
-    print(f"\r  进度: [{total_requests}/{total_requests}]  完成!  总耗时: {wall_time:.3f}s"
-          f"  成功: {succeeded[0]}  失败: {failed_cnt[0]}        ")
-
+    if progress_reporter is not None:
+        progress_reporter.round_finished()
+    else:
+        print(
+            f"\r  进度: [{total_requests}/{total_requests}]  完成!  总耗时: {wall_time:.3f}s"
+            f"  成功: {succeeded[0]}  失败: {failed_cnt[0]}        "
+        )
 
     return _aggregate_api_round_metrics(
         results,
@@ -1930,6 +1959,7 @@ def run_api_benchmark(args):
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
+        progress_reporter=getattr(args, "_progress_reporter", None),
     )
     nsys_stop()
     if not metrics["successful"]:
@@ -2104,6 +2134,7 @@ def run_mixed_benchmark(args):
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
+        progress_reporter=getattr(args, "_progress_reporter", None),
     )
     nsys_stop()
 
@@ -2263,6 +2294,7 @@ class ApiBenchmarkSession:
             slo_ttft=self.args.slo_ttft,
             slo_tpot=self.args.slo_tpot,
             api_transport=self.args.api_transport,
+            progress_reporter=getattr(self.args, "_progress_reporter", None),
         )
 
 
@@ -3041,6 +3073,7 @@ def run_pd_ratio_benchmark(args):
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
+        progress_reporter=getattr(args, "_progress_reporter", None),
     )
     if not prefill_metrics["successful"]:
         print("ERROR: Prefill 测试失败")
@@ -3076,6 +3109,7 @@ def run_pd_ratio_benchmark(args):
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
+        progress_reporter=getattr(args, "_progress_reporter", None),
     )
     if not decode_metrics["successful"]:
         print("ERROR: Decode 测试失败")
@@ -3546,7 +3580,7 @@ SUITE_SCHEMA_VERSION = 1
 SUITE_SCENARIOS = {"single", "mixed-workload", "sweep", "slo-capacity-search", "pd-ratio"}
 SUITE_MANAGEMENT_ARGS = {
     "config", "report", "case_filters", "tag_filters", "list_cases",
-    "validate_config", "fail_fast", "no_resume",
+    "validate_config", "fail_fast", "no_resume", "progress",
 }
 
 
@@ -4366,6 +4400,13 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         print(f"配置有效: {config_path} ({len(prepared)} 个展开后的测试用例)")
         return 0
 
+    try:
+        progress_reporter = create_progress_reporter(cli_args.progress)
+    except ProgressDependencyError as exc:
+        raise BenchmarkConfigError(str(exc)) from exc
+    for _, args, _, _ in prepared:
+        args._progress_reporter = progress_reporter
+
     report_options = config.get("report", {})
     report_target = cli_args.report or report_options.get("path")
     # Microseconds plus PID prevent colliding report names when multiple
@@ -4495,8 +4536,10 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     for position, ((case, args, scenario, _), record) in enumerate(zip(prepared, records), start=1):
         if record["status"] == "passed":
             print(f"[{position}/{len(prepared)}] {case['name']} (passed; resume skip)")
+            progress_reporter.case_finished("passed (resume skip)", position, len(prepared))
             continue
         if not case["enabled"]:
+            progress_reporter.case_finished("skipped (disabled)", position, len(prepared))
             continue
         if abort_remaining:
             continue
@@ -4520,6 +4563,9 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             report["suite"]["updated_at"] = _now_iso()
             _update_report_summary(report, started_perf)
             _write_json_report(report_storage, report, indent)
+            progress_reporter.case_started(
+                case["name"], scenario, position, len(prepared)
+            )
 
             result = execute_benchmark(args, scenario)
             if result is None:
@@ -4548,6 +4594,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             report["suite"]["updated_at"] = _now_iso()
             abort_remaining = True
             interrupted = True
+            progress_reporter.close()
             raise
         except Exception as exc:
             record["status"] = "failed"
@@ -4561,6 +4608,9 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             report["suite"]["updated_at"] = _now_iso()
             _update_report_summary(report, started_perf, terminal=interrupted)
             _write_json_report(report_storage, report, indent)
+            progress_reporter.case_finished(
+                record["status"], position, len(prepared)
+            )
             if interrupted:
                 report_storage.release_checkpoint_lock(checkpoint_lock)
 
@@ -4588,6 +4638,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     )
     _print_failed_case_summary(report)
     print(f"JSON report: {report_location.display_name}")
+    progress_reporter.close()
     return exit_code
 
 
@@ -4631,6 +4682,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-resume", action="store_true",
         help="配置模式下忽略同路径的历史报告并从头运行；默认会恢复，并只跳过没有请求级失败的已通过用例"
+    )
+    parser.add_argument(
+        "--progress", choices=["auto", "plain", "rich", "off"], default="auto",
+        help="实时进度显示：auto 在交互终端使用 Rich、其他终端使用 plain；"
+             "plain 为行式输出，rich 为 Rich 面板，off 关闭实时进度（默认：auto）"
     )
     parser.add_argument(
         "--preset", choices=get_preset_names(), default=None,
@@ -4904,6 +4960,19 @@ def main():
         print(f"JSON report: {report_storage.location.display_name}")
         return 2
 
+    try:
+        progress_reporter = create_progress_reporter(args.progress)
+    except ProgressDependencyError as exc:
+        record["error"] = {"type": type(exc).__name__, "message": str(exc)}
+        record["finished_at"] = _now_iso()
+        record["duration_seconds"] = time.perf_counter() - started_perf
+        if report is not None:
+            _update_report_summary(report, started_perf)
+            _write_json_report(report_storage, report)
+        print(f"ERROR: cannot enable progress display: {exc}", file=sys.stderr)
+        return 2
+    args._progress_reporter = progress_reporter
+
     if NSYS_PROFILE:
         print()
         print("  ── Nsys Profiling ──")
@@ -4914,6 +4983,7 @@ def main():
 
     exit_code = 1
     try:
+        progress_reporter.case_started(record["name"], scenario, 1, 1)
         if args.mode == "api":
             require_requests()
             collect_and_print_system_info(args)
@@ -4944,6 +5014,8 @@ def main():
             _update_report_summary(report, started_perf)
             _write_json_report(report_storage, report)
             print(f"JSON report: {report_storage.location.display_name}")
+        progress_reporter.case_finished(record["status"], 1, 1)
+        progress_reporter.close()
     return exit_code
 
 

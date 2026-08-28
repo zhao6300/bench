@@ -59,6 +59,26 @@ llm-benchmark --config examples/benchmark-config.example.json --validate-config
 llm-benchmark --config examples/benchmark-config.example.json --list-cases
 ```
 
+### 实时进度显示
+
+实际运行 benchmark 时，`--progress` 控制控制台实时状态显示，默认 `auto`：交互式终端使用非交互的 Rich 监控面板，CI、日志重定向和 `TERM=dumb` 环境自动降级为行式 `plain` 输出。该面板显示当前 case、场景、round 请求完成数、成功/失败数、耗时、最新 TTFT 和最近错误；它不读取键盘输入，也不会写入 JSON 报告。
+
+```zsh
+# 默认：交互终端使用 Rich，重定向输出时使用 plain
+llm-benchmark --config examples/benchmark-config.example.json
+
+# 强制使用行式进度，适合日志采集
+llm-benchmark --progress plain --config examples/benchmark-config.example.json
+
+# 强制 Rich 面板；依赖未安装时会给出可操作错误
+llm-benchmark --progress rich --config examples/benchmark-config.example.json
+
+# 关闭实时进度，保留最终指标、错误与 JSON 报告输出
+llm-benchmark --progress off --config examples/benchmark-config.example.json
+```
+
+项目使用 Rich 管理实时请求计数和状态表，因此不需要额外引入 `tqdm`；两者同时使用会产生重复进度条并干扰重定向日志。
+
 ## 从 examples 开始
 
 ### 1. 创建本地可运行配置
