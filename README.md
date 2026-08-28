@@ -194,8 +194,33 @@ cp examples/benchmark-config-mixed-workload.json \
   --config examples/benchmark-config-mixed-workload.local.json
 ```
 
+### 6. 报告输出与 S3 存储
 
-`report.path` 和 CLI 的 `--report` 都支持本地路径与 `s3://bucket/key`。保持 [`examples/benchmark-config.example.json`](examples/benchmark-config.example.json) 中的本地 `report.path` 作为默认选择；需要 S3 时，复制该模板为 `*.local.json`，将其中的 `report.path` 改为类似 `s3://my-benchmark-reports/reports/benchmark-{timestamp}.json`，然后运行该本地副本。
+#### 本地报告
+
+配置文件中的 `report.path` 和 CLI 的 `--report` 都支持本地文件路径。保持 [`examples/benchmark-config.example.json`](examples/benchmark-config.example.json) 中的本地 `report.path` 作为默认选择；也可以通过 CLI 覆盖输出路径：
+
+```zsh
+llm-benchmark \
+  --config examples/benchmark-config.local.json \
+  --report reports/benchmark.json
+```
+
+本地固定路径使用原子替换和 POSIX 文件锁，适合单机 checkpoint 恢复。固定路径默认会恢复此前成功且无请求级失败的用例；包含 `{timestamp}` 的路径每次都会创建新报告，因此不会恢复旧 checkpoint。
+
+#### S3 报告
+
+将 `report.path` 或 `--report` 设置为 `s3://bucket/key` 即可将 JSON 报告写入 S3-compatible 存储。`bucket` 名称和对象 key 都直接配置在 URI 中，例如：
+
+```json
+{
+  "report": {
+    "path": "s3://my-benchmark-reports/reports/benchmark-{timestamp}.json"
+  }
+}
+```
+
+其中 `my-benchmark-reports` 是可替换的 bucket 名称，`reports/benchmark-{timestamp}.json` 是对象 key。使用 S3 时，建议复制示例为本地配置并先执行无流量校验：
 
 ```zsh
 cp examples/benchmark-config.example.json examples/benchmark-config.s3.local.json
@@ -204,14 +229,14 @@ llm-benchmark --config examples/benchmark-config.s3.local.json --validate-config
 llm-benchmark --config examples/benchmark-config.s3.local.json
 ```
 
-S3 优先读取以下 `BENCHMARK_S3_*` 环境变量；AK/SK 绝不会写入 JSON、报告或日志：
+S3 凭据、region 和 endpoint 只通过以下 `BENCHMARK_S3_*` 环境变量配置；AK/SK 绝不会写入 JSON、报告或日志：
 
 - `BENCHMARK_S3_ACCESS_KEY_ID` 与 `BENCHMARK_S3_SECRET_ACCESS_KEY`：成对设置的访问密钥。
 - `BENCHMARK_S3_SESSION_TOKEN`：可选的临时凭据会话令牌，必须与 AK/SK 一起使用。
 - `BENCHMARK_S3_ENDPOINT_URL`：可选的 S3-compatible HTTP(S) endpoint，例如阿里云 OSS endpoint。
 - `BENCHMARK_S3_REGION`：可选区域；使用第三方服务时应设置为其对应区域。
 
-未设置自定义 AK/SK 时，boto3 继续使用标准 AWS 凭据链（`AWS_*` 环境变量、共享 credentials/config 文件、实例或 Pod IAM role 等）。阿里云 OSS 可在已复制的示例配置上按以下方式运行：
+未设置自定义 AK/SK 时，boto3 继续使用标准 AWS 凭据链（`AWS_*` 环境变量、共享 credentials/config 文件、实例或 Pod IAM role 等）。例如使用阿里云 OSS：
 
 ```zsh
 export BENCHMARK_S3_ENDPOINT_URL='https://oss-cn-hangzhou.aliyuncs.com'
@@ -222,9 +247,7 @@ export BENCHMARK_S3_SECRET_ACCESS_KEY='your-access-key-secret'
 llm-benchmark --config examples/benchmark-config.s3.local.json
 ```
 
-S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 或 URI 内嵌凭据。
-
-本地固定路径使用原子替换和 POSIX 文件锁，适合单机 checkpoint 恢复。S3 路径也支持读取同一对象来恢复 checkpoint，但没有分布式锁：同一个 `s3://bucket/key` 在任意时刻只能由一个 benchmark 进程写入。包含 `{timestamp}` 的本地或 S3 路径每次都会创建新报告，因此不会恢复旧 checkpoint。
+S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 或 URI 内嵌凭据。S3 路径支持读取同一对象来恢复 checkpoint，但没有分布式锁：同一个 `s3://bucket/key` 在任意时刻只能由一个 benchmark 进程写入。包含 `{timestamp}` 的 S3 路径每次都会创建新报告，因此不会恢复旧 checkpoint。
 
 ## 数据集与长度语义
 
@@ -284,17 +307,3 @@ llm-benchmark \
 ```
 
 这要求容器内已有 `nsys`，并且当前用户有 Docker 访问权限。profile 产物不会自动提交。
-
-## 开发约定
-
-贡献者请先阅读 [AGENTS.md](AGENTS.md)。提交前至少执行：
-
-```zsh
-.venv/bin/python -m compileall benchmark tests
-.venv/bin/python benchmark/benchmark.py --help
-.venv/bin/python benchmark/benchmark.py --config examples/benchmark-config.example.json --validate-config
-.venv/bin/python -m pytest -q
-.venv/bin/pre-commit run --all-files
-```
-
-本项目当前未声明开源许可证；在复制、分发或对外发布前，请先向仓库维护者确认许可条款。
