@@ -61,6 +61,20 @@ def test_plain_progress_renders_request_status_and_failure() -> None:
     assert "请求失败: req_id=0 原因: timeout" in output
     assert "进度: 1/2，成功=0，失败=1，耗时=0.5s" in output
     assert "case 1/2 状态: failed" in output
+    assert "加载 tokenizer" not in output
+    assert "跳过预热请求" not in output
+
+
+def test_plain_progress_ignores_stage_and_information_events() -> None:
+    """Keep portable plain output unchanged when dashboard-only events are emitted."""
+    stream = _TerminalStream(False)
+    reporter = PlainProgressReporter(stream)
+
+    reporter.stage_started("加载 tokenizer", "placeholder")
+    reporter.stage_finished("加载 tokenizer")
+    reporter.event("跳过预热请求")
+
+    assert stream.getvalue() == ""
 
 
 def test_off_progress_suppresses_lifecycle_output(capsys) -> None:
@@ -113,6 +127,18 @@ class _SuiteReporter:
 
     def close(self) -> None:
         self.events.append(("closed",))
+
+
+def test_optional_stage_events_support_legacy_reporters() -> None:
+    """Do not require suite reporters to implement dashboard-only callbacks."""
+    reporter = _SuiteReporter()
+    args = type("Args", (), {"_progress_reporter": reporter})()
+
+    benchmark_module._emit_progress_event(args, "stage_started", "加载 tokenizer")
+    benchmark_module._emit_progress_event(args, "stage_finished", "加载 tokenizer")
+    benchmark_module._emit_progress_event(args, "event", "跳过预热请求")
+
+    assert reporter.events == []
 
 
 def test_configured_suite_reports_case_lifecycle_without_network(
@@ -273,6 +299,9 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
     )
     reporter = progress_module.RichProgressReporter(_TerminalStream(True))
 
+    reporter.stage_started("加载 tokenizer", "placeholder")
+    reporter.stage_finished("加载 tokenizer")
+    reporter.event("跳过预热请求")
     reporter.case_started("smoke", "single", 1, 2)
     reporter.round_started(4, 2)
     reporter.request_finished({
@@ -296,6 +325,9 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
     assert isinstance(dashboard["events"].content, _FakePanel)
     assert isinstance(dashboard["footer"].content, _FakePanel)
     assert any("请求失败" in row[0] for row in dashboard["events"].content.content.rows)
+    assert any("阶段开始: 加载 tokenizer：placeholder" in row[0] for row in dashboard["events"].content.content.rows)
+    assert any("阶段完成: 加载 tokenizer" in row[0] for row in dashboard["events"].content.content.rows)
+    assert any("跳过预热请求" in row[0] for row in dashboard["events"].content.content.rows)
 
     reporter.close()
     assert live.stopped is True

@@ -33,6 +33,15 @@ class ProgressReporter:
     def round_finished(self) -> None:
         """Record that the current benchmark round finished."""
 
+    def stage_started(self, stage: str, detail: str | None = None) -> None:
+        """Record that a setup or warmup stage started."""
+
+    def stage_finished(self, stage: str, detail: str | None = None) -> None:
+        """Record that a setup or warmup stage finished."""
+
+    def event(self, message: str) -> None:
+        """Record an informational benchmark event."""
+
     def close(self) -> None:
         """Release terminal resources held by the reporter."""
 
@@ -199,6 +208,21 @@ class RichProgressReporter(ProgressReporter):
             )
             self._refresh()
 
+    def stage_started(self, stage: str, detail: str | None = None) -> None:
+        """Show that a setup or warmup stage started."""
+        self._record_stage_event("开始", stage, detail)
+
+    def stage_finished(self, stage: str, detail: str | None = None) -> None:
+        """Show that a setup or warmup stage finished."""
+        self._record_stage_event("完成", stage, detail)
+
+    def event(self, message: str) -> None:
+        """Append a non-request event to the dashboard."""
+        with self._lock:
+            self._record_event(message)
+            self._ensure_live()
+            self._refresh()
+
     def close(self) -> None:
         with self._lock:
             if self._live is not None:
@@ -219,6 +243,15 @@ class RichProgressReporter(ProgressReporter):
     def _refresh(self) -> None:
         if self._live is not None:
             self._live.update(self._render(), refresh=True)
+
+    def _record_stage_event(
+        self, state: str, stage: str, detail: str | None
+    ) -> None:
+        with self._lock:
+            suffix = f"：{detail}" if detail else ""
+            self._record_event(f"阶段{state}: {stage}{suffix}")
+            self._ensure_live()
+            self._refresh()
 
     def _record_event(self, message: str) -> None:
         self._events.append(message)

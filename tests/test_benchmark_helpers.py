@@ -185,6 +185,20 @@ def test_pd_ratio_uses_business_shapes_and_respects_ignore_eos(monkeypatch) -> N
     import sys
     import types
 
+    progress_events: list[tuple[object, ...]] = []
+
+    class _ProgressSpy:
+        """Capture dashboard-only callbacks without a terminal renderer."""
+
+        def stage_started(self, stage: str, detail: str | None = None) -> None:
+            progress_events.append(("stage_started", stage, detail))
+
+        def stage_finished(self, stage: str, detail: str | None = None) -> None:
+            progress_events.append(("stage_finished", stage, detail))
+
+        def event(self, message: str) -> None:
+            progress_events.append(("event", message))
+
     args = SimpleNamespace(
         avg_input_tokens=1000,
         avg_output_tokens=5000,
@@ -199,6 +213,7 @@ def test_pd_ratio_uses_business_shapes_and_respects_ignore_eos(monkeypatch) -> N
         slo_ttft=60.0,
         slo_tpot=0.05,
         api_transport="requests",
+        _progress_reporter=_ProgressSpy(),
     )
     batches = iter([
         SimpleNamespace(
@@ -271,6 +286,21 @@ def test_pd_ratio_uses_business_shapes_and_respects_ignore_eos(monkeypatch) -> N
     assert round_calls == [
         {"prompt_lens": [800] * 8, "max_tokens": [1] * 8, "ignore_eos": False},
         {"prompt_lens": [800] * 8, "max_tokens": [5000] * 8, "ignore_eos": False},
+    ]
+    assert progress_events == [
+        ("stage_started", "加载 tokenizer", "test-tokenizer"),
+        ("stage_finished", "加载 tokenizer", None),
+        ("event", "跳过预热请求"),
+        ("stage_started", "构造 Prefill 测量负载", None),
+        ("stage_finished", "构造 Prefill 测量负载", None),
+        ("stage_started", "测量 Prefill 吞吐量", None),
+        ("stage_finished", "测量 Prefill 吞吐量", None),
+        ("stage_started", "构造 Decode 测量负载", None),
+        ("stage_finished", "构造 Decode 测量负载", None),
+        ("stage_started", "测量 Decode 吞吐量", None),
+        ("stage_finished", "测量 Decode 吞吐量", None),
+        ("stage_started", "计算 P:D 容量比例", None),
+        ("stage_finished", "计算 P:D 容量比例", None),
     ]
     assert result["analysis"]["prefill_time_seconds"] == pytest.approx(8.0)
     assert result["analysis"]["decode_time_seconds"] == pytest.approx(50.0)

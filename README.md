@@ -61,7 +61,7 @@ llm-benchmark --config examples/benchmark-config.example.json --list-cases
 
 ### 实时进度显示
 
-实际运行 benchmark 时，`--progress` 控制控制台实时状态显示，默认 `auto`：交互式终端使用非交互、接近全屏的 Rich dashboard，CI、日志重定向和 `TERM=dumb` 环境自动降级为行式 `plain` 输出。dashboard 在独立终端屏幕中按顶部运行状态、suite/case 与当前 round 分区、最近事件和底部运行信息展示进度；宽终端使用 suite/round 双栏，窄终端自动改为纵向布局。它不读取键盘输入，也不会写入 JSON 报告；结束时自动恢复原有终端内容。
+实际运行 benchmark 时，`--progress` 控制控制台实时状态显示，默认 `auto`：交互式终端使用非交互、接近全屏的 Rich dashboard，CI、日志重定向和 `TERM=dumb` 环境自动降级为行式 `plain` 输出。dashboard 在独立终端屏幕中按顶部运行状态、suite/case 与当前 round 分区、最近事件和底部运行信息展示进度；最近事件包含服务信息采集、tokenizer 与负载初始化、预热、扫描/probe 和请求异常。宽终端使用 suite/round 双栏，窄终端自动改为纵向布局。它不读取键盘输入，也不会写入 JSON 报告；结束时自动恢复原有终端内容。
 
 ```zsh
 # 默认：交互终端使用 Rich，重定向输出时使用 plain

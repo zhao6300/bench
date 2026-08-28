@@ -296,6 +296,14 @@ def require_requests():
         raise RuntimeError("API benchmark mode requires the 'requests' package: pip install requests")
 
 
+def _emit_progress_event(args, method: str, *event_args: str) -> None:
+    """Send an optional dashboard event without requiring custom reporters to implement it."""
+    reporter = getattr(args, "_progress_reporter", None)
+    callback = getattr(reporter, method, None)
+    if callable(callback):
+        callback(*event_args)
+
+
 def nsys_start():
     """Trigger nsys to start collecting profile data in the inference container."""
     if not NSYS_PROFILE:
@@ -344,6 +352,9 @@ def collect_and_print_system_info(args):
     Collect and print system environment info for benchmark analysis.
     Includes client-side info and server-side info (queried via API).
     """
+    _emit_progress_event(
+        args, "stage_started", "采集服务信息", getattr(args, "api_base", None) or ""
+    )
     print("=" * 70)
     print("  系统环境信息")
     print("=" * 70)
@@ -460,6 +471,7 @@ def collect_and_print_system_info(args):
 
     if server_version:
         print(f"    版本            : {server_version}")
+    _emit_progress_event(args, "event", f"服务端类型: {server_type}")
 
     # ── Model info (shared endpoint: /v1/models) ──
     try:
@@ -494,6 +506,7 @@ def collect_and_print_system_info(args):
 
     print("=" * 70)
     print()
+    _emit_progress_event(args, "stage_finished", "采集服务信息")
 
 
 def _print_vllm_server_info(base_url, api_base):
@@ -772,18 +785,28 @@ def run_offline_benchmark(args):
         total_requests = args.concurrency
 
     tokenizer_path = args.tokenizer or args.model
+    _emit_progress_event(args, "stage_started", "加载 tokenizer", tokenizer_path)
     print(f"[1/4] 加载 tokenizer: {tokenizer_path}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    _emit_progress_event(args, "stage_finished", "加载 tokenizer")
 
     run_uuid = uuid.uuid4().hex[:8] if args.random_shared_prefix else ""
+    _emit_progress_event(args, "stage_started", "构造测试负载")
     print(f"[2/4] 构造测试 prompt (dataset={args.dataset}, 总请求数={total_requests}, 并发数={args.concurrency}) ...")
     batch = build_request_batch(args, tokenizer, total_requests, run_id=run_uuid)
     prompts = batch.prompts
     workload = summarize_dataset_batch(batch, args.dataset)
     shared_len = workload["shared_prefix_tokens"]
+    _emit_progress_event(
+        args,
+        "stage_finished",
+        "构造测试负载",
+        f"请求={total_requests}，共享前缀={shared_len} tokens",
+    )
 
     print_workload_summary(workload, indent="      ")
 
+    _emit_progress_event(args, "stage_started", "初始化 vLLM 引擎")
     print(f"[3/4] 初始化 vLLM 引擎 (tensor_parallel_size={args.tp_size}, dtype=bfloat16) ...")
     max_prompt_len = max(batch.prompt_lens)
     max_output_len = max(batch.output_lens)
@@ -795,6 +818,7 @@ def run_offline_benchmark(args):
         trust_remote_code=True,
         dtype="bfloat16",
     )
+    _emit_progress_event(args, "stage_finished", "初始化 vLLM 引擎")
 
     sampling_params = [
         SamplingParams(max_tokens=output_len, temperature=0.0)
@@ -802,19 +826,27 @@ def run_offline_benchmark(args):
     ]
 
     if not args.no_warmup:
+        _emit_progress_event(args, "stage_started", "基础服务预热")
         print("[4/4] 基础环境预热 (排除 CUDA Graph 捕获与编译/初始化开销) ...")
         _ = llm.generate(["hello"], SamplingParams(max_tokens=1))
         torch_sync()
+        _emit_progress_event(args, "stage_finished", "基础服务预热")
 
         if shared_len > 0:
+            _emit_progress_event(args, "stage_started", "共享前缀预热", "1 轮")
             print(f"      发送 1 轮共享前缀预热请求 (预热 {shared_len} tokens 共享前缀至 kv cache) ...")
             shared_prompt = tokenizer.decode(tokenizer.encode(prompts[0])[:shared_len])
             _ = llm.generate([shared_prompt], SamplingParams(max_tokens=1))
             torch_sync()
             print("      共享前缀预热完成 (Cache 已填满)。")
+            _emit_progress_event(args, "stage_finished", "共享前缀预热")
     else:
         print("[4/4] 跳过预热 (已传入 --no-warmup) ...")
+        _emit_progress_event(args, "event", "跳过预热请求")
 
+    _emit_progress_event(
+        args, "stage_started", "执行正式生成", f"请求={total_requests}，并发={args.concurrency}"
+    )
     t0 = time.perf_counter()
     outputs = llm.generate(prompts, sampling_params)
     torch_sync()
@@ -1889,15 +1921,24 @@ def run_api_benchmark(args):
         total_requests = args.concurrency
 
     tokenizer_path = args.tokenizer or args.model
+    _emit_progress_event(args, "stage_started", "加载 tokenizer", tokenizer_path)
     print(f"[1/4] 加载 tokenizer: {tokenizer_path}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    _emit_progress_event(args, "stage_finished", "加载 tokenizer")
 
     run_uuid = uuid.uuid4().hex[:8] if args.random_shared_prefix else ""
+    _emit_progress_event(args, "stage_started", "构造测试负载")
     print(f"[2/4] 构造测试 prompt (dataset={args.dataset}, 总请求数={total_requests}, 并发数={args.concurrency}) ...")
     batch = build_request_batch(args, tokenizer, total_requests, run_id=run_uuid)
     prompts = batch.prompts
     workload = summarize_dataset_batch(batch, args.dataset)
     shared_len = workload["shared_prefix_tokens"]
+    _emit_progress_event(
+        args,
+        "stage_finished",
+        "构造测试负载",
+        f"请求={total_requests}，共享前缀={shared_len} tokens",
+    )
 
     print_workload_summary(workload, indent="      ")
 
@@ -1907,6 +1948,7 @@ def run_api_benchmark(args):
         headers["Authorization"] = f"Bearer {args.api_key}"
 
     if not args.no_warmup:
+        _emit_progress_event(args, "stage_started", "基础服务预热")
         print("[3/4] 基础环境预热 (排除 CUDA Graph 捕获与编译/初始化开销) ...")
         warmup_payload = {
             "model": args.model,
@@ -1921,11 +1963,18 @@ def run_api_benchmark(args):
             w_resp.raise_for_status()
             w_elapsed = time.perf_counter() - w_t0
             print(f"      基础环境预热完成，耗时: {w_elapsed:.3f} 秒")
+            _emit_progress_event(
+                args, "stage_finished", "基础服务预热", f"耗时={w_elapsed:.3f}s"
+            )
         except Exception as e:
             print(f"      基础环境预热警告 (仍继续测试): {e}")
+            _emit_progress_event(args, "event", f"基础服务预热警告: {e}")
 
         if shared_len > 0:
             warmup_rounds = args.warmup_rounds
+            _emit_progress_event(
+                args, "stage_started", "共享前缀预热", f"{warmup_rounds} 轮"
+            )
             print(f"      发送 {warmup_rounds} 轮共享前缀预热请求 (预热 {shared_len} tokens 共享前缀至 Cache) ...")
             shared_prompt_text = tokenizer.decode(tokenizer.encode(prompts[0])[:shared_len])
             sp_payload = {
@@ -1942,12 +1991,23 @@ def run_api_benchmark(args):
                     sp_resp.raise_for_status()
                     sp_elapsed = time.perf_counter() - sp_t0
                     print(f"      第 {r+1}/{warmup_rounds} 轮共享前缀预热完成，耗时: {sp_elapsed:.3f} 秒")
+                    _emit_progress_event(
+                        args, "event", f"共享前缀预热 {r + 1}/{warmup_rounds} 完成"
+                    )
                 except Exception as e:
                     print(f"      第 {r+1}/{warmup_rounds} 轮共享前缀预热警告 (仍继续测试): {e}")
+                    _emit_progress_event(
+                        args, "event", f"共享前缀预热 {r + 1}/{warmup_rounds} 警告: {e}"
+                    )
             print(f"      Prefix KV Cache 预热完毕 ({warmup_rounds} 轮)")
+            _emit_progress_event(args, "stage_finished", "共享前缀预热")
     else:
         print("[3/4] 跳过预热请求 (已传入 --no-warmup) ...")
+        _emit_progress_event(args, "event", "跳过预热请求")
 
+    _emit_progress_event(
+        args, "stage_started", "发送正式流式请求", f"请求={total_requests}，并发={args.concurrency}"
+    )
     print(
         f"[4/4] 发送 {total_requests} 个长上下文流式请求 (并发度={args.concurrency}) "
         f"并测量 TTFT (请求输出上限={_format_token_stats(workload['requested_output_tokens'])}) ..."
@@ -2045,10 +2105,13 @@ def run_mixed_benchmark(args):
         total_requests = args.concurrency
 
     tokenizer_path = args.tokenizer or args.model
+    _emit_progress_event(args, "stage_started", "加载 tokenizer", tokenizer_path)
     print(f"[1/4] 加载 tokenizer: {tokenizer_path}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    _emit_progress_event(args, "stage_finished", "加载 tokenizer")
 
     # Print workload distribution
+    _emit_progress_event(args, "stage_started", "构造混合负载")
     print(f"[2/4] 构造混合负载 (总请求数={total_requests}, 并发数={args.concurrency})")
     print(f"      负载分布:")
     for i, e in enumerate(workload_entries):
@@ -2104,6 +2167,9 @@ def run_mixed_benchmark(args):
     ]
 
     print_workload_summary(workload, indent="      ")
+    _emit_progress_event(
+        args, "stage_finished", "构造混合负载", f"请求={total_requests}"
+    )
 
     url = f"{args.api_base}/chat/completions"
     headers = {"Content-Type": "application/json"}
@@ -2112,6 +2178,7 @@ def run_mixed_benchmark(args):
 
     # Warmup
     if not args.no_warmup:
+        _emit_progress_event(args, "stage_started", "基础服务预热")
         print("[3/4] 预热服务 ...")
         warmup_payload = {
             "model": args.model,
@@ -2121,11 +2188,17 @@ def run_mixed_benchmark(args):
         try:
             requests.post(url, json=warmup_payload, headers=headers, timeout=120).raise_for_status()
             print("      预热完成")
+            _emit_progress_event(args, "stage_finished", "基础服务预热")
         except Exception as e:
             print(f"      预热警告: {e}")
+            _emit_progress_event(args, "event", f"基础服务预热警告: {e}")
     else:
         print("[3/4] 跳过预热")
+        _emit_progress_event(args, "event", "跳过预热请求")
 
+    _emit_progress_event(
+        args, "stage_started", "发送正式混合负载请求", f"请求={total_requests}，并发={args.concurrency}"
+    )
     print(f"[4/4] 发送 {total_requests} 个混合负载请求 (并发度={args.concurrency}) ...")
     nsys_start()
     metrics = run_api_benchmark_round(
@@ -2273,8 +2346,10 @@ class ApiBenchmarkSession:
         from transformers import AutoTokenizer
 
         tokenizer_path = args.tokenizer or args.model
+        _emit_progress_event(args, "stage_started", "加载 tokenizer", tokenizer_path)
         print(f"[1/3] 加载 tokenizer: {tokenizer_path}")
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+        _emit_progress_event(args, "stage_finished", "加载 tokenizer")
         headers = {"Content-Type": "application/json"}
         if args.api_key:
             headers["Authorization"] = f"Bearer {args.api_key}"
@@ -2351,6 +2426,7 @@ class ApiConcurrencyProbeRunner:
         """Run configured, workload-matched warmup rounds outside reported results."""
         if self.args.no_warmup:
             print("[2/3] 跳过正式 workload 预热")
+            _emit_progress_event(self.args, "event", "跳过正式负载预热")
             return
 
         rounds = self.args.warmup_rounds
@@ -2365,6 +2441,12 @@ class ApiConcurrencyProbeRunner:
             if configured_request_count is not None else 1
         )
         concurrency = min(self.args.concurrency, request_count)
+        _emit_progress_event(
+            self.args,
+            "stage_started",
+            "正式负载预热",
+            f"{rounds} 轮，每轮请求={request_count}，并发={concurrency}",
+        )
         print(
             f"[2/3] 预热正式 workload ({rounds} 轮, 每轮请求={request_count}, "
             f"执行并发={concurrency}, 总请求={rounds * request_count}) ..."
@@ -2381,10 +2463,21 @@ class ApiConcurrencyProbeRunner:
                     f"      第 {round_index}/{rounds} 轮预热完成: "
                     f"成功 {successful}/{total_requests}"
                 )
+                _emit_progress_event(
+                    self.args,
+                    "event",
+                    f"正式负载预热 {round_index}/{rounds} 完成: 成功 {successful}/{total_requests}",
+                )
             except Exception as exc:
                 # Preserve the historical non-fatal warmup behavior. Formal
                 # rounds still expose the error through their normal metrics.
                 print(f"      第 {round_index}/{rounds} 轮预热警告: {exc}")
+                _emit_progress_event(
+                    self.args,
+                    "event",
+                    f"正式负载预热 {round_index}/{rounds} 警告: {exc}",
+                )
+        _emit_progress_event(self.args, "stage_finished", "正式负载预热")
 
 
 class SloCapacityProbeBook:
@@ -2401,6 +2494,11 @@ class SloCapacityProbeBook:
             return self.initial_probes[concurrency]
 
         request_count = self.runner.request_count(concurrency)
+        _emit_progress_event(
+            self.args,
+            "event",
+            f"SLO {phase} 探测: 并发={concurrency}，请求={request_count}",
+        )
         print(
             f"  ▶ {phase:<14s} concurrency={concurrency:>3d}  requests={request_count:>4d} ... ",
             end="", flush=True,
@@ -2687,6 +2785,9 @@ def run_sweep_benchmark(args):
     probe_runner.warmup()
 
     print("[3/3] 开始扫描（首轮将根据实际输出上限选择 Prefill 或 Decode 指标）")
+    _emit_progress_event(
+        args, "stage_started", "吞吐扫描", f"并发=1..{max_concurrency}"
+    )
     print()
 
     sweep_history = []
@@ -2728,6 +2829,9 @@ def run_sweep_benchmark(args):
             )
 
         print(f"  ▶ concurrency={concurrency:>3d}  requests={n_requests:>4d} ... ", end="", flush=True)
+        _emit_progress_event(
+            args, "event", f"吞吐扫描档位: 并发={concurrency}，请求={n_requests}"
+        )
         metrics = probe_runner.execute(probe_execution)["metrics"]
         throughput = metrics.get(metric_key)
         failure_rate = metrics["failure_rate"]
@@ -2792,6 +2896,7 @@ def run_sweep_benchmark(args):
             break
         concurrency *= 2
 
+    _emit_progress_event(args, "stage_finished", "吞吐扫描")
     print()
     print("=" * 96)
     print(
@@ -2912,6 +3017,9 @@ def run_slo_capacity_benchmark(args):
     probes = SloCapacityProbeBook(probe_runner, args)
 
     print("[3/3] 开始 SLO 容量搜索 ...")
+    _emit_progress_event(
+        args, "stage_started", "SLO 容量搜索", f"并发=1..{max_concurrency}"
+    )
     last_passing = None
     failure_boundary = None
     concurrency = 1
@@ -2940,6 +3048,7 @@ def run_slo_capacity_benchmark(args):
         )
 
     last_passing, confirmed_concurrency = refinement_strategy.confirm(probes, last_passing)
+    _emit_progress_event(args, "stage_finished", "SLO 容量搜索")
 
     print("\n" + "=" * 84)
     print(f"{'Phase':>14s}  {'Concurrency':>12s}  {'SLO Pass':>10s}  {'Failed':>8s}  {'Status'}")
@@ -3031,7 +3140,9 @@ def run_pd_ratio_benchmark(args):
         print(f"  总 GPU 数: {total_gpus}")
     print()
 
+    _emit_progress_event(args, "stage_started", "加载 tokenizer", tokenizer_path)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    _emit_progress_event(args, "stage_finished", "加载 tokenizer")
 
     url = f"{args.api_base}/chat/completions"
     headers = {"Content-Type": "application/json"}
@@ -3040,6 +3151,7 @@ def run_pd_ratio_benchmark(args):
 
     # Warmup
     if not args.no_warmup:
+        _emit_progress_event(args, "stage_started", "基础服务预热")
         print("[1/4] 预热服务 ...")
         warmup_payload = {
             "model": args.model,
@@ -3049,18 +3161,25 @@ def run_pd_ratio_benchmark(args):
         try:
             requests.post(url, json=warmup_payload, headers=headers, timeout=120).raise_for_status()
             print("      预热完成")
+            _emit_progress_event(args, "stage_finished", "基础服务预热")
         except Exception as e:
             print(f"      预热警告: {e}")
+            _emit_progress_event(args, "event", f"基础服务预热警告: {e}")
+    else:
+        _emit_progress_event(args, "event", "跳过预热请求")
 
     # ── Phase 1: Measure Prefill throughput ──
     run_uuid = uuid.uuid4().hex[:8]
     n_prefill = 8
+    _emit_progress_event(args, "stage_started", "构造 Prefill 测量负载")
     prefill_batch = build_request_batch(
         args, tokenizer, n_prefill, input_len=avg_input, output_len=1,
         share_prefix=False, random_range_ratio=0.0, run_id=run_uuid,
     )
     prefill_prompts = prefill_batch.prompts
     prefill_workload = summarize_dataset_batch(prefill_batch, args.dataset)
+    _emit_progress_event(args, "stage_finished", "构造 Prefill 测量负载")
+    _emit_progress_event(args, "stage_started", "测量 Prefill 吞吐量")
     print(
         f"\n[2/4] 测量 Prefill 吞吐量 (实际 Prompt="
         f"{_format_token_stats(prefill_workload['prompt_tokens'])}, 请求输出上限="
@@ -3087,16 +3206,20 @@ def run_pd_ratio_benchmark(args):
     print(f"      Prefill 吞吐量: {prefill_throughput:.1f} tokens/s")
     print(f"      平均 TTFT     : {prefill_avg_ttft * 1000:.1f} ms")
     print(f"      P99  TTFT     : {prefill_p99_ttft * 1000:.1f} ms")
+    _emit_progress_event(args, "stage_finished", "测量 Prefill 吞吐量")
 
     # ── Phase 2: Measure Decode throughput ──
     run_uuid = uuid.uuid4().hex[:8]
     n_decode = 8
+    _emit_progress_event(args, "stage_started", "构造 Decode 测量负载")
     decode_batch = build_request_batch(
         args, tokenizer, n_decode, input_len=avg_input, output_len=avg_output,
         share_prefix=False, random_range_ratio=0.0, run_id=run_uuid,
     )
     decode_prompts = decode_batch.prompts
     decode_workload = summarize_dataset_batch(decode_batch, args.dataset)
+    _emit_progress_event(args, "stage_finished", "构造 Decode 测量负载")
+    _emit_progress_event(args, "stage_started", "测量 Decode 吞吐量")
     print(
         f"\n[3/4] 测量 Decode 吞吐量 (实际 Prompt="
         f"{_format_token_stats(decode_workload['prompt_tokens'])}, 请求输出上限="
@@ -3125,8 +3248,10 @@ def run_pd_ratio_benchmark(args):
         print(f"      平均 TPOT     : {decode_avg_tpot * 1000:.1f} ms")
     if decode_avg_estimated_itl:
         print(f"      预估 ITL      : {decode_avg_estimated_itl * 1000:.1f} ms")
+    _emit_progress_event(args, "stage_finished", "测量 Decode 吞吐量")
 
     # ── Phase 3: Calculate P:D sizing ratio ──
+    _emit_progress_event(args, "stage_started", "计算 P:D 容量比例")
     print(f"\n[4/4] 计算 P:D 初始容量比例 ...")
 
     prefill_input_tokens = prefill_workload["prompt_tokens"]["avg"]
@@ -3340,6 +3465,7 @@ def run_pd_ratio_benchmark(args):
             print(f"    TP_SIZE={tp_size} bash docker-start-deepseek.sh")
 
     print("=" * 70)
+    _emit_progress_event(args, "stage_finished", "计算 P:D 容量比例")
     return {
         "scenario": "pd-ratio",
         "prefill": prefill_metrics,
