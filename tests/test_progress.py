@@ -159,3 +159,143 @@ def test_configured_suite_reports_case_lifecycle_without_network(
     ]
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["cases"][0]["status"] == "passed"
+
+
+class _FakeConsole:
+    """Capture console configuration without importing Rich."""
+
+    def __init__(self, **kwargs: object) -> None:
+        from types import SimpleNamespace
+
+        self.kwargs = kwargs
+        self.size = SimpleNamespace(width=120)
+
+
+class _FakeLayout:
+    """Minimal Rich Layout replacement for dashboard unit tests."""
+
+    def __init__(self, name: str | None = None, **_kwargs: object) -> None:
+        self.name = name
+        self.children: list[_FakeLayout] = []
+        self.content: object | None = None
+
+    def split_column(self, *children: "_FakeLayout") -> None:
+        self.children = list(children)
+
+    def split_row(self, *children: "_FakeLayout") -> None:
+        self.children = list(children)
+
+    def __getitem__(self, name: str) -> "_FakeLayout":
+        if self.name == name:
+            return self
+        for child in self.children:
+            try:
+                return child[name]
+            except KeyError:
+                continue
+        raise KeyError(name)
+
+    def update(self, content: object) -> None:
+        self.content = content
+
+
+class _FakeTable:
+    """Record dashboard rows without Rich rendering behavior."""
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[object, ...]] = []
+
+    @classmethod
+    def grid(cls, **_kwargs: object) -> "_FakeTable":
+        return cls()
+
+    def add_column(self, **_kwargs: object) -> None:
+        pass
+
+    def add_row(self, *values: object) -> None:
+        self.rows.append(values)
+
+
+class _FakePanel:
+    """Store panel content and title for dashboard assertions."""
+
+    def __init__(self, content: object, **kwargs: object) -> None:
+        self.content = content
+        self.kwargs = kwargs
+
+
+class _FakeText(str):
+    """Accept Rich Text keyword arguments in dashboard tests."""
+
+    def __new__(cls, value: str, **_kwargs: object) -> "_FakeText":
+        return super().__new__(cls, value)
+
+
+class _FakeLive:
+    """Capture alternate-screen lifecycle configuration."""
+
+    instances: list["_FakeLive"] = []
+
+    def __init__(self, renderable: object, **kwargs: object) -> None:
+        self.renderable = renderable
+        self.kwargs = kwargs
+        self.started = False
+        self.stopped = False
+        self.updates: list[object] = []
+        self.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def update(self, renderable: object, **_kwargs: object) -> None:
+        self.updates.append(renderable)
+
+
+def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
+    """Use an alternate-screen dashboard with suite, round, and event panels."""
+    from benchmark import progress as progress_module
+
+    _FakeLive.instances.clear()
+    monkeypatch.setattr(
+        progress_module,
+        "_load_rich_dashboard_components",
+        lambda: {
+            "Console": _FakeConsole,
+            "Layout": _FakeLayout,
+            "Live": _FakeLive,
+            "Panel": _FakePanel,
+            "Table": _FakeTable,
+            "Text": _FakeText,
+        },
+    )
+    reporter = progress_module.RichProgressReporter(_TerminalStream(True))
+
+    reporter.case_started("smoke", "single", 1, 2)
+    reporter.round_started(4, 2)
+    reporter.request_finished({
+        "completed": 1,
+        "total": 4,
+        "succeeded": 0,
+        "failed": 1,
+        "elapsed_seconds": 0.2,
+        "last_ttft": None,
+        "request_id": 0,
+        "error": "timeout",
+    })
+
+    live = _FakeLive.instances[0]
+    assert live.started is True
+    assert live.kwargs["screen"] is True
+    assert live.kwargs["transient"] is True
+    dashboard = live.updates[-1]
+    assert isinstance(dashboard["suite"].content, _FakePanel)
+    assert isinstance(dashboard["round"].content, _FakePanel)
+    assert isinstance(dashboard["events"].content, _FakePanel)
+    assert isinstance(dashboard["footer"].content, _FakePanel)
+    assert any("请求失败" in row[0] for row in dashboard["events"].content.content.rows)
+
+    reporter.close()
+    assert live.stopped is True
