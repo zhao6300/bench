@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import pytest
 
+from benchmark import benchmark as benchmark_module
 from benchmark.benchmark import (
+    _add_vllm_prefix_cache_hit_rate,
     _interval_union_duration,
+    _peak_server_metrics,
     _request_meets_slo,
     _slo_capacity_round_passes,
+    _vllm_prefix_cache_counter_delta,
     parse_workload_mix,
+    query_gpu_metrics,
 )
 
 
@@ -66,3 +72,109 @@ def test_request_slo_evaluation(result: dict[str, float | None], expected: bool)
 )
 def test_slo_capacity_round_evaluation(metrics: dict[str, object], expected: bool) -> None:
     assert _slo_capacity_round_passes(metrics, max_failure_rate=0.2, min_goodput_pct=90.0) is expected
+
+
+def test_vllm_prefix_cache_counter_delta_aggregates_matched_label_series(
+    monkeypatch,
+) -> None:
+    snapshots = iter([
+        "\n".join([
+            'vllm:prefix_cache_hits{model_name="model-a"} 10',
+            'vllm:prefix_cache_queries{model_name="model-a"} 20',
+            'vllm:prefix_cache_hits{model_name="model-b"} 5',
+            'vllm:prefix_cache_queries{model_name="model-b"} 10',
+        ]),
+        "\n".join([
+            'vllm:prefix_cache_hits{model_name="model-a"} 25',
+            'vllm:prefix_cache_queries{model_name="model-a"} 40',
+            'vllm:prefix_cache_hits{model_name="model-b"} 8',
+            'vllm:prefix_cache_queries{model_name="model-b"} 14',
+        ]),
+    ])
+
+    def get(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(status_code=200, text=next(snapshots))
+
+    monkeypatch.setattr(benchmark_module, "requests", SimpleNamespace(get=get))
+    start = query_gpu_metrics("http://localhost:8000/v1")
+    end = query_gpu_metrics("http://localhost:8000/v1")
+    delta = _vllm_prefix_cache_counter_delta(start, end)
+    summary = _peak_server_metrics([])
+    _add_vllm_prefix_cache_hit_rate(summary, start, end)
+
+    assert delta == {
+        "hit_rate": 75.0,
+        "hit_delta": 18.0,
+        "query_delta": 24.0,
+        "paired_series_count": 2,
+        "reset_series_count": 0,
+        "zero_query_series_count": 0,
+        "source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter delta",
+    }
+    assert summary["metrics"]["cache_hit_rate"] == {
+        "sample_count": 1,
+        "min": 75.0,
+        "avg": 75.0,
+        "max": 75.0,
+        "p50": 75.0,
+        "p90": 75.0,
+        "p95": 75.0,
+        "p99": 75.0,
+        "aggregation": "round_counter_delta",
+        "hit_delta": 18.0,
+        "query_delta": 24.0,
+        "paired_series_count": 2,
+        "reset_series_count": 0,
+        "zero_query_series_count": 0,
+        "max_source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter delta",
+    }
+
+
+def test_vllm_prefix_cache_counter_delta_excludes_resets_and_zero_queries() -> None:
+    start = {
+        "_vllm_prefix_cache_counters": {
+            "hits": {"{model_name=\"reset\"}": 10, "{model_name=\"idle\"}": 3},
+            "queries": {"{model_name=\"reset\"}": 20, "{model_name=\"idle\"}": 5},
+            "sources": {"hits": ["vllm:prefix_cache_hits"], "queries": ["vllm:prefix_cache_queries"]},
+        }
+    }
+    end = {
+        "_vllm_prefix_cache_counters": {
+            "hits": {"{model_name=\"reset\"}": 2, "{model_name=\"idle\"}": 3},
+            "queries": {"{model_name=\"reset\"}": 4, "{model_name=\"idle\"}": 5},
+            "sources": {"hits": ["vllm:prefix_cache_hits"], "queries": ["vllm:prefix_cache_queries"]},
+        }
+    }
+
+    assert _vllm_prefix_cache_counter_delta(start, end) == {
+        "hit_rate": None,
+        "hit_delta": 0.0,
+        "query_delta": 0.0,
+        "paired_series_count": 2,
+        "reset_series_count": 1,
+        "zero_query_series_count": 1,
+        "source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter delta",
+    }
+
+
+def test_sglang_cache_hit_rate_gauge_remains_a_periodic_metric(monkeypatch) -> None:
+    response = SimpleNamespace(
+        status_code=200,
+        text="\n".join([
+            'sglang:cache_hit_rate{engine=\"0\"} 0.4',
+            'sglang:cache_hit_rate{engine=\"1\"} 0.7',
+        ]),
+    )
+    monkeypatch.setattr(
+        benchmark_module,
+        "requests",
+        SimpleNamespace(get=lambda *_args, **_kwargs: response),
+    )
+
+    snapshot = query_gpu_metrics("http://localhost:8000/v1")
+    summary = _peak_server_metrics([snapshot])
+
+    assert snapshot["cache_hit_rate"] == 70.0
+    assert snapshot["cache_hit_rate_source"] == "sglang:cache_hit_rate"
+    assert summary["metrics"]["cache_hit_rate"]["max"] == 70.0
+    assert "vllm_prefix_cache_counter_delta" not in summary

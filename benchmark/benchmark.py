@@ -910,8 +910,31 @@ def _metrics_base_url(api_base):
     return api_base.rstrip("/")
 
 
-def _parse_prometheus_sample(line):
-    """Return a metric name and value from one Prometheus text-format sample."""
+VLLM_PREFIX_CACHE_HIT_COUNTER_METRICS = {
+    "vllm:prefix_cache_hits",
+    "vllm:prefix_cache_hits_total",
+    "vllm_prefix_cache_hits",
+    "vllm_prefix_cache_hits_total",
+}
+VLLM_PREFIX_CACHE_QUERY_COUNTER_METRICS = {
+    "vllm:prefix_cache_queries",
+    "vllm:prefix_cache_queries_total",
+    "vllm_prefix_cache_queries",
+    "vllm_prefix_cache_queries_total",
+}
+
+
+def _parse_prometheus_series_sample(line):
+    """Return a metric name, raw label series, and value from one sample.
+
+    Args:
+        line: One Prometheus text exposition line.
+
+    Returns:
+        A `(metric_name, label_series, value)` tuple, or None for comments,
+        malformed lines, and non-numeric values. `label_series` preserves the
+        raw `{...}` suffix so counter deltas can only pair identical series.
+    """
     line = line.strip()
     if not line or line.startswith("#"):
         return None
@@ -920,15 +943,25 @@ def _parse_prometheus_sample(line):
         return None
     name_and_labels, values = fields
     metric_name = name_and_labels.split("{", 1)[0]
+    label_series = name_and_labels[len(metric_name):]
     value_fields = values.split()
     if not value_fields:
         return None
     try:
         # The first field is always the sample value; a second field, when
         # present, is the optional Prometheus timestamp.
-        return metric_name, float(value_fields[0])
+        return metric_name, label_series, float(value_fields[0])
     except ValueError:
         return None
+
+
+def _parse_prometheus_sample(line):
+    """Return a metric name and value from one Prometheus text-format sample."""
+    sample = _parse_prometheus_series_sample(line)
+    if sample is None:
+        return None
+    metric_name, _, value = sample
+    return metric_name, value
 
 
 def _metric_as_percent(value):
@@ -942,6 +975,121 @@ def _set_max_metric(info, key, value, source=None):
         info[key] = value
         if source:
             info[f"{key}_source"] = source
+
+
+def _record_vllm_prefix_cache_counter(
+    info, kind, metric_name, label_series, value,
+):
+    """Store one label-preserving vLLM prefix-cache counter sample.
+
+    Args:
+        info: Mutable parsed Prometheus snapshot.
+        kind: Either `hits` or `queries`.
+        metric_name: The Prometheus metric family name.
+        label_series: Raw Prometheus label suffix identifying one series.
+        value: Counter value for the series.
+    """
+    counters = info.setdefault(
+        "_vllm_prefix_cache_counters",
+        {"hits": {}, "queries": {}, "sources": {"hits": [], "queries": []}},
+    )
+    counters[kind][label_series] = value
+    if metric_name not in counters["sources"][kind]:
+        counters["sources"][kind].append(metric_name)
+
+
+def _vllm_prefix_cache_counter_delta(start_snapshot, end_snapshot):
+    """Calculate one round's aggregate vLLM prefix-cache hit rate.
+
+    Args:
+        start_snapshot: Parsed `/metrics` snapshot before the request round.
+        end_snapshot: Parsed `/metrics` snapshot after the request round.
+
+    Returns:
+        Metadata and, when available, the percent hit rate computed as
+        `sum(delta_hits) / sum(delta_queries)`. Negative counter deltas are
+        treated as exporter resets and excluded.
+    """
+    start_snapshot = start_snapshot if isinstance(start_snapshot, dict) else {}
+    end_snapshot = end_snapshot if isinstance(end_snapshot, dict) else {}
+    start_counters = start_snapshot.get("_vllm_prefix_cache_counters", {})
+    end_counters = end_snapshot.get("_vllm_prefix_cache_counters", {})
+    start_hits = start_counters.get("hits", {})
+    start_queries = start_counters.get("queries", {})
+    end_hits = end_counters.get("hits", {})
+    end_queries = end_counters.get("queries", {})
+    paired_series = set(start_hits) & set(start_queries) & set(end_hits) & set(end_queries)
+
+    hit_delta = 0.0
+    query_delta = 0.0
+    reset_series_count = 0
+    zero_query_series_count = 0
+    for series in paired_series:
+        series_hit_delta = end_hits[series] - start_hits[series]
+        series_query_delta = end_queries[series] - start_queries[series]
+        if series_hit_delta < 0 or series_query_delta < 0:
+            reset_series_count += 1
+            continue
+        if series_query_delta == 0:
+            zero_query_series_count += 1
+            continue
+        hit_delta += series_hit_delta
+        query_delta += series_query_delta
+
+    sources = end_counters.get("sources", {})
+    hit_sources = sources.get("hits", [])
+    query_sources = sources.get("queries", [])
+    source = None
+    if hit_sources and query_sources:
+        source = f"{','.join(hit_sources)} / {','.join(query_sources)} counter delta"
+
+    return {
+        "hit_rate": hit_delta / query_delta * 100 if query_delta > 0 else None,
+        "hit_delta": hit_delta,
+        "query_delta": query_delta,
+        "paired_series_count": len(paired_series),
+        "reset_series_count": reset_series_count,
+        "zero_query_series_count": zero_query_series_count,
+        "source": source,
+    }
+
+
+def _add_vllm_prefix_cache_hit_rate(summary, start_snapshot, end_snapshot):
+    """Add a round-boundary vLLM counter rate to server metric summaries.
+
+    Args:
+        summary: Mutable summary built from periodic server resource snapshots.
+        start_snapshot: Parsed `/metrics` snapshot before the request round.
+        end_snapshot: Parsed `/metrics` snapshot after the request round.
+    """
+    counter_delta = _vllm_prefix_cache_counter_delta(start_snapshot, end_snapshot)
+    summary["vllm_prefix_cache_counter_delta"] = counter_delta
+    hit_rate = counter_delta["hit_rate"]
+    if hit_rate is None or "cache_hit_rate" in summary["metrics"]:
+        return
+
+    stats = {
+        "sample_count": 1,
+        "min": hit_rate,
+        "avg": hit_rate,
+        "max": hit_rate,
+        "p50": hit_rate,
+        "p90": hit_rate,
+        "p95": hit_rate,
+        "p99": hit_rate,
+        "aggregation": "round_counter_delta",
+        "hit_delta": counter_delta["hit_delta"],
+        "query_delta": counter_delta["query_delta"],
+        "paired_series_count": counter_delta["paired_series_count"],
+        "reset_series_count": counter_delta["reset_series_count"],
+        "zero_query_series_count": counter_delta["zero_query_series_count"],
+    }
+    if counter_delta["source"]:
+        stats["max_source"] = counter_delta["source"]
+    summary["metrics"]["cache_hit_rate"] = stats
+    summary["peak_cache_hit_rate"] = hit_rate
+    if counter_delta["source"]:
+        summary["peak_cache_hit_rate_source"] = counter_delta["source"]
 
 
 def query_gpu_metrics(api_base, headers=None):
@@ -964,10 +1112,21 @@ def query_gpu_metrics(api_base, headers=None):
             return info
 
         for line in response.text.splitlines():
-            sample = _parse_prometheus_sample(line)
-            if sample is None:
+            series_sample = _parse_prometheus_series_sample(line)
+            if series_sample is None:
                 continue
-            metric_name, value = sample
+            metric_name, label_series, value = series_sample
+
+            if metric_name in VLLM_PREFIX_CACHE_HIT_COUNTER_METRICS:
+                _record_vllm_prefix_cache_counter(
+                    info, "hits", metric_name, label_series, value,
+                )
+                continue
+            if metric_name in VLLM_PREFIX_CACHE_QUERY_COUNTER_METRICS:
+                _record_vllm_prefix_cache_counter(
+                    info, "queries", metric_name, label_series, value,
+                )
+                continue
 
             # vLLM exposes KV cache usage directly. SGLang's documented
             # sglang:token_usage gauge is the equivalent KV token utilization;
@@ -1115,7 +1274,10 @@ def _format_server_metric_value(key, value):
 
 def _print_server_metrics(metrics):
     """Print active test-window resource statistics without idle snapshots."""
-    if not metrics or not metrics.get("raw_sample_count"):
+    if not metrics or (
+        not metrics.get("raw_sample_count")
+        and "cache_hit_rate" not in metrics.get("metrics", {})
+    ):
         return
 
     print("\n  ── 服务端资源 (仅测试过程采样) ──")
@@ -1136,6 +1298,18 @@ def _print_server_metrics(metrics):
     for key in SERVER_RESOURCE_METRIC_KEYS:
         stats = metrics.get("metrics", {}).get(key)
         if not stats:
+            continue
+        if stats.get("aggregation") == "round_counter_delta":
+            print(
+                f"    {labels[key]:<18s} round counter delta : "
+                f"{_format_server_metric_value(key, stats['avg'])}"
+            )
+            print(
+                f"    {'':<18s} Δhit / Δquery           : "
+                f"{stats['hit_delta']:.0f} / {stats['query_delta']:.0f}"
+            )
+            if stats.get("max_source"):
+                print(f"    {'':<18s} 来源                  : {stats['max_source']}")
             continue
         value_text = " / ".join(
             _format_server_metric_value(key, stats[name])
@@ -1431,6 +1605,12 @@ def run_api_benchmark_round(
     else:
         max_tokens_list = list(max_tokens)
 
+    metrics_api_base = (
+        url[:-len("/chat/completions")]
+        if url.endswith("/chat/completions")
+        else url
+    )
+    prefix_cache_counter_start = query_gpu_metrics(metrics_api_base, headers=headers)
     wall_t0 = time.perf_counter()
     results = []
     completed = [0]  # use list for mutability in closure
@@ -1439,11 +1619,6 @@ def run_api_benchmark_round(
     last_ttft = [None]
     progress_lock = threading.Lock()
 
-    metrics_api_base = (
-        url[:-len("/chat/completions")]
-        if url.endswith("/chat/completions")
-        else url
-    )
     server_metric_samples = []
     server_metrics_lock = threading.Lock()
     stop_metrics_sampling = threading.Event()
@@ -1549,6 +1724,7 @@ def run_api_benchmark_round(
     wall_t1 = time.perf_counter()
     stop_metrics_sampling.set()
     metrics_sampler.join(timeout=6)
+    prefix_cache_counter_end = query_gpu_metrics(metrics_api_base, headers=headers)
     finalize_stream_results(results, tokenizer)
     with server_metrics_lock:
         runtime_metric_samples = [
@@ -1557,6 +1733,11 @@ def run_api_benchmark_round(
             if sample.get("elapsed_seconds", float("inf")) <= wall_t1 - wall_t0
         ]
     server_metrics = _peak_server_metrics(runtime_metric_samples)
+    _add_vllm_prefix_cache_hit_rate(
+        server_metrics,
+        prefix_cache_counter_start,
+        prefix_cache_counter_end,
+    )
 
     wall_time = wall_t1 - wall_t0
     print(f"\r  进度: [{total_requests}/{total_requests}]  完成!  总耗时: {wall_time:.3f}s"

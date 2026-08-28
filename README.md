@@ -112,7 +112,47 @@ llm-benchmark \
 
 配置模式支持 `--tag`、`--case 'pattern-*'`、`--report PATH_OR_S3_URI`、`--no-resume` 和 `--fail-fast`。相对本地报告路径以配置文件所在目录为基准；固定本地路径默认会恢复此前成功且无请求级失败的用例。
 
-### 3. P/D 分离评估
+### 3. 吞吐与 SLO 容量扫描策略
+
+扫描会在多个并发档位执行真实请求。长上下文场景的单次请求成本很高，应先复制示例为 `*.local.json`，以 `--validate-config` 和 `--list-cases` 确认配置，再按小并发和较小 `sweep.max_concurrency` 试运行。
+
+| 场景 / preset | 作用 | 并发与停止方式 | 关键结果 |
+| --- | --- | --- | --- |
+| `prefill-sweep` | 查找长输入、单输出 token 负载的峰值 Prefill 吞吐。 | 从 `1, 2, 4, ...` 扫到 `sweep.max_concurrency`；在合格档位的吞吐相对当前最佳值提升不足 5% 时提前停止。 | `best_concurrency`、`best_throughput` 和 `history` 中每档的 Prefill 吞吐、TTFT、QPS、失败率。 |
+| `decode-sweep` | 查找多输出 token 负载的峰值 Decode 吞吐。 | 与 Prefill 相同；实际 batch 的所有输出上限必须都大于 1。 | `best_concurrency`、`best_throughput` 和每档 Decode 吞吐。 |
+| `slo-capacity-sweep` | 查找同时满足 TTFT、TPOT、Goodput 和失败率门槛的最大并发。 | 先按 `1, 2, 4, ...` 粗扫，首次失败后按所选精扫策略定位和复核候选。 | `max_passing_concurrency`、`confirmed_concurrency`、`selected_metrics` 和完整 `history`。 |
+
+`prefill-sweep` 与 `decode-sweep` 按**实际请求的输出上限**选择指标：全部为 1 token 时测 Prefill，全部大于 1 token 时测 Decode；同一轮混合两种输出长度会报错。因此 Prefill 配置应显式设置 `random_output_len: 1`，Decode 配置的 `random_output_len`（或实际生成的输出长度）必须始终大于 1。吞吐扫描的 5% 平台停止条件是快速定位峰值的启发式，而非逐并发穷举；当前实现不提供关闭该早停条件的选项，应结合 `history` 判断是否已充分覆盖目标并发范围。
+
+每个正式并发档位默认发送 `max(2 × concurrency, 4)` 个请求，可通过 `sweep.requests_per_round`（CLI：`--sweep-requests-per-round`）固定覆盖。`warmup.rounds` 和 `warmup.requests_per_round` 仅控制正式扫描前的预热，不计入报告结果；预热失败会输出警告，但正式扫描仍会继续。
+
+SLO 容量扫描的单轮只有同时满足以下条件才通过：请求总数有效、`goodput_pct` 不低于要求值，且 `failure_rate` 不高于 `max_failure_rate`。Goodput 以每个请求的 TTFT、对多 token 输出的 TPOT 和输出 token 可验证性判断。`min_goodput_pct: 0` 在普通场景表示不启用 suite Goodput 质量门禁；但在 `slo-capacity-sweep` 中表示严格要求 **100%** 请求达到 SLO，只有设置正数才会放宽容量边界。
+
+| `slo_capacity.strategy` | 适用场景与流程 | 取舍 |
+| --- | --- | --- |
+| `linear` | 从最后一个粗扫通过档到首个粗扫失败档按 `linear_step` 扫描；首次新失败后，额外逐并发探测最多 `confirm_window` 个后续档位。 | 默认 `linear_step: 1` 会逐并发检查，较适合噪声较大或需要细粒度边界的场景；步长大于 1 时会跳过部分并发值。 |
+| `binary-confirm`（默认） | 在粗扫边界内二分定位候选，再逐并发检查候选两侧 `confirm_window` 范围。 | 请求量更少，适合近似单调的容量曲线；存在明显非单调波动时，应增大确认窗口或使用逐并发的 `linear`。 |
+
+两种策略都会将候选按并发从高到低进行确认；`confirm_rounds` 是候选要求通过的总测量轮数，任一复测失败会回退到下一个已通过候选。`confirm_rounds: 1` 不发送额外复测。容量结果中的 `max_passing_concurrency` 是按所选探测路径验证的最大通过并发，不应将其视为未采样并发也必然通过的保证。
+
+配置中可使用以下嵌套字段；CLI 等价参数分别为 `--sweep-*` 和 `--slo-capacity-*`：
+
+```json
+{
+  "sweep": {
+    "max_concurrency": 128,
+    "requests_per_round": null
+  },
+  "slo_capacity": {
+    "strategy": "binary-confirm",
+    "linear_step": 1,
+    "confirm_window": 8,
+    "confirm_rounds": 3
+  }
+}
+```
+
+### 4. P/D 分离评估
 
 [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json) 以平均 128K 输入、2K 输出为例，先在**同一** OpenAI 兼容服务上测量 Prefill（128K 输入、1 输出）和 Decode（128 输入、最多 2K 输出）的单实例吞吐与延迟，再结合 `avg_input_tokens`、`avg_output_tokens`、`total_gpus` 和 `tp_size` 给出 P:D 实例比例、`max-num-seqs` 与 `max-num-batched-tokens` 建议。它不是实际的分离部署压测：不会启动 Prefill/Decode 实例，也不会计入 KV 传输或 router 开销。
 
@@ -133,7 +173,7 @@ cp examples/benchmark-config-pd-ratio-128k-2k.json \
   --config examples/benchmark-config-pd-ratio-128k-2k.local.json
 ```
 
-### 4. 混合负载评估
+### 5. 混合负载评估
 
 [`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json) 提供一个独立的混合负载 API 示例：默认使用随机 token 数据集，以 30% 短输入长输出、50% 中等请求和 20% 长输入短输出组成 32 个请求，并发度为 8。`workload_mix` 中的 `input_tokens`、`output_tokens` 和 `weight` 分别表示每类请求的输入长度、输出上限和分配权重；实际请求会按种子随机打散，报告同时记录配置形状与 tokenizer 重编码后的实际长度。
 
@@ -224,6 +264,12 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 - **Goodput**：全部请求中同时满足 TTFT 和（输出超过一个 token 时）TPOT SLO 的比例；没有首 token 的请求计入失败。
 
 阶段活动窗口包含客户端可观测的排队与网络延迟，不等同于服务端 scheduler 的纯 GPU 计算时间。若输出 token 数无法通过服务端 usage 或本地 tokenizer 可靠确定，依赖该计数的指标会被省略而非估算。
+
+### 服务端 KV Cache 命中率
+
+API round 会通过与 chat-completions 相同鉴权头访问服务端 `/metrics`；正式流式请求使用 `aiohttp` 时，该 Prometheus 采样仍使用 `requests`。对 SGLang 暴露的 `sglang:cache_hit_rate`，报告保留测试窗口内活跃快照的 min/avg/max 与分位数。对支持 `vllm:prefix_cache_hits` 和 `vllm:prefix_cache_queries` counter 的 vLLM，工具在 round 请求前后保留相同 Prometheus label series 的计数，并计算 `ΣΔhit / ΣΔquery`，结果写入 `result.server_metrics.metrics.cache_hit_rate`，其 `aggregation` 为 `round_counter_delta`。
+
+该 vLLM 比率以缓存 token 查询为单位，不是命中请求数。负向 counter delta 会被视为服务重启或 exporter reset 并排除；没有可配对 series 或 `Δquery=0` 时不记录命中率。若目标 vLLM 版本未导出上述 counters，报告只保留 KV Cache 使用率，无法推导实际命中率。示例配置中“70% 缓存命中”只描述共享前缀工作负载目标，实际服务端命中率仍取决于 prefix caching、逐出、调度与并发。
 
 ## 可选 Nsys Profiling
 
