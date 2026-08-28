@@ -17,6 +17,8 @@ class ProgressDependencyError(RuntimeError):
 class ProgressReporter:
     """Receive benchmark lifecycle events without affecting benchmark results."""
 
+    captures_runtime_output = False
+
     def case_started(
         self, case_name: str, scenario: str, position: int, total_cases: int
     ) -> None:
@@ -125,6 +127,8 @@ def _load_rich_dashboard_components() -> dict[str, Any]:
 
 class RichProgressReporter(ProgressReporter):
     """Render a full-screen Rich dashboard and interactive final result view."""
+
+    captures_runtime_output = True
 
     def __init__(self, stream: TextIO) -> None:
         components = _load_rich_dashboard_components()
@@ -525,11 +529,11 @@ class RichProgressReporter(ProgressReporter):
             if throughput != "-":
                 throughput_label = label
                 break
-        p99_ttft = self._format_milliseconds_value(metrics.get("p99_ttft"))
+        avg_ttft = self._format_milliseconds_value(metrics.get("avg_ttft"))
         goodput = self._format_percent_value(metrics.get("goodput_pct"))
         return self._final_join_lines(
             self._final_labeled_value(throughput_label, throughput),
-            self._final_labeled_value("首个内容 token 时间第 99 百分位", p99_ttft),
+            self._final_labeled_value("TTFT 平均", avg_ttft),
             self._final_labeled_value("达标率", goodput),
         )
 
@@ -651,7 +655,7 @@ class RichProgressReporter(ProgressReporter):
         )
 
     def _final_latency_summary(self, metrics: dict[str, Any]) -> str:
-        """Format primary latency aggregates with complete labels and units."""
+        """Format primary latency aggregates with standard labels and units."""
         return self._final_join_lines(
             self._final_latency_values(metrics, "ttft"),
             self._final_latency_values(metrics, "tpot"),
@@ -660,39 +664,21 @@ class RichProgressReporter(ProgressReporter):
                 "请求平均耗时", self._format_milliseconds_value(metrics.get("avg_request_time"))
             ),
             self._final_labeled_value(
-                "首个内容 token 时间目标不超过",
+                "TTFT 目标不超过",
                 self._format_milliseconds_value(metrics.get("slo_ttft")),
             ),
             self._final_labeled_value(
-                "每个输出 token 时间目标不超过",
+                "TPOT 目标不超过",
                 self._format_milliseconds_value(metrics.get("slo_tpot")),
             ),
         )
 
     def _final_latency_values(self, metrics: dict[str, Any], metric: str) -> str:
-        """Format latency percentiles in milliseconds with complete labels."""
+        """Format latency percentiles in milliseconds with standard labels."""
         metric_keys = {
-            "ttft": (
-                "首个内容 token 时间",
-                "avg_ttft",
-                "p50_ttft",
-                "p90_ttft",
-                "p99_ttft",
-            ),
-            "tpot": (
-                "每个输出 token 时间",
-                "avg_tpot",
-                "p50_tpot",
-                "p90_tpot",
-                "p99_tpot",
-            ),
-            "e2e": (
-                "端到端耗时",
-                "avg_total_time",
-                "p50_e2e",
-                "p90_e2e",
-                "p99_e2e",
-            ),
+            "ttft": ("TTFT", "avg_ttft", "p50_ttft", "p90_ttft", "p99_ttft"),
+            "tpot": ("TPOT", "avg_tpot", "p50_tpot", "p90_tpot", "p99_tpot"),
+            "e2e": ("E2E", "avg_total_time", "p50_e2e", "p90_e2e", "p99_e2e"),
         }
         label, average_key, p50_key, p90_key, p99_key = metric_keys[metric]
         values = (

@@ -399,7 +399,7 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
         for row in overview_table.rows
     )
     assert any(
-        row[0] == "延迟" and "首个内容 token 时间：平均 200.0 毫秒" in row[1]
+        row[0] == "延迟" and "TTFT：平均 200.0 毫秒" in row[1]
         for row in details_table.rows
     )
     assert "↑/↓ 或 j/k" in final_dashboard["footer"].content.content
@@ -578,7 +578,9 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
     )
     assert any(
         row[0] == "延迟"
-        and "首个内容 token 时间：平均 200.0 毫秒 / 第 50 百分位 150.0 毫秒" in row[1]
+        and "TTFT：平均 200.0 毫秒 / 第 50 百分位 150.0 毫秒" in row[1]
+        and "TPOT：平均 40.0 毫秒" in row[1]
+        and "E2E：平均 1200.0 毫秒" in row[1]
         for row in narrow_details.rows
     )
     assert any(
@@ -597,7 +599,8 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
     ]
     assert len(medium_table.rows) == 3
     assert "并发 4 个请求 · 总请求数 8 个请求" in medium_table.rows[0][2]
-    assert "首个内容 token 时间第 99 百分位 500.0 毫秒" in medium_table.rows[0][3]
+    assert "TTFT 平均 200.0 毫秒" in medium_table.rows[0][3]
+    assert "500.0 毫秒" not in medium_table.rows[0][3]
     assert "最佳并发 16 个请求" in medium_table.rows[2][4]
 
     reporter._console.size.width = 180

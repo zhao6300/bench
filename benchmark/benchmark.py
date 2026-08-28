@@ -211,6 +211,7 @@ LLM Prefill / Decode 性能基准测试工具 (benchmark.py)
 
 import argparse
 import concurrent.futures
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import hashlib
 import json
 import math
@@ -302,6 +303,56 @@ def _emit_progress_event(args, method: str, *event_args: str) -> None:
     callback = getattr(reporter, method, None)
     if callable(callback):
         callback(*event_args)
+
+
+class _DashboardEventStream:
+    """Route text written during Rich execution into dashboard events."""
+
+    def __init__(self, args) -> None:
+        self._args = args
+        self._pending = ""
+
+    def write(self, text: str) -> int:
+        """Buffer text until a complete line can be recorded as an event."""
+        self._pending += text
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            self._emit_line(line)
+        return len(text)
+
+    def flush(self) -> None:
+        """Record any unterminated final message."""
+        self._emit_line(self._pending)
+        self._pending = ""
+
+    def _emit_line(self, line: str) -> None:
+        message = line.strip()
+        if message:
+            _emit_progress_event(self._args, "event", message)
+
+
+@contextmanager
+def _redirect_runtime_output(args):
+    """Send execution output to Rich events without changing plain or off modes."""
+    reporter = getattr(args, "_progress_reporter", None)
+    if not getattr(reporter, "captures_runtime_output", False):
+        yield
+        return
+    stream = _DashboardEventStream(args)
+    with redirect_stdout(stream), redirect_stderr(stream):
+        try:
+            yield
+        finally:
+            stream.flush()
+
+
+def _print_runtime_message(args, message: str, *, file=None) -> None:
+    """Print normally or record a runtime message in the Rich event panel."""
+    reporter = getattr(args, "_progress_reporter", None)
+    if getattr(reporter, "captures_runtime_output", False):
+        _emit_progress_event(args, "event", message)
+    else:
+        print(message, file=file)
 
 
 def _show_final_progress_results(reporter, report, report_location: str | None) -> None:
@@ -4473,7 +4524,9 @@ def _update_report_summary(report, started_perf, *, terminal: bool = False):
         report["suite"]["duration_seconds"] = None
 
 
-def _print_failed_case_summary(report: Dict[str, Any]) -> None:
+def _print_failed_case_summary(
+    report: Dict[str, Any], args: Any | None = None
+) -> None:
     """Render a concise terminal summary for every failed suite case."""
     failed_cases = [
         case for case in report.get("cases", [])
@@ -4482,16 +4535,20 @@ def _print_failed_case_summary(report: Dict[str, Any]) -> None:
     if not failed_cases:
         return
 
-    print("\n失败用例详情:", file=sys.stderr)
+    messages = ["失败用例详情:"]
     for case in failed_cases:
         error = case.get("error") if isinstance(case.get("error"), dict) else {}
         error_type = error.get("type", "UnknownError")
         message = error.get("message") or "; ".join(case.get("quality_failures", [])) or "未提供失败原因"
-        print(
+        messages.append(
             f"  failed: {case.get('id', 'unknown')} {case.get('name', 'unknown')}\n"
-            f"    reason: [{error_type}] {message}",
-            file=sys.stderr,
+            f"    reason: [{error_type}] {message}"
         )
+    for message in messages:
+        if args is None:
+            print(message, file=sys.stderr)
+        else:
+            _print_runtime_message(args, message, file=sys.stderr)
 
 
 def _case_selected(case, case_filters, tag_filters):
@@ -4537,6 +4594,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         progress_reporter = create_progress_reporter(cli_args.progress)
     except ProgressDependencyError as exc:
         raise BenchmarkConfigError(str(exc)) from exc
+    cli_args._progress_reporter = progress_reporter
     for _, args, _, _ in prepared:
         args._progress_reporter = progress_reporter
 
@@ -4560,7 +4618,8 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     except ReportStorageError as exc:
         raise BenchmarkConfigError(f"cannot prepare report {report_target!r}: {exc}") from exc
     if not report_location.supports_checkpoint_lock:
-        print(
+        _print_runtime_message(
+            cli_args,
             "WARNING: S3 report checkpoints do not provide a distributed lock; "
             "use one writer per s3:// bucket/key.",
             file=sys.stderr,
@@ -4651,24 +4710,30 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             f"cannot write report to {report_location.display_name!r}: {exc}"
         ) from exc
 
-    print(f"Benchmark suite: {report['suite']['name']}")
-    print(f"Cases: {len(prepared)}")
-    print(f"Report: {report_location.display_name}")
+    _print_runtime_message(cli_args, f"Benchmark suite: {report['suite']['name']}")
+    _print_runtime_message(cli_args, f"Cases: {len(prepared)}")
+    _print_runtime_message(cli_args, f"Report: {report_location.display_name}")
     if resumed:
         skipped_passed = sum(record["status"] == "passed" for record in records)
-        print(f"Resume: skipping {skipped_passed} previously passed case(s)")
+        _print_runtime_message(
+            cli_args, f"Resume: skipping {skipped_passed} previously passed case(s)"
+        )
         if retry_request_failure_count:
-            print(
+            _print_runtime_message(
+                cli_args,
                 "Resume: retrying "
                 f"{retry_request_failure_count} previously passed case(s) "
-                "with request-level failures"
+                "with request-level failures",
             )
 
     abort_remaining = False
     interrupted = False
     for position, ((case, args, scenario, _), record) in enumerate(zip(prepared, records), start=1):
         if record["status"] == "passed":
-            print(f"[{position}/{len(prepared)}] {case['name']} (passed; resume skip)")
+            _print_runtime_message(
+                cli_args,
+                f"[{position}/{len(prepared)}] {case['name']} (passed; resume skip)",
+            )
             progress_reporter.case_finished("passed (resume skip)", position, len(prepared))
             continue
         if not case["enabled"]:
@@ -4677,10 +4742,10 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         if abort_remaining:
             continue
 
-        print()
-        print("=" * 80)
-        print(f"[{position}/{len(prepared)}] {case['name']} ({scenario})")
-        print("=" * 80)
+        _print_runtime_message(
+            cli_args,
+            f"[{position}/{len(prepared)}] {case['name']} ({scenario})",
+        )
         case_started = time.perf_counter()
         try:
             record.update({
@@ -4700,7 +4765,8 @@ def run_configured_suite(config_path: str, cli_args) -> int:
                 case["name"], scenario, position, len(prepared)
             )
 
-            result = execute_benchmark(args, scenario)
+            with _redirect_runtime_output(args):
+                result = execute_benchmark(args, scenario)
             if result is None:
                 raise RuntimeError("benchmark produced no successful result")
             record["result"] = result if include_details else _strip_request_details(result)
@@ -4711,7 +4777,8 @@ def run_configured_suite(config_path: str, cli_args) -> int:
                     "type": "QualityGateError",
                     "message": "; ".join(record["quality_failures"]),
                 }
-                print(
+                _print_runtime_message(
+                    args,
                     f"ERROR: case {case['name']} failed quality gates: "
                     f"{record['error']['message']}",
                     file=sys.stderr,
@@ -4732,7 +4799,9 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         except Exception as exc:
             record["status"] = "failed"
             record["error"] = {"type": type(exc).__name__, "message": str(exc)}
-            print(f"ERROR: case {case['name']} failed: {exc}", file=sys.stderr)
+            _print_runtime_message(
+                args, f"ERROR: case {case['name']} failed: {exc}", file=sys.stderr
+            )
             if not continue_on_error:
                 abort_remaining = True
         finally:
@@ -4761,22 +4830,25 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         raise
     exit_code = 1 if report["summary"]["failed"] else 0
     report_storage.release_checkpoint_lock(checkpoint_lock)
-    print()
-    print(
-        f"Suite complete: passed={report['summary']['passed']}, "
+    _print_runtime_message(
+        cli_args,
+        "Suite complete: "
+        f"passed={report['summary']['passed']}, "
         f"failed={report['summary']['failed']}, "
         f"interrupted={report['summary']['interrupted']}, "
         f"pending={report['summary']['pending']}, "
-        f"skipped={report['summary']['skipped']}"
+        f"skipped={report['summary']['skipped']}",
     )
-    _print_failed_case_summary(report)
-    print(f"JSON report: {report_location.display_name}")
+    _print_failed_case_summary(report, cli_args)
+    _print_runtime_message(cli_args, f"JSON report: {report_location.display_name}")
     try:
         _show_final_progress_results(
             progress_reporter, report, report_location.display_name
         )
     except Exception as exc:
-        print(f"WARNING: cannot show final dashboard results: {exc}", file=sys.stderr)
+        _print_runtime_message(
+            cli_args, f"WARNING: cannot show final dashboard results: {exc}", file=sys.stderr
+        )
     finally:
         progress_reporter.close()
     return exit_code
@@ -5113,22 +5185,25 @@ def main():
         return 2
     args._progress_reporter = progress_reporter
 
-    if NSYS_PROFILE:
-        print()
-        print("  ── Nsys Profiling ──")
-        print(f"    Container: {NSYS_CONTAINER}")
-        print(f"    Session:   {NSYS_SESSION}")
-        print("    nsys start/stop will be triggered automatically around the benchmark round")
-        print()
-
     exit_code = 1
     interrupted = False
     try:
         progress_reporter.case_started(record["name"], scenario, 1, 1)
-        if args.mode == "api":
-            require_requests()
-            collect_and_print_system_info(args)
-        result = execute_benchmark(args, scenario)
+        with _redirect_runtime_output(args):
+            if NSYS_PROFILE:
+                print()
+                print("  ── Nsys Profiling ──")
+                print(f"    Container: {NSYS_CONTAINER}")
+                print(f"    Session:   {NSYS_SESSION}")
+                print(
+                    "    nsys start/stop will be triggered automatically around "
+                    "the benchmark round"
+                )
+                print()
+            if args.mode == "api":
+                require_requests()
+                collect_and_print_system_info(args)
+            result = execute_benchmark(args, scenario)
         if result is None:
             raise RuntimeError("benchmark produced no successful result")
         record["result"] = _strip_request_details(result)
@@ -5138,7 +5213,11 @@ def main():
                 "type": "QualityGateError",
                 "message": "; ".join(record["quality_failures"]),
             }
-            print(f"ERROR: benchmark failed quality gates: {record['error']['message']}", file=sys.stderr)
+            _print_runtime_message(
+                args,
+                f"ERROR: benchmark failed quality gates: {record['error']['message']}",
+                file=sys.stderr,
+            )
         else:
             record["status"] = "passed"
             exit_code = 0
@@ -5148,7 +5227,7 @@ def main():
         raise
     except Exception as exc:
         record["error"] = {"type": type(exc).__name__, "message": str(exc)}
-        print(f"ERROR: benchmark failed: {exc}", file=sys.stderr)
+        _print_runtime_message(args, f"ERROR: benchmark failed: {exc}", file=sys.stderr)
     finally:
         record["finished_at"] = _now_iso()
         record["duration_seconds"] = time.perf_counter() - started_perf
@@ -5158,7 +5237,7 @@ def main():
             _update_report_summary(report, started_perf)
             _write_json_report(report_storage, report)
             display_report_location = report_storage.location.display_name
-            print(f"JSON report: {display_report_location}")
+            _print_runtime_message(args, f"JSON report: {display_report_location}")
         else:
             display_report = _new_report("single-benchmark")
             display_report["suite"]["started_at"] = started_at
@@ -5173,7 +5252,11 @@ def main():
                     progress_reporter, display_report, display_report_location
                 )
             except Exception as exc:
-                print(f"WARNING: cannot show final dashboard results: {exc}", file=sys.stderr)
+                _print_runtime_message(
+                    args,
+                    f"WARNING: cannot show final dashboard results: {exc}",
+                    file=sys.stderr,
+                )
             finally:
                 progress_reporter.close()
     return exit_code

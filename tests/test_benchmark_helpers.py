@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +19,34 @@ from benchmark.benchmark import (
 )
 
 
-def test_parse_workload_mix_normalizes_weights() -> None:
+def test_rich_runtime_output_is_recorded_as_dashboard_events(capsys) -> None:
+    """Keep execution-time stdout and stderr out of the Rich alternate screen."""
+    events: list[str] = []
+    reporter = SimpleNamespace(captures_runtime_output=True, event=events.append)
+    args = SimpleNamespace(_progress_reporter=reporter)
+
+    with benchmark_module._redirect_runtime_output(args):
+        print("加载 tokenizer: placeholder")
+        print("预热警告: timeout", file=sys.stderr)
+        print("扫描档位", end="")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert events == ["加载 tokenizer: placeholder", "预热警告: timeout", "扫描档位"]
+
+
+def test_runtime_output_keeps_plain_and_off_streams_unchanged(capsys) -> None:
+    """Do not intercept execution output for non-Rich progress reporters."""
+    args = SimpleNamespace(_progress_reporter=SimpleNamespace(captures_runtime_output=False))
+
+    with benchmark_module._redirect_runtime_output(args):
+        print("正常输出")
+        print("错误输出", file=sys.stderr)
+
+    captured = capsys.readouterr()
+    assert captured.out == "正常输出\n"
+    assert captured.err == "错误输出\n"
     workload = parse_workload_mix("128:1024:3,4096:32:1")
 
     assert workload == [
