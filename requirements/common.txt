@@ -1,6 +1,7 @@
 # Reproducible dependencies for API benchmarks, synthetic workloads, tests, and S3 reports.
 # Install with: uv pip install -r requirements/common.txt
 requests==2.34.2
+aiohttp==3.14.3
 transformers==5.16.1
 numpy==2.5.2
 pytest==9.1.1

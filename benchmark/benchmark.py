@@ -248,6 +248,11 @@ try:
         parse_report_location,
         serialize_json_report,
     )
+    from .api_transport import (
+        finalize_stream_results,
+        run_aiohttp_chat_requests,
+        send_requests_chat_request,
+    )
 except ImportError:
     # Direct execution: python benchmark/benchmark.py ...
     from benchmark_datasets import (
@@ -262,6 +267,11 @@ except ImportError:
         create_report_storage,
         parse_report_location,
         serialize_json_report,
+    )
+    from api_transport import (
+        finalize_stream_results,
+        run_aiohttp_chat_requests,
+        send_requests_chat_request,
     )
 
 
@@ -850,150 +860,18 @@ def run_offline_benchmark(args):
 
 
 def send_single_api_request(req_id, prompt, url, headers, model, max_tokens, tokenizer=None, ignore_eos=True):
-    """发送单个 API 请求并测量 TTFT 与生成耗时 (持续接收数据直到 max_tokens 结束)"""
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": 0,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-        "ignore_eos": ignore_eos,
-    }
-    t0 = time.perf_counter()
-    request_start_timestamp = t0
-    first_token_time = None
-    last_token_time = None
-    estimated_itl_samples = []
-    first_token_text = ""
-    full_text = ""
-    usage_completion_tokens = None
-    usage_prompt_tokens = None
-    output_token_source = "unavailable"
-
-    try:
-        with requests.post(url, json=payload, headers=headers, stream=True, timeout=600) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                decoded = line.decode("utf-8")
-                if not decoded.startswith("data: "):
-                    continue
-                data_str = decoded[len("data: "):]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-
-                # Prefer server-side usage because it includes chat-template/system tokens.
-                usage = chunk.get("usage")
-                if usage:
-                    if usage.get("completion_tokens") is not None:
-                        usage_completion_tokens = usage["completion_tokens"]
-                    if usage.get("prompt_tokens") is not None:
-                        usage_prompt_tokens = usage["prompt_tokens"]
-
-                choices = chunk.get("choices", [])
-                if choices:
-                    delta = choices[0].get("delta", {})
-                    first_text = delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning")
-                    if first_text:
-                        now = time.perf_counter()
-                        if first_token_time is None:
-                            first_token_time = now
-                            first_token_text = first_text
-                        else:
-                            # A streaming chunk may contain multiple model tokens.
-                            # Estimate token count locally, then spread this chunk's
-                            # arrival interval evenly across those tokens. Repeating
-                            # the value makes aggregate averages and percentiles
-                            # token-weighted rather than chunk-weighted.
-                            chunk_tokens = 1
-                            if tokenizer is not None:
-                                try:
-                                    chunk_tokens = max(
-                                        1,
-                                        len(tokenizer.encode(
-                                            first_text,
-                                            add_special_tokens=False,
-                                        )),
-                                    )
-                                except (TypeError, ValueError):
-                                    # Some tokenizer-compatible implementations do
-                                    # not accept add_special_tokens.
-                                    chunk_tokens = max(1, len(tokenizer.encode(first_text)))
-                            estimated_itl = (now - last_token_time) / chunk_tokens
-                            estimated_itl_samples.extend([estimated_itl] * chunk_tokens)
-                        last_token_time = now
-                        full_text += first_text
-    except Exception as e:
-        return {
-            "req_id": req_id, "error": str(e), "ttft": None, "tpot": None,
-            "request_start_timestamp": request_start_timestamp,
-            "first_token_timestamp": None, "last_token_timestamp": None,
-            "first_token_text": "", "prompt_tokens": None, "output_tokens": None,
-            "output_token_source": "unavailable", "total_time": time.perf_counter() - t0,
-            "estimated_itl_samples": [],
-        }
-
-    if first_token_time is None:
-        return {
-            "req_id": req_id, "error": "未收到首个 token", "ttft": None,
-            "tpot": None, "request_start_timestamp": request_start_timestamp,
-            "first_token_timestamp": None, "last_token_timestamp": None,
-            "first_token_text": "", "prompt_tokens": usage_prompt_tokens,
-            "output_tokens": None, "output_token_source": "unavailable",
-            "total_time": time.perf_counter() - t0, "estimated_itl_samples": [],
-        }
-
-    total_time = time.perf_counter() - t0
-    ttft = first_token_time - t0
-
-    # Prefer server usage. The local fallback intentionally excludes tokenizer
-    # special tokens, matching the chunk-level ITL approximation. Without either
-    # source, an SSE chunk count is not a token count and remains unavailable.
-    if isinstance(usage_completion_tokens, int) and usage_completion_tokens >= 0:
-        actual_output_tokens = usage_completion_tokens
-        output_token_source = "server_usage"
-    elif tokenizer is not None and full_text:
-        try:
-            actual_output_tokens = len(tokenizer.encode(full_text, add_special_tokens=False))
-        except (TypeError, ValueError):
-            actual_output_tokens = len(tokenizer.encode(full_text))
-        output_token_source = "local_tokenizer"
-    else:
-        actual_output_tokens = None
-
-    # TPOT measures token-arrival intervals, not the later [DONE]/HTTP-close
-    # delay. A one-token response has no inter-token interval and is therefore
-    # explicitly not applicable rather than treated as a zero-latency sample.
-    tpot = None
-    if (
-        actual_output_tokens is not None
-        and actual_output_tokens > 1
-        and last_token_time is not None
-        and last_token_time > first_token_time
-    ):
-        tpot = (last_token_time - first_token_time) / (actual_output_tokens - 1)
-
-    return {
-        "req_id": req_id,
-        "error": None,
-        "ttft": ttft,
-        "tpot": tpot,
-        "request_start_timestamp": request_start_timestamp,
-        "first_token_timestamp": first_token_time,
-        "last_token_timestamp": last_token_time,
-        "first_token_text": first_token_text,
-        "prompt_tokens": usage_prompt_tokens,
-        "output_tokens": actual_output_tokens,
-        "output_token_source": output_token_source,
-        "total_time": total_time,
-        "estimated_itl_samples": estimated_itl_samples,
-    }
+    """Send one chat request through the default requests transport."""
+    return send_requests_chat_request(
+        req_id,
+        prompt,
+        url,
+        headers,
+        model,
+        max_tokens,
+        requests,
+        tokenizer,
+        ignore_eos,
+    )
 
 
 def _percentiles(values, pcts=(0.5, 0.9, 0.95, 0.99)):
@@ -1518,7 +1396,20 @@ def _aggregate_api_round_metrics(
     }
 
 
-def run_api_benchmark_round(prompts, prompt_lens, url, headers, model, max_tokens, concurrency, tokenizer=None, ignore_eos=True, slo_ttft=5.0, slo_tpot=0.1):
+def run_api_benchmark_round(
+    prompts,
+    prompt_lens,
+    url,
+    headers,
+    model,
+    max_tokens,
+    concurrency,
+    tokenizer=None,
+    ignore_eos=True,
+    slo_ttft=5.0,
+    slo_tpot=0.1,
+    api_transport="requests",
+):
     """
     Execute a single benchmark round: send concurrent requests, collect results, compute metrics.
 
@@ -1579,27 +1470,7 @@ def run_api_benchmark_round(prompts, prompt_lens, url, headers, model, max_token
     )
     metrics_sampler.start()
 
-    def _on_complete(future):
-        try:
-            r = future.result()
-        except BaseException as exc:
-            # A worker normally converts request errors into result records, but
-            # keep unexpected executor failures from silently dropping requests.
-            r = {
-                "req_id": getattr(future, "benchmark_req_id", None),
-                "error": f"{type(exc).__name__}: {exc}",
-                "ttft": None,
-                "tpot": None,
-                "request_start_timestamp": None,
-                "first_token_timestamp": None,
-                "last_token_timestamp": None,
-                "first_token_text": "",
-                "prompt_tokens": None,
-                "output_tokens": None,
-                "output_token_source": "unavailable",
-                "total_time": None,
-                "estimated_itl_samples": [],
-            }
+    def _record_result(r):
         with progress_lock:
             results.append(r)
             completed[0] += 1
@@ -1620,18 +1491,65 @@ def run_api_benchmark_round(prompts, prompt_lens, url, headers, model, max_token
             print(f"\r  进度: [{completed[0]:>{len(str(total_requests))}d}/{total_requests}]"
                   f"  耗时: {elapsed:.1f}s{ttft_str}{fail_str}    ", end="", flush=True)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = []
-        for i in range(total_requests):
-            f = executor.submit(send_single_api_request, i, prompts[i], url, headers, model, max_tokens_list[i], tokenizer, ignore_eos)
-            f.benchmark_req_id = i
-            f.add_done_callback(_on_complete)
-            futures.append(f)
-        concurrent.futures.wait(futures)
+    def _on_complete(future):
+        try:
+            result = future.result()
+        except BaseException as exc:
+            result = {
+                "req_id": getattr(future, "benchmark_req_id", None),
+                "error": f"{type(exc).__name__}: {exc}",
+                "ttft": None,
+                "tpot": None,
+                "request_start_timestamp": None,
+                "first_token_timestamp": None,
+                "last_token_timestamp": None,
+                "first_token_text": "",
+                "prompt_tokens": None,
+                "output_tokens": None,
+                "output_token_source": "unavailable",
+                "total_time": None,
+                "estimated_itl_samples": [],
+            }
+        _record_result(result)
+
+    if api_transport == "aiohttp":
+        run_aiohttp_chat_requests(
+            prompts,
+            url,
+            headers,
+            model,
+            max_tokens_list,
+            concurrency,
+            tokenizer,
+            ignore_eos,
+            _record_result,
+        )
+    elif api_transport == "requests":
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = []
+            for i in range(total_requests):
+                future = executor.submit(
+                    send_single_api_request,
+                    i,
+                    prompts[i],
+                    url,
+                    headers,
+                    model,
+                    max_tokens_list[i],
+                    tokenizer,
+                    ignore_eos,
+                )
+                future.benchmark_req_id = i
+                future.add_done_callback(_on_complete)
+                futures.append(future)
+            concurrent.futures.wait(futures)
+    else:
+        raise ValueError(f"unsupported api_transport: {api_transport!r}")
 
     wall_t1 = time.perf_counter()
     stop_metrics_sampling.set()
     metrics_sampler.join(timeout=6)
+    finalize_stream_results(results, tokenizer)
     with server_metrics_lock:
         runtime_metric_samples = [
             sample
@@ -1706,7 +1624,7 @@ def print_benchmark_metrics(metrics, workload):
 
     # ── Estimated ITL ──
     if m['avg_estimated_itl'] is not None:
-        print(f"\n  ── 预估 ITL (基于流式 Chunk 本地分词) ──")
+        print(f"\n  ── 预估 ITL (基于流式 Chunk 延后分词) ──")
         print(f"    平均                    : {m['avg_estimated_itl']*1000:.1f} ms")
         if m.get('p50_estimated_itl') is not None:
             print(f"    P50 / P90 / P99         : {m['p50_estimated_itl']*1000:.1f} / {m['p90_estimated_itl']*1000:.1f} / {m['p99_estimated_itl']*1000:.1f} ms")
@@ -1828,7 +1746,9 @@ def run_api_benchmark(args):
     metrics = run_api_benchmark_round(
         prompts, batch.prompt_lens, url, headers, args.model, batch.output_lens,
         args.concurrency, tokenizer, args.ignore_eos,
-        slo_ttft=args.slo_ttft, slo_tpot=args.slo_tpot
+        slo_ttft=args.slo_ttft,
+        slo_tpot=args.slo_tpot,
+        api_transport=args.api_transport,
     )
     nsys_stop()
     if not metrics["successful"]:
@@ -2000,7 +1920,9 @@ def run_mixed_benchmark(args):
     metrics = run_api_benchmark_round(
         prompts, prompt_lens, url, headers, args.model, max_tokens_list,
         args.concurrency, tokenizer, args.ignore_eos,
-        slo_ttft=args.slo_ttft, slo_tpot=args.slo_tpot
+        slo_ttft=args.slo_ttft,
+        slo_tpot=args.slo_tpot,
+        api_transport=args.api_transport,
     )
     nsys_stop()
 
@@ -2071,7 +1993,7 @@ def run_mixed_benchmark(args):
 
     # ── Estimated ITL ──
     if m['avg_estimated_itl'] is not None:
-        print(f"\n  ── 预估 ITL (基于流式 Chunk 本地分词) ──")
+        print(f"\n  ── 预估 ITL (基于流式 Chunk 延后分词) ──")
         print(f"    平均                    : {m['avg_estimated_itl']*1000:.1f} ms")
         if m.get('p50_estimated_itl') is not None:
             print(f"    P50 / P90 / P99         : {m['p50_estimated_itl']*1000:.1f} / {m['p90_estimated_itl']*1000:.1f} / {m['p99_estimated_itl']*1000:.1f} ms")
@@ -2159,6 +2081,7 @@ class ApiBenchmarkSession:
             self.args.ignore_eos,
             slo_ttft=self.args.slo_ttft,
             slo_tpot=self.args.slo_tpot,
+            api_transport=self.args.api_transport,
         )
 
 
@@ -2931,7 +2854,9 @@ def run_pd_ratio_benchmark(args):
     prefill_metrics = run_api_benchmark_round(
         prefill_prompts, prefill_batch.prompt_lens, url, headers, args.model,
         prefill_batch.output_lens, 4, tokenizer, True,
-        slo_ttft=args.slo_ttft, slo_tpot=args.slo_tpot
+        slo_ttft=args.slo_ttft,
+        slo_tpot=args.slo_tpot,
+        api_transport=args.api_transport,
     )
     if not prefill_metrics["successful"]:
         print("ERROR: Prefill 测试失败")
@@ -2964,7 +2889,9 @@ def run_pd_ratio_benchmark(args):
     decode_metrics = run_api_benchmark_round(
         decode_prompts, decode_batch.prompt_lens, url, headers, args.model,
         decode_batch.output_lens, 4, tokenizer, True,
-        slo_ttft=args.slo_ttft, slo_tpot=args.slo_tpot
+        slo_ttft=args.slo_ttft,
+        slo_tpot=args.slo_tpot,
+        api_transport=args.api_transport,
     )
     if not decode_metrics["successful"]:
         print("ERROR: Decode 测试失败")
@@ -3780,6 +3707,10 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
             raise BenchmarkConfigError(f"{location}.{key} must be true or false")
     if args.mode not in {"api", "offline"}:
         raise BenchmarkConfigError(f"{location}.mode must be api or offline")
+    if args.api_transport not in {"requests", "aiohttp"}:
+        raise BenchmarkConfigError(
+            f"{location}.api_transport must be requests or aiohttp"
+        )
     if not isinstance(args.model, str) or not args.model:
         raise BenchmarkConfigError(f"{location}.model must be a non-empty string")
     if args.tokenizer is not None and (not isinstance(args.tokenizer, str) or not args.tokenizer):
@@ -4578,6 +4509,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-base", default="http://localhost:8000/v1",
         help="[api模式] API 服务地址，可以是自建 vllm serve 地址，"
              "也可以是云端服务地址(如 Alibaba Cloud Model Studio、OpenRouter 等)"
+    )
+    parser.add_argument(
+        "--api-transport", choices=["requests", "aiohttp"], default="requests",
+        help="[api模式] chat completions 流式 transport；requests 为默认线程实现，"
+             "aiohttp 使用异步连接池，适合高并发（默认：requests）"
     )
     parser.add_argument(
         "--api-key", default=None,

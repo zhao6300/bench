@@ -38,7 +38,7 @@ pre-commit install
 
 安装后可使用 `llm-benchmark` 命令；也可直接执行 `.venv/bin/python benchmark/benchmark.py`。离线 vLLM 依赖与 CUDA、PyTorch 的组合强相关，请按照目标环境安装兼容版本后再使用 `offline` 模式。
 
-通用依赖已默认包含 `boto3`，本地报告与 S3 报告均无需额外安装依赖；S3 凭据和 endpoint 在运行时通过环境变量配置。
+通用依赖已默认包含 `boto3` 和 `aiohttp`；本地报告与 S3 报告均无需额外安装依赖，`aiohttp` 可用于 API 正式流式轮次的异步连接池。S3 凭据和 endpoint 在运行时通过环境变量配置。
 
 验证本地安装和示例配置（不会发送模型或 API 请求）：
 
@@ -75,6 +75,8 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 
 不要将密钥写入 JSON 或提交 `*.local.json`。工具默认拒绝将 bearer key 发往非 loopback 的明文 HTTP 服务；仅在受信任内网且明确知悉风险时，才在本地配置启用 `allow_insecure_api_key`。
 
+默认 `api_transport` 为 `requests`，以保持既有行为。高并发 API 基准可在命令行使用 `--api-transport aiohttp`，或在本地 JSON 的 `defaults` / case 参数中设置 `"api_transport": "aiohttp"`。该选项仅切换正式 chat-completions 流式测量轮次；预热、服务诊断和 Prometheus 指标采集仍使用 `requests`。无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
+
 ### 2. 选择与目标匹配的现有配置
 
 | 目标 | 配置文件 | 内容 |
@@ -85,6 +87,7 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 | 128K 并发阶梯 | [`benchmark-config-concurrency-staircase-128k.json`](examples/benchmark-config-concurrency-staircase-128k.json) | 固定 128K 请求形状的多档并发测试。 |
 | 256K 并发阶梯 | [`benchmark-config-concurrency-staircase-256k.json`](examples/benchmark-config-concurrency-staircase-256k.json) | 固定 256K 请求形状的多档并发测试。 |
 | 64K / 128K / 240K 并发矩阵 | [`benchmark-config-concurrency-matrix-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-64k-128k-240k.json) | 多上下文长度和并发组合。 |
+| 128K / 2K P/D 分离评估 | [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json) | 分别测量单实例 Prefill/Decode 并给出 P:D 实例比例和调度参数建议；默认禁用。 |
 
 长上下文示例包含部署相关地址、模型名、tokenizer 路径或环境变量名。它们是参数参考，不应直接对陌生环境运行。以下流程以真实的 128K 吞吐配置为例：
 
@@ -107,6 +110,27 @@ llm-benchmark \
 ```
 
 配置模式支持 `--tag`、`--case 'pattern-*'`、`--report PATH_OR_S3_URI`、`--no-resume` 和 `--fail-fast`。相对本地报告路径以配置文件所在目录为基准；固定本地路径默认会恢复此前成功且无请求级失败的用例。
+
+### 3. P/D 分离评估
+
+[`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json) 以平均 128K 输入、2K 输出为例，先在**同一** OpenAI 兼容服务上测量 Prefill（128K 输入、1 输出）和 Decode（128 输入、最多 2K 输出）的单实例吞吐与延迟，再结合 `avg_input_tokens`、`avg_output_tokens`、`total_gpus` 和 `tp_size` 给出 P:D 实例比例、`max-num-seqs` 与 `max-num-batched-tokens` 建议。它不是实际的分离部署压测：不会启动 Prefill/Decode 实例，也不会计入 KV 传输或 router 开销。
+
+该用例默认 `enabled: false`，以防产生实际 API 流量。复制后，设置服务地址、模型、tokenizer、总 GPU 数和 TP 大小；完成无流量检查后再将本地副本中的 `enabled` 改为 `true`：
+
+```zsh
+cp examples/benchmark-config-pd-ratio-128k-2k.json \
+  examples/benchmark-config-pd-ratio-128k-2k.local.json
+# 编辑本地副本的 api_base、model、tokenizer、defaults.tp_size 和 params.pd.total_gpus
+
+.venv/bin/python benchmark/benchmark.py \
+  --config examples/benchmark-config-pd-ratio-128k-2k.local.json --validate-config
+.venv/bin/python benchmark/benchmark.py \
+  --config examples/benchmark-config-pd-ratio-128k-2k.local.json --list-cases
+
+# 确认负载与服务成本后，将本地副本中 cases[0].enabled 改为 true，再执行：
+.venv/bin/python benchmark/benchmark.py \
+  --config examples/benchmark-config-pd-ratio-128k-2k.local.json
+```
 
 ## 报告输出：本地文件或 S3
 
@@ -151,6 +175,7 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 - [`benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json`](examples/benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json)
 - [`benchmark-config-concurrency-staircase-128k.json`](examples/benchmark-config-concurrency-staircase-128k.json)
 - [`benchmark-config-concurrency-staircase-256k.json`](examples/benchmark-config-concurrency-staircase-256k.json)
+- [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json)
 
 对 `random` 数据集，`random_input_len`、`random_output_len` 和 `random_prefix_len` 是权威参数，分别表示独有输入、输出上限和共享前缀；它们优先于通用的 `context_len`/`max_tokens`。实际统计以发送前 tokenizer 重编码后的 `DatasetBatch` 为准，报告可能与目标长度有少量差异。`share_prefix` 与 `prefix_ratio` 仅对 `text` 生效。
 
@@ -170,6 +195,7 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 
 - **TTFT**：从请求发出到收到第一个内容 token 的时间。
 - **TPOT**：相邻内容 token 的平均耗时；少于两个输出 token 时不计算。
+- **估算 ITL**：按相邻内容 SSE Chunk 的到达间隔，并在该 round 的所有网络流结束后对每个后续 Chunk 本地分词加权得到；它是客户端观测的近似值。
 - **Prefill 吞吐**：成功请求从发出到首 token 的活动区间内处理的 prompt token 速率。
 - **Decode 吞吐**：成功请求从首 token 到最后一个内容 token 的活动区间内生成的 token 速率（不含首 token）。
 - **整体吞吐 / QPS**：整个测试窗口的 token 交付速率 / 完成请求速率。

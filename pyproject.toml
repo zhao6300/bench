@@ -24,6 +24,7 @@ dependencies = ["boto3==1.43.81"]
 [project.optional-dependencies]
 api = [
   "requests==2.34.2",
+  "aiohttp==3.14.3",
   "transformers==5.16.1",
 ]
 # Retained as a compatibility alias; boto3 is now installed by default.
