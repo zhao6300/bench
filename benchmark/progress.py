@@ -156,6 +156,7 @@ class RichProgressReporter(ProgressReporter):
         self._events: list[str] = []
         self._final_report: dict[str, Any] | None = None
         self._final_report_location: str | None = None
+        self._final_selected_case = 0
 
     def case_started(
         self, case_name: str, scenario: str, position: int, total_cases: int
@@ -243,6 +244,7 @@ class RichProgressReporter(ProgressReporter):
         with self._lock:
             self._final_report = report
             self._final_report_location = report_location
+            self._final_selected_case = 0
             self._ensure_live()
             self._refresh()
         self._wait_for_final_exit()
@@ -282,14 +284,29 @@ class RichProgressReporter(ProgressReporter):
         del self._events[:-8]
 
     def _wait_for_final_exit(self) -> None:
-        """Wait for Q or Ctrl-C when a terminal input stream is available."""
+        """Wait for navigation or exit keys when terminal input is available."""
         try:
             while True:
                 key = self._read_final_key()
                 if key is None or key.lower() == "q":
                     return
+                if key in ("j", "\x1b[B"):
+                    self._move_final_selection(1)
+                elif key in ("k", "\x1b[A"):
+                    self._move_final_selection(-1)
         except KeyboardInterrupt:
             return
+
+    def _move_final_selection(self, offset: int) -> None:
+        """Move the selected final-result case and refresh the details panel."""
+        with self._lock:
+            case_count = len(self._final_case_records())
+            if not case_count:
+                return
+            self._final_selected_case = min(
+                max(self._final_selected_case + offset, 0), case_count - 1
+            )
+            self._refresh()
 
     @staticmethod
     def _read_final_key() -> str | None:
@@ -309,7 +326,8 @@ class RichProgressReporter(ProgressReporter):
             return None
         try:
             tty.setcbreak(file_descriptor)
-            return stream.read(1)
+            key = stream.read(1)
+            return key + stream.read(2) if key == "\x1b" else key
         finally:
             termios.tcsetattr(file_descriptor, termios.TCSADRAIN, original_settings)
 
@@ -343,12 +361,13 @@ class RichProgressReporter(ProgressReporter):
         return layout
 
     def _render_final_results(self) -> Any:
-        """Build the completion view shown after benchmark results are persisted."""
+        """Build a master-detail completion view after results are persisted."""
         summary = self._final_report.get("summary", {}) if self._final_report else {}
         layout = self._Layout(name="root")
         layout.split_column(
             self._Layout(name="header", size=3),
-            self._Layout(name="results", ratio=1),
+            self._Layout(name="overview", ratio=1),
+            self._Layout(name="details", ratio=2),
             self._Layout(name="footer", size=3),
         )
         header = self._Text(
@@ -357,35 +376,174 @@ class RichProgressReporter(ProgressReporter):
             style="bold white",
         )
         layout["header"].update(self._Panel(header, style="green", padding=(0, 1)))
-        layout["results"].update(self._final_results_panel(summary))
+        layout["overview"].update(self._final_overview_panel(summary))
+        layout["details"].update(self._final_details_panel())
         report_text = (
             f"JSON report: {self._final_report_location}"
             if self._final_report_location
             else "JSON report: 未输出"
         )
-        footer = f"{report_text}  ·  按 Q 退出  ·  Ctrl-C 退出"
+        footer = f"{report_text}  ·  ↑/↓ 或 j/k 选择用例  ·  Q 退出  ·  Ctrl-C 退出"
         layout["footer"].update(
             self._Panel(footer, title="结果已完成", border_style="magenta", padding=(0, 1))
         )
         return layout
 
-    def _final_results_panel(self, summary: dict[str, Any]) -> Any:
-        """Return a width-adaptive table for all completed benchmark cases."""
+    def _final_case_records(self) -> list[dict[str, Any]]:
+        """Return finalized case records that can be rendered in the result view."""
+        return [
+            record for record in (self._final_report or {}).get("cases", [])
+            if isinstance(record, dict)
+        ]
+
+    def _final_overview_panel(self, summary: dict[str, Any]) -> Any:
+        """Render the compact, paginated case comparison table."""
+        records = self._final_case_records()
         profile = self._final_table_profile()
-        table = self._Table(expand=True, show_lines=True, padding=(0, 1))
-        for name, options in self._final_table_columns(profile):
+        table = self._Table(expand=True, show_lines=False, padding=(0, 1))
+        for name, options in self._final_overview_columns(profile):
             table.add_column(name, **options)
-        for record in (self._final_report or {}).get("cases", []):
-            if isinstance(record, dict):
-                table.add_row(*self._final_result_row(record, profile))
+        page_size = self._final_overview_page_size(profile)
+        selected = min(self._final_selected_case, max(len(records) - 1, 0))
+        page_start = selected // page_size * page_size if records else 0
+        page_records = records[page_start:page_start + page_size]
+        for index, record in enumerate(page_records, start=page_start):
+            table.add_row(*self._final_overview_row(record, index, profile))
         if not table.rows:
-            table.add_row(*(["-"] * (len(self._final_table_columns(profile)) - 1)), "无可显示的用例")
+            table.add_row(*(["-"] * (len(self._final_overview_columns(profile)) - 1)), "无可显示的用例")
         title = (
-            "最终结果 · "
-            f"通过 {summary.get('passed', 0)}  失败 {summary.get('failed', 0)}  "
-            f"中断 {summary.get('interrupted', 0)}  跳过 {summary.get('skipped', 0)}"
+            f"结果总览 · 选择 {selected + 1 if records else 0}/{len(records)} · "
+            f"通过 {summary.get('passed', 0)}  失败 {summary.get('failed', 0)}"
         )
         return self._Panel(table, title=title, border_style="green")
+
+    @staticmethod
+    def _final_overview_columns(profile: str) -> list[tuple[str, dict[str, Any]]]:
+        """Return concise case-comparison columns for one terminal width."""
+        if profile == "narrow":
+            return [
+                ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
+                ("核心指标", {"overflow": "fold"}),
+                ("结论", {"overflow": "fold"}),
+            ]
+        if profile == "medium":
+            return [
+                ("用例 / 场景", {"style": "cyan", "overflow": "fold"}),
+                ("状态", {"overflow": "fold"}),
+                ("负载（个 · tok）", {"overflow": "fold"}),
+                ("核心指标（ms · tok/s · %）", {"overflow": "fold"}),
+                ("结论", {"overflow": "fold"}),
+            ]
+        return [
+            ("用例 / 场景", {"style": "cyan", "overflow": "fold"}),
+            ("状态", {"overflow": "fold"}),
+            ("负载（个 · tok）", {"overflow": "fold"}),
+            ("核心指标（ms · tok/s · %）", {"overflow": "fold"}),
+            ("场景结果", {"overflow": "fold"}),
+            ("说明", {"overflow": "fold"}),
+        ]
+
+    @staticmethod
+    def _final_overview_page_size(profile: str) -> int:
+        """Limit overview rows so the selected-case details remain visible."""
+        return {"narrow": 2, "medium": 3, "wide": 4}[profile]
+
+    def _final_overview_row(
+        self, record: dict[str, Any], index: int, profile: str
+    ) -> tuple[str, ...]:
+        """Format one compact case row for the result overview."""
+        result = record.get("result")
+        result = result if isinstance(result, dict) else {}
+        metrics = result.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = result.get("selected_metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        scenario = str(record.get("scenario") or result.get("scenario") or "-")
+        marker = "▶ " if index == self._final_selected_case else "  "
+        case = f"{marker}{record.get('name', '-')}\n{self._final_scenario_label(scenario)}"
+        status = str(record.get("status", "-"))
+        load = self._final_overview_load(result, metrics)
+        core = self._final_overview_core(result, metrics)
+        conclusion = self._final_join_lines(
+            self._final_scenario_summary(result, scenario),
+            self._final_result_message(record),
+        )
+        if profile == "narrow":
+            return (f"{case}\n{status}", core, conclusion)
+        if profile == "medium":
+            return (case, status, load, core, conclusion)
+        return (
+            case,
+            status,
+            load,
+            core,
+            self._final_scenario_summary(result, scenario),
+            self._final_result_message(record),
+        )
+
+    def _final_overview_load(self, result: dict[str, Any], metrics: dict[str, Any]) -> str:
+        """Format only the request shape needed to compare cases."""
+        workload = result.get("selected_workload")
+        if not isinstance(workload, dict):
+            workload = result.get("workload")
+        if isinstance(workload, dict) and isinstance(workload.get("summary"), dict):
+            workload = workload["summary"]
+        workload = workload if isinstance(workload, dict) else {}
+        prompt = self._final_stat_value(workload.get("prompt_tokens"))
+        output = self._final_stat_value(workload.get("requested_output_tokens"))
+        concurrency = self._format_integer(metrics.get("concurrency"))
+        requests = self._format_integer(metrics.get("total_requests"))
+        request_line = " · ".join(
+            part for part in (f"C {concurrency}" if concurrency != "-" else "", f"N {requests}" if requests != "-" else "") if part
+        )
+        load_line = " / ".join(
+            part for part in (f"P {prompt}" if prompt != "-" else "", f"O {output}" if output != "-" else "") if part
+        )
+        return self._final_join_lines(request_line or "-", load_line or "-")
+
+    def _final_overview_core(self, result: dict[str, Any], metrics: dict[str, Any]) -> str:
+        """Format only comparison-critical throughput, latency, and SLO values."""
+        throughput = self._format_number(metrics.get("overall_throughput"), 1)
+        if throughput == "-":
+            throughput = self._format_number(metrics.get("decode_throughput"), 1)
+        if throughput == "-":
+            throughput = self._format_number(metrics.get("prefill_throughput"), 1)
+        if throughput == "-":
+            throughput = self._format_number(result.get("best_throughput"), 1)
+        p99_ttft = self._format_milliseconds_value(metrics.get("p99_ttft"))
+        goodput = self._format_percent_value(metrics.get("goodput_pct"))
+        return self._final_join_lines(
+            self._final_labeled_value("吞吐", throughput),
+            self._final_labeled_value("TTFT P99", p99_ttft),
+            self._final_labeled_value("Goodput", goodput),
+        )
+
+    def _final_details_panel(self) -> Any:
+        """Render full aggregate details for the selected finalized case."""
+        records = self._final_case_records()
+        if not records:
+            return self._Panel("无可显示的用例", title="用例详情", border_style="cyan")
+        self._final_selected_case = min(self._final_selected_case, len(records) - 1)
+        record = records[self._final_selected_case]
+        result = record.get("result")
+        result = result if isinstance(result, dict) else {}
+        metrics = result.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = result.get("selected_metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        scenario = str(record.get("scenario") or result.get("scenario") or "-")
+        table = self._Table.grid(expand=True, padding=(0, 1))
+        table.add_column(style="cyan", no_wrap=True)
+        table.add_column(overflow="fold")
+        table.add_row("场景 / 状态", f"{self._final_scenario_label(scenario)} · {record.get('status', '-')}")
+        table.add_row("请求 / 负载", self._final_join_lines(self._final_request_summary(metrics), self._final_workload_summary(result, metrics)))
+        table.add_row("延迟（ms）", self._final_latency_summary(metrics))
+        table.add_row("性能（tok/s · req/s · %）", self._final_join_lines(self._final_throughput_summary(result, metrics), self._final_qps_goodput_summary(metrics)))
+        table.add_row("服务端（% · req）", self._final_server_summary(metrics))
+        table.add_row("场景结果", self._final_scenario_summary(result, scenario))
+        table.add_row("说明", self._final_result_message(record))
+        title = f"用例详情 · {self._final_selected_case + 1}/{len(records)} · {record.get('name', '-')}"
+        return self._Panel(table, title=title, border_style="cyan")
 
     def _final_table_profile(self) -> str:
         """Select final-table detail based on the current terminal width."""
@@ -395,33 +553,6 @@ class RichProgressReporter(ProgressReporter):
         if width < 160:
             return "medium"
         return "wide"
-
-    @staticmethod
-    def _final_table_columns(profile: str) -> list[tuple[str, dict[str, Any]]]:
-        """Return grouped column definitions for one final-table width profile."""
-        if profile == "narrow":
-            return [
-                ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
-                ("结果摘要\n（tok · s · ms · tok/s · req/s · %）", {"overflow": "fold"}),
-                ("说明", {"overflow": "fold"}),
-            ]
-        if profile == "medium":
-            return [
-                ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
-                ("请求 / 负载\n（个 · tok · s · %）", {"overflow": "fold"}),
-                ("延迟（ms）", {"overflow": "fold"}),
-                ("性能 / 服务\n（tok/s · req/s · %）", {"overflow": "fold"}),
-                ("场景结果 / 说明\n（单位见指标）", {"overflow": "fold"}),
-            ]
-        return [
-            ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
-            ("请求 / 负载\n（个 · tok · s · %）", {"overflow": "fold"}),
-            ("延迟（ms）", {"overflow": "fold"}),
-            ("性能（tok/s · req/s · %）", {"overflow": "fold"}),
-            ("服务端观测（% · req）", {"overflow": "fold"}),
-            ("场景结果（单位见指标）", {"overflow": "fold"}),
-            ("说明", {"overflow": "fold"}),
-        ]
 
     @staticmethod
     def _final_scenario_label(scenario: str) -> str:
@@ -435,64 +566,6 @@ class RichProgressReporter(ProgressReporter):
             "pd-ratio": "P/D 容量评估",
         }
         return labels.get(scenario, scenario)
-
-    def _final_result_row(self, record: dict[str, Any], profile: str) -> tuple[str, ...]:
-        """Format one finalized case record for a grouped table layout."""
-        result = record.get("result")
-        result = result if isinstance(result, dict) else {}
-        metrics = result.get("metrics")
-        if not isinstance(metrics, dict):
-            metrics = result.get("selected_metrics")
-        metrics = metrics if isinstance(metrics, dict) else {}
-        scenario = str(record.get("scenario") or result.get("scenario") or "-")
-        name = str(record.get("name", "-"))
-        status = str(record.get("status", "-"))
-        message = self._final_result_message(record)
-        case_summary = f"{name}\n{self._final_scenario_label(scenario)} · {status}"
-        request_workload = self._final_join_lines(
-            self._final_request_summary(metrics),
-            self._final_workload_summary(result, metrics),
-        )
-        latency_summary = self._final_latency_summary(metrics)
-        performance_summary = self._final_join_lines(
-            self._final_throughput_summary(result, metrics),
-            self._final_qps_goodput_summary(metrics),
-        )
-        server_summary = self._final_server_summary(metrics)
-        scenario_summary = self._final_scenario_summary(result, scenario)
-
-        if profile == "narrow":
-            return (
-                case_summary,
-                self._final_join_lines(
-                    request_workload,
-                    latency_summary,
-                    performance_summary,
-                    server_summary,
-                    scenario_summary,
-                ),
-                message,
-            )
-        if profile == "medium":
-            return (
-                case_summary,
-                request_workload,
-                latency_summary,
-                self._final_join_lines(performance_summary, server_summary),
-                self._final_join_lines(
-                    scenario_summary,
-                    self._final_labeled_value("说明", message),
-                ),
-            )
-        return (
-            case_summary,
-            request_workload,
-            latency_summary,
-            performance_summary,
-            server_summary,
-            scenario_summary,
-            message,
-        )
 
     def _final_request_summary(self, metrics: dict[str, Any]) -> str:
         """Format request and concurrency aggregates for compact layouts."""

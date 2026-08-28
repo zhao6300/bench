@@ -385,20 +385,21 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
     reporter.show_final_results(final_report, "/tmp/final-report.json")
 
     final_dashboard = live.updates[-1]
-    final_table = final_dashboard["results"].content.content
-    assert [column[0] for column in final_table.columns] == [
-        "用例 / 状态", "请求 / 负载\n（个 · tok · s · %）", "延迟（ms）",
-        "性能 / 服务\n（tok/s · req/s · %）", "场景结果 / 说明\n（单位见指标）",
+    overview_table = final_dashboard["overview"].content.content
+    details_table = final_dashboard["details"].content.content
+    assert [column[0] for column in overview_table.columns] == [
+        "用例 / 场景", "状态", "负载（个 · tok）", "核心指标（ms · tok/s · %）", "结论",
     ]
     assert any(
-        "smoke" in row[0] and "Overall 100.0" in row[3]
-        for row in final_table.rows
+        "smoke" in row[0] and "吞吐 100.0" in row[3]
+        for row in overview_table.rows
     )
     assert any(
-        "failed-case" in row[0] and "说明 quality gate failed" in row[4]
-        for row in final_table.rows
+        "failed-case" in row[0] and "quality gate failed" in row[4]
+        for row in overview_table.rows
     )
-    assert "按 Q 退出" in final_dashboard["footer"].content.content
+    assert any(row[0] == "延迟（ms）" for row in details_table.rows)
+    assert "↑/↓ 或 j/k" in final_dashboard["footer"].content.content
     monkeypatch.setattr(
         reporter,
         "_read_final_key",
@@ -558,42 +559,49 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
     reporter._final_report = report
 
     reporter._console.size.width = 80
-    narrow_table = reporter._render_final_results()["results"].content.content
+    narrow_dashboard = reporter._render_final_results()
+    narrow_table = narrow_dashboard["overview"].content.content
+    narrow_details = narrow_dashboard["details"].content.content
     assert [column[0] for column in narrow_table.columns] == [
-        "用例 / 状态", "结果摘要\n（tok · s · ms · tok/s · req/s · %）", "说明",
+        "用例 / 状态", "核心指标", "结论",
     ]
-    assert all(len(row) == 3 for row in narrow_table.rows)
-    assert "TTFT avg/P50/P90/P99: 200.0 / 150.0 / 300.0 / 500.0" in narrow_table.rows[0][1]
-    assert "建议 P:D 2:3" in narrow_table.rows[4][1]
+    assert len(narrow_table.rows) == 2
+    assert "吞吐 350.0" in narrow_table.rows[0][1]
+    assert any(
+        row[0] == "延迟（ms）"
+        and "TTFT avg/P50/P90/P99: 200.0 / 150.0 / 300.0 / 500.0" in row[1]
+        for row in narrow_details.rows
+    )
 
     reporter._console.size.width = 120
-    medium_table = reporter._render_final_results()["results"].content.content
+    medium_dashboard = reporter._render_final_results()
+    medium_table = medium_dashboard["overview"].content.content
     assert [column[0] for column in medium_table.columns] == [
-        "用例 / 状态", "请求 / 负载\n（个 · tok · s · %）", "延迟（ms）",
-        "性能 / 服务\n（tok/s · req/s · %）", "场景结果 / 说明\n（单位见指标）",
+        "用例 / 场景", "状态", "负载（个 · tok）", "核心指标（ms · tok/s · %）", "结论",
     ]
-    assert all(len(row) == 5 for row in medium_table.rows)
-    assert "耗时 2.00" in medium_table.rows[0][1]
-    assert "失败 12.5" in medium_table.rows[0][1]
-    assert "SLO TTFT≤ 300.0" in medium_table.rows[0][2]
-    assert "Cache 70.0" in medium_table.rows[0][3]
+    assert len(medium_table.rows) == 3
+    assert "C 4 · N 8" in medium_table.rows[0][2]
+    assert "TTFT P99 500.0" in medium_table.rows[0][3]
     assert "最佳并发 16" in medium_table.rows[2][4]
-    assert "建议 推荐分离" in medium_table.rows[4][4]
 
     reporter._console.size.width = 180
-    wide_table = reporter._render_final_results()["results"].content.content
+    wide_dashboard = reporter._render_final_results()
+    wide_table = wide_dashboard["overview"].content.content
     assert [column[0] for column in wide_table.columns] == [
-        "用例 / 状态", "请求 / 负载\n（个 · tok · s · %）", "延迟（ms）",
-        "性能（tok/s · req/s · %）", "服务端观测（% · req）",
-        "场景结果（单位见指标）", "说明",
+        "用例 / 场景", "状态", "负载（个 · tok）", "核心指标（ms · tok/s · %）", "场景结果", "说明",
     ]
-    assert all(len(row) == 7 for row in wide_table.rows)
-    assert "TTFT avg/P50/P90/P99: 200.0 / 150.0 / 300.0 / 500.0" in wide_table.rows[0][2]
-    assert "Overall 350.0" in wide_table.rows[0][3]
-    assert wide_table.rows[1][2] == "-"
-    assert "最大通过 8" in wide_table.rows[3][5]
-    assert "Prefill 600.0" in wide_table.rows[4][3]
-    assert wide_table.rows[5][5] == "-"
+    assert len(wide_table.rows) == 4
+    assert "最大通过 8" in wide_table.rows[3][4]
+
+    reporter._move_final_selection(4)
+    selected_dashboard = reporter._render_final_results()
+    selected_table = selected_dashboard["overview"].content.content
+    selected_details = selected_dashboard["details"].content.content
+    assert "▶ pd" in selected_table.rows[0][0]
+    assert any(
+        row[0] == "性能（tok/s · req/s · %）" and "Prefill 600.0" in row[1]
+        for row in selected_details.rows
+    )
 
 
 def test_rich_final_scenario_labels_are_user_facing() -> None:
