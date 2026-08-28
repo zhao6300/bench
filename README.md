@@ -61,7 +61,7 @@ llm-benchmark --config examples/benchmark-config.example.json --list-cases
 
 ### 实时进度显示
 
-实际运行 benchmark 时，`--progress` 控制控制台实时状态显示，默认 `off`，不会显示 TUI 或行式实时进度。显式传入 `--progress rich` 时，交互式终端会使用接近全屏的 Rich dashboard；`--progress auto` 仍会按终端能力选择 Rich 或 plain，`--progress plain` 强制使用行式输出。dashboard 在独立终端屏幕中按顶部运行状态、suite/case 与当前 round 分区、最近事件和底部运行信息展示进度；最近事件包含服务信息采集、tokenizer 与负载初始化、预热、扫描/probe 和请求异常。宽终端使用 suite/round 双栏，窄终端自动改为纵向布局。benchmark 完成且（若启用）最终 JSON 报告已写入后，Rich 会切换到表格化结果总览，展示每个 case 的状态、请求数、成功/失败、平均 TTFT、吞吐、QPS 与错误摘要；此时按 `Q` 或 `Ctrl-C` 退出并恢复原有终端内容。plain/off 模式不读取键盘，仍会自动结束。dashboard 不会写入 JSON 报告。
+实际运行 benchmark 时，`--progress` 控制控制台实时状态显示，默认 `off`，不会显示 TUI 或行式实时进度。显式传入 `--progress rich` 时，交互式终端会使用接近全屏的 Rich dashboard；`--progress auto` 仍会按终端能力选择 Rich 或 plain，`--progress plain` 强制使用行式输出。dashboard 在独立终端屏幕中按顶部运行状态、suite/case 与当前 round 分区、最近事件和底部运行信息展示进度；最近事件包含服务信息采集、tokenizer 与负载初始化、预热、扫描/probe 和请求异常。宽终端使用 suite/round 双栏，窄终端自动改为纵向布局。benchmark 完成且（若启用）最终 JSON 报告已写入后，Rich 会切换到表格化结果总览。它按终端宽度自适应：窄终端将请求、负载、延迟、吞吐、QPS/Goodput、Cache/GPU 和场景结果合并为多行摘要；中等终端分列展示常用聚合指标；宽终端进一步拆分 TTFT/TPOT/E2E 的平均值和分位数、Prompt/Prefill/Decode/整体吞吐、Goodput 及服务端指标。扫描会显示峰值吞吐和最佳并发，SLO 容量搜索会显示最大通过/确认并发与边界，P/D 评估会显示两阶段吞吐和初始 P:D 建议。所有不适用或报告缺失的指标显示为 `-`，不会以零值伪造结果。此时按 `Q` 或 `Ctrl-C` 退出并恢复原有终端内容。plain/off 模式不读取键盘，仍会自动结束。dashboard 不会写入 JSON 报告。
 
 ```zsh
 # 默认：关闭实时进度/TUI，保留最终指标、错误与 JSON 报告输出

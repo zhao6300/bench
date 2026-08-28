@@ -213,11 +213,13 @@ def test_configured_suite_reports_case_lifecycle_without_network(
 class _FakeConsole:
     """Capture console configuration without importing Rich."""
 
+    width = 120
+
     def __init__(self, **kwargs: object) -> None:
         from types import SimpleNamespace
 
         self.kwargs = kwargs
-        self.size = SimpleNamespace(width=120)
+        self.size = SimpleNamespace(width=self.width)
 
 
 class _FakeLayout:
@@ -249,17 +251,18 @@ class _FakeLayout:
 
 
 class _FakeTable:
-    """Record dashboard rows without Rich rendering behavior."""
+    """Record dashboard rows and columns without Rich rendering behavior."""
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.columns: list[tuple[object, ...]] = []
         self.rows: list[tuple[object, ...]] = []
 
     @classmethod
     def grid(cls, **_kwargs: object) -> "_FakeTable":
         return cls()
 
-    def add_column(self, *_args: object, **_kwargs: object) -> None:
-        pass
+    def add_column(self, *args: object, **_kwargs: object) -> None:
+        self.columns.append(args)
 
     def add_row(self, *values: object) -> None:
         self.rows.append(values)
@@ -383,8 +386,18 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
 
     final_dashboard = live.updates[-1]
     final_table = final_dashboard["results"].content.content
-    assert any(row[0] == "smoke" and row[6] == "100.0 tok/s" for row in final_table.rows)
-    assert any(row[0] == "failed-case" and row[8] == "quality gate failed" for row in final_table.rows)
+    assert [column[0] for column in final_table.columns] == [
+        "Case", "场景 / 状态", "请求", "负载", "延迟", "吞吐", "QPS / Goodput",
+        "Cache / GPU", "场景结果", "说明",
+    ]
+    assert any(
+        row[0] == "smoke" and "All 100.0 tok/s" in row[5]
+        for row in final_table.rows
+    )
+    assert any(
+        row[0] == "failed-case" and row[9] == "quality gate failed"
+        for row in final_table.rows
+    )
     assert "按 Q 退出" in final_dashboard["footer"].content.content
     monkeypatch.setattr(
         reporter,
@@ -395,3 +408,185 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
 
     reporter.close()
     assert live.stopped is True
+
+
+def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
+    """Show all available aggregates without making narrow result tables unreadable."""
+    from benchmark import progress as progress_module
+
+    monkeypatch.setattr(
+        progress_module,
+        "_load_rich_dashboard_components",
+        lambda: {
+            "Console": _FakeConsole,
+            "Layout": _FakeLayout,
+            "Live": _FakeLive,
+            "Panel": _FakePanel,
+            "Table": _FakeTable,
+            "Text": _FakeText,
+        },
+    )
+    reporter = progress_module.RichProgressReporter(_TerminalStream(True))
+    report = {
+        "summary": {"passed": 4, "failed": 1, "interrupted": 0, "skipped": 0},
+        "cases": [
+            {
+                "name": "api",
+                "scenario": "single",
+                "status": "passed",
+                "result": {
+                    "metrics": {
+                        "concurrency": 4,
+                        "total_requests": 8,
+                        "successful": 7,
+                        "failed": 1,
+                        "failure_rate": 0.125,
+                        "wall_time": 2.0,
+                        "avg_ttft": 0.2,
+                        "p50_ttft": 0.15,
+                        "p99_ttft": 0.5,
+                        "avg_tpot": 0.04,
+                        "p50_tpot": 0.03,
+                        "p99_tpot": 0.08,
+                        "avg_total_time": 1.2,
+                        "p50_e2e": 1.0,
+                        "p99_e2e": 2.0,
+                        "prompt_throughput": 300.0,
+                        "prefill_throughput": 250.0,
+                        "decode_throughput": 100.0,
+                        "overall_throughput": 350.0,
+                        "qps": 3.5,
+                        "goodput_pct": 87.5,
+                        "goodput_qps": 3.0,
+                        "slo_ttft": 0.3,
+                        "slo_tpot": 0.05,
+                        "total_prompt_tokens": 32000,
+                        "total_generated_tokens": 16000,
+                        "server_metrics": {
+                            "metrics": {
+                                "cache_hit_rate": {"avg": 70.0},
+                                "gpu_cache_usage_pct": {"avg": 85.0},
+                                "cpu_cache_usage_pct": {"max": 5.0},
+                                "running_requests": {"avg": 3.5},
+                                "waiting_requests": {"max": 1.0},
+                            },
+                        },
+                    },
+                    "workload": {
+                        "prompt_tokens": {"avg": 4000},
+                        "requested_output_tokens": {"avg": 2000},
+                        "shared_prefix_tokens": 1000,
+                    },
+                },
+            },
+            {
+                "name": "offline",
+                "scenario": "offline",
+                "status": "passed",
+                "result": {
+                    "metrics": {
+                        "concurrency": 2,
+                        "total_requests": 4,
+                        "total_prompt_tokens": 8000,
+                        "total_generated_tokens": 2000,
+                        "overall_throughput": 100.0,
+                    },
+                    "workload": {
+                        "prompt_tokens": {"avg": 2000},
+                        "requested_output_tokens": {"avg": 500},
+                        "shared_prefix_tokens": 0,
+                    },
+                },
+            },
+            {
+                "name": "sweep",
+                "scenario": "sweep",
+                "status": "passed",
+                "result": {
+                    "metric": "prefill_throughput",
+                    "best_concurrency": 16,
+                    "best_throughput": 1200.0,
+                },
+            },
+            {
+                "name": "slo",
+                "scenario": "slo-capacity-search",
+                "status": "passed",
+                "result": {
+                    "max_passing_concurrency": 8,
+                    "confirmed_concurrency": 8,
+                    "refined_failure_boundary": 9,
+                    "required_goodput_pct": 95.0,
+                    "max_failure_rate": 0.05,
+                    "selected_metrics": {
+                        "concurrency": 8,
+                        "total_requests": 16,
+                        "successful": 16,
+                        "failed": 0,
+                        "failure_rate": 0.0,
+                        "goodput_pct": 100.0,
+                    },
+                },
+            },
+            {
+                "name": "pd",
+                "scenario": "pd-ratio",
+                "status": "failed",
+                "result": {
+                    "prefill": {"prefill_throughput": 600.0},
+                    "decode": {"decode_throughput": 300.0},
+                    "analysis": {
+                        "recommended": True,
+                        "recommended_ratio": {"prefill": 2, "decode": 3},
+                        "prefill_share_pct": 40.0,
+                        "decode_share_pct": 60.0,
+                    },
+                },
+                "quality_failures": ["需要复核部署 SLO"],
+            },
+            {
+                "name": "slo-unavailable",
+                "scenario": "slo-capacity-search",
+                "status": "failed",
+                "result": {},
+            },
+        ],
+    }
+    reporter._final_report = report
+
+    reporter._console.size.width = 80
+    narrow_table = reporter._render_final_results()["results"].content.content
+    assert [column[0] for column in narrow_table.columns] == [
+        "Case", "场景 / 状态", "请求 / 负载", "核心结果", "说明",
+    ]
+    assert all(len(row) == 5 for row in narrow_table.rows)
+    assert "TTFT avg/P99 200.0 ms/500.0 ms" in narrow_table.rows[0][3]
+    assert "建议 P:D 2:3" in narrow_table.rows[4][3]
+
+    reporter._console.size.width = 120
+    medium_table = reporter._render_final_results()["results"].content.content
+    assert [column[0] for column in medium_table.columns] == [
+        "Case", "场景 / 状态", "请求", "负载", "延迟", "吞吐", "QPS / Goodput",
+        "Cache / GPU", "场景结果", "说明",
+    ]
+    assert all(len(row) == 10 for row in medium_table.rows)
+    assert "耗时 2.00 s" in medium_table.rows[0][2]
+    assert "SLO TTFT≤ 300.0 ms" in medium_table.rows[0][6]
+    assert "Cache 70.0%" in medium_table.rows[0][7]
+    assert "最佳并发 16" in medium_table.rows[2][8]
+    assert "建议 推荐分离" in medium_table.rows[4][8]
+
+    reporter._console.size.width = 180
+    wide_table = reporter._render_final_results()["results"].content.content
+    assert [column[0] for column in wide_table.columns] == [
+        "Case", "场景 / 状态", "并发 / 请求", "成功 / 失败", "负载 P / O / 共享",
+        "TTFT avg / P50 / P99", "TPOT avg / P50 / P99", "E2E avg / P99",
+        "吞吐 P / Pre / Dec / All", "QPS / Goodput", "Cache / GPU", "场景结果", "说明",
+    ]
+    assert all(len(row) == 13 for row in wide_table.rows)
+    assert wide_table.rows[0][5] == "200.0 ms / 150.0 ms / 500.0 ms"
+    assert "All 350.0 tok/s" in wide_table.rows[0][8]
+    assert wide_table.rows[1][3] == "-"
+    assert "最大通过 8" in wide_table.rows[3][11]
+    assert "Pre 600.0 tok/s" in wide_table.rows[4][8]
+    assert wide_table.rows[5][11] == "-"
