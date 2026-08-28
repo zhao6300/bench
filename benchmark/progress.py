@@ -398,46 +398,33 @@ class RichProgressReporter(ProgressReporter):
 
     @staticmethod
     def _final_table_columns(profile: str) -> list[tuple[str, dict[str, Any]]]:
-        """Return column definitions for one final-table width profile."""
+        """Return grouped column definitions for one final-table width profile."""
         if profile == "narrow":
             return [
-                ("Case", {"style": "cyan", "overflow": "fold"}),
-                ("场景 / 状态", {"style": "blue", "overflow": "fold"}),
-                ("请求 / 负载", {"justify": "right", "overflow": "fold"}),
-                ("核心结果", {"justify": "right", "overflow": "fold"}),
+                ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
+                ("结果摘要", {"overflow": "fold"}),
                 ("说明", {"overflow": "fold"}),
             ]
         if profile == "medium":
             return [
-                ("Case", {"style": "cyan", "overflow": "fold"}),
-                ("场景 / 状态", {"style": "blue", "overflow": "fold"}),
-                ("请求", {"justify": "right", "overflow": "fold"}),
-                ("负载", {"justify": "right", "overflow": "fold"}),
-                ("延迟", {"justify": "right", "overflow": "fold"}),
-                ("吞吐", {"justify": "right", "overflow": "fold"}),
-                ("QPS / Goodput", {"justify": "right", "overflow": "fold"}),
-                ("Cache / GPU", {"justify": "right", "overflow": "fold"}),
-                ("场景结果", {"overflow": "fold"}),
-                ("说明", {"overflow": "fold"}),
+                ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
+                ("请求 / 负载", {"overflow": "fold"}),
+                ("延迟", {"overflow": "fold"}),
+                ("性能 / 服务", {"overflow": "fold"}),
+                ("场景结果 / 说明", {"overflow": "fold"}),
             ]
         return [
-            ("Case", {"style": "cyan", "overflow": "fold"}),
-            ("场景 / 状态", {"style": "blue", "overflow": "fold"}),
-            ("并发 / 请求", {"justify": "right", "overflow": "fold"}),
-            ("成功 / 失败", {"justify": "right", "overflow": "fold"}),
-            ("负载 P / O / 共享", {"justify": "right", "overflow": "fold"}),
-            ("TTFT avg / P50 / P99", {"justify": "right", "overflow": "fold"}),
-            ("TPOT avg / P50 / P99", {"justify": "right", "overflow": "fold"}),
-            ("E2E avg / P99", {"justify": "right", "overflow": "fold"}),
-            ("吞吐 P / Pre / Dec / All", {"justify": "right", "overflow": "fold"}),
-            ("QPS / Goodput", {"justify": "right", "overflow": "fold"}),
-            ("Cache / GPU", {"justify": "right", "overflow": "fold"}),
+            ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
+            ("请求 / 负载", {"overflow": "fold"}),
+            ("延迟", {"overflow": "fold"}),
+            ("性能", {"overflow": "fold"}),
+            ("服务端观测", {"overflow": "fold"}),
             ("场景结果", {"overflow": "fold"}),
             ("说明", {"overflow": "fold"}),
         ]
 
     def _final_result_row(self, record: dict[str, Any], profile: str) -> tuple[str, ...]:
-        """Format one finalized case record for a final-table width profile."""
+        """Format one finalized case record for a grouped table layout."""
         result = record.get("result")
         result = result if isinstance(result, dict) else {}
         metrics = result.get("metrics")
@@ -448,23 +435,26 @@ class RichProgressReporter(ProgressReporter):
         name = str(record.get("name", "-"))
         status = str(record.get("status", "-"))
         message = self._final_result_message(record)
-        request_summary = self._final_request_summary(metrics)
-        workload_summary = self._final_workload_summary(result, metrics)
+        case_summary = f"{name}\n{scenario} · {status}"
+        request_workload = self._final_join_lines(
+            self._final_request_summary(metrics),
+            self._final_workload_summary(result, metrics),
+        )
         latency_summary = self._final_latency_summary(metrics)
-        throughput_summary = self._final_throughput_summary(result, metrics)
-        qps_goodput_summary = self._final_qps_goodput_summary(metrics)
+        performance_summary = self._final_join_lines(
+            self._final_throughput_summary(result, metrics),
+            self._final_qps_goodput_summary(metrics),
+        )
         server_summary = self._final_server_summary(metrics)
         scenario_summary = self._final_scenario_summary(result, scenario)
 
         if profile == "narrow":
             return (
-                name,
-                f"{scenario}\n{status}",
-                self._final_join_lines(request_summary, workload_summary),
+                case_summary,
                 self._final_join_lines(
+                    request_workload,
                     latency_summary,
-                    throughput_summary,
-                    qps_goodput_summary,
+                    performance_summary,
                     server_summary,
                     scenario_summary,
                 ),
@@ -472,28 +462,20 @@ class RichProgressReporter(ProgressReporter):
             )
         if profile == "medium":
             return (
-                name,
-                f"{scenario}\n{status}",
-                request_summary,
-                workload_summary,
+                case_summary,
+                request_workload,
                 latency_summary,
-                throughput_summary,
-                qps_goodput_summary,
-                server_summary,
-                scenario_summary,
-                message,
+                self._final_join_lines(performance_summary, server_summary),
+                self._final_join_lines(
+                    scenario_summary,
+                    self._final_labeled_value("说明", message),
+                ),
             )
         return (
-            name,
-            f"{scenario}\n{status}",
-            self._final_concurrency_requests(metrics),
-            self._final_success_failure_rate(metrics),
-            workload_summary,
-            self._final_latency_values(metrics, "ttft"),
-            self._final_latency_values(metrics, "tpot"),
-            self._final_latency_values(metrics, "e2e"),
-            throughput_summary,
-            qps_goodput_summary,
+            case_summary,
+            request_workload,
+            latency_summary,
+            performance_summary,
             server_summary,
             scenario_summary,
             message,

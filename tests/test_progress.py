@@ -387,15 +387,14 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
     final_dashboard = live.updates[-1]
     final_table = final_dashboard["results"].content.content
     assert [column[0] for column in final_table.columns] == [
-        "Case", "场景 / 状态", "请求", "负载", "延迟", "吞吐", "QPS / Goodput",
-        "Cache / GPU", "场景结果", "说明",
+        "用例 / 状态", "请求 / 负载", "延迟", "性能 / 服务", "场景结果 / 说明",
     ]
     assert any(
-        row[0] == "smoke" and "All 100.0 tok/s" in row[5]
+        "smoke" in row[0] and "All 100.0 tok/s" in row[3]
         for row in final_table.rows
     )
     assert any(
-        row[0] == "failed-case" and row[9] == "quality gate failed"
+        "failed-case" in row[0] and "说明 quality gate failed" in row[4]
         for row in final_table.rows
     )
     assert "按 Q 退出" in final_dashboard["footer"].content.content
@@ -557,36 +556,33 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
     reporter._console.size.width = 80
     narrow_table = reporter._render_final_results()["results"].content.content
     assert [column[0] for column in narrow_table.columns] == [
-        "Case", "场景 / 状态", "请求 / 负载", "核心结果", "说明",
+        "用例 / 状态", "结果摘要", "说明",
     ]
-    assert all(len(row) == 5 for row in narrow_table.rows)
-    assert "TTFT avg/P99 200.0 ms/500.0 ms" in narrow_table.rows[0][3]
-    assert "建议 P:D 2:3" in narrow_table.rows[4][3]
+    assert all(len(row) == 3 for row in narrow_table.rows)
+    assert "TTFT avg/P99 200.0 ms/500.0 ms" in narrow_table.rows[0][1]
+    assert "建议 P:D 2:3" in narrow_table.rows[4][1]
 
     reporter._console.size.width = 120
     medium_table = reporter._render_final_results()["results"].content.content
     assert [column[0] for column in medium_table.columns] == [
-        "Case", "场景 / 状态", "请求", "负载", "延迟", "吞吐", "QPS / Goodput",
-        "Cache / GPU", "场景结果", "说明",
+        "用例 / 状态", "请求 / 负载", "延迟", "性能 / 服务", "场景结果 / 说明",
     ]
-    assert all(len(row) == 10 for row in medium_table.rows)
-    assert "耗时 2.00 s" in medium_table.rows[0][2]
-    assert "SLO TTFT≤ 300.0 ms" in medium_table.rows[0][6]
-    assert "Cache 70.0%" in medium_table.rows[0][7]
-    assert "最佳并发 16" in medium_table.rows[2][8]
-    assert "建议 推荐分离" in medium_table.rows[4][8]
+    assert all(len(row) == 5 for row in medium_table.rows)
+    assert "耗时 2.00 s" in medium_table.rows[0][1]
+    assert "SLO TTFT≤ 300.0 ms" in medium_table.rows[0][3]
+    assert "Cache 70.0%" in medium_table.rows[0][3]
+    assert "最佳并发 16" in medium_table.rows[2][4]
+    assert "建议 推荐分离" in medium_table.rows[4][4]
 
     reporter._console.size.width = 180
     wide_table = reporter._render_final_results()["results"].content.content
     assert [column[0] for column in wide_table.columns] == [
-        "Case", "场景 / 状态", "并发 / 请求", "成功 / 失败", "负载 P / O / 共享",
-        "TTFT avg / P50 / P99", "TPOT avg / P50 / P99", "E2E avg / P99",
-        "吞吐 P / Pre / Dec / All", "QPS / Goodput", "Cache / GPU", "场景结果", "说明",
+        "用例 / 状态", "请求 / 负载", "延迟", "性能", "服务端观测", "场景结果", "说明",
     ]
-    assert all(len(row) == 13 for row in wide_table.rows)
-    assert wide_table.rows[0][5] == "200.0 ms / 150.0 ms / 500.0 ms"
-    assert "All 350.0 tok/s" in wide_table.rows[0][8]
-    assert wide_table.rows[1][3] == "-"
-    assert "最大通过 8" in wide_table.rows[3][11]
-    assert "Pre 600.0 tok/s" in wide_table.rows[4][8]
-    assert wide_table.rows[5][11] == "-"
+    assert all(len(row) == 7 for row in wide_table.rows)
+    assert "TTFT avg/P99 200.0 ms/500.0 ms" in wide_table.rows[0][2]
+    assert "All 350.0 tok/s" in wide_table.rows[0][3]
+    assert wide_table.rows[1][2] == "-"
+    assert "最大通过 8" in wide_table.rows[3][5]
+    assert "Pre 600.0 tok/s" in wide_table.rows[4][3]
+    assert wide_table.rows[5][5] == "-"
