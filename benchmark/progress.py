@@ -430,15 +430,15 @@ class RichProgressReporter(ProgressReporter):
             return [
                 ("用例 / 场景", {"style": "cyan", "overflow": "fold"}),
                 ("状态", {"overflow": "fold"}),
-                ("负载（个 · tok）", {"overflow": "fold"}),
-                ("核心指标（ms · tok/s · %）", {"overflow": "fold"}),
+                ("负载", {"overflow": "fold"}),
+                ("核心指标", {"overflow": "fold"}),
                 ("结论", {"overflow": "fold"}),
             ]
         return [
             ("用例 / 场景", {"style": "cyan", "overflow": "fold"}),
             ("状态", {"overflow": "fold"}),
-            ("负载（个 · tok）", {"overflow": "fold"}),
-            ("核心指标（ms · tok/s · %）", {"overflow": "fold"}),
+            ("负载", {"overflow": "fold"}),
+            ("核心指标", {"overflow": "fold"}),
             ("场景结果", {"overflow": "fold"}),
             ("说明", {"overflow": "fold"}),
         ]
@@ -482,7 +482,7 @@ class RichProgressReporter(ProgressReporter):
         )
 
     def _final_overview_load(self, result: dict[str, Any], metrics: dict[str, Any]) -> str:
-        """Format only the request shape needed to compare cases."""
+        """Format the request shape needed to compare cases."""
         workload = result.get("selected_workload")
         if not isinstance(workload, dict):
             workload = result.get("workload")
@@ -491,31 +491,46 @@ class RichProgressReporter(ProgressReporter):
         workload = workload if isinstance(workload, dict) else {}
         prompt = self._final_stat_value(workload.get("prompt_tokens"))
         output = self._final_stat_value(workload.get("requested_output_tokens"))
-        concurrency = self._format_integer(metrics.get("concurrency"))
-        requests = self._format_integer(metrics.get("total_requests"))
+        concurrency = self._format_request_count(metrics.get("concurrency"))
+        requests = self._format_request_count(metrics.get("total_requests"))
         request_line = " · ".join(
-            part for part in (f"C {concurrency}" if concurrency != "-" else "", f"N {requests}" if requests != "-" else "") if part
+            part
+            for part in (
+                f"并发 {concurrency}" if concurrency != "-" else "",
+                f"总请求数 {requests}" if requests != "-" else "",
+            )
+            if part
         )
         load_line = " / ".join(
-            part for part in (f"P {prompt}" if prompt != "-" else "", f"O {output}" if output != "-" else "") if part
+            part
+            for part in (
+                f"输入 {prompt}" if prompt != "-" else "",
+                f"输出上限 {output}" if output != "-" else "",
+            )
+            if part
         )
         return self._final_join_lines(request_line or "-", load_line or "-")
 
     def _final_overview_core(self, result: dict[str, Any], metrics: dict[str, Any]) -> str:
-        """Format only comparison-critical throughput, latency, and SLO values."""
-        throughput = self._format_number(metrics.get("overall_throughput"), 1)
-        if throughput == "-":
-            throughput = self._format_number(metrics.get("decode_throughput"), 1)
-        if throughput == "-":
-            throughput = self._format_number(metrics.get("prefill_throughput"), 1)
-        if throughput == "-":
-            throughput = self._format_number(result.get("best_throughput"), 1)
+        """Format comparison-critical throughput, latency, and SLO values."""
+        throughput_label = "-"
+        throughput = "-"
+        for label, value in (
+            ("整体吞吐", metrics.get("overall_throughput")),
+            ("解码吞吐", metrics.get("decode_throughput")),
+            ("预填充吞吐", metrics.get("prefill_throughput")),
+            ("峰值吞吐", result.get("best_throughput")),
+        ):
+            throughput = self._format_throughput(value)
+            if throughput != "-":
+                throughput_label = label
+                break
         p99_ttft = self._format_milliseconds_value(metrics.get("p99_ttft"))
         goodput = self._format_percent_value(metrics.get("goodput_pct"))
         return self._final_join_lines(
-            self._final_labeled_value("吞吐", throughput),
-            self._final_labeled_value("TTFT P99", p99_ttft),
-            self._final_labeled_value("Goodput", goodput),
+            self._final_labeled_value(throughput_label, throughput),
+            self._final_labeled_value("首个内容 token 时间第 99 百分位", p99_ttft),
+            self._final_labeled_value("达标率", goodput),
         )
 
     def _final_details_panel(self) -> Any:
@@ -537,9 +552,9 @@ class RichProgressReporter(ProgressReporter):
         table.add_column(overflow="fold")
         table.add_row("场景 / 状态", f"{self._final_scenario_label(scenario)} · {record.get('status', '-')}")
         table.add_row("请求 / 负载", self._final_join_lines(self._final_request_summary(metrics), self._final_workload_summary(result, metrics)))
-        table.add_row("延迟（ms）", self._final_latency_summary(metrics))
-        table.add_row("性能（tok/s · req/s · %）", self._final_join_lines(self._final_throughput_summary(result, metrics), self._final_qps_goodput_summary(metrics)))
-        table.add_row("服务端（% · req）", self._final_server_summary(metrics))
+        table.add_row("延迟", self._final_latency_summary(metrics))
+        table.add_row("性能", self._final_join_lines(self._final_throughput_summary(result, metrics), self._final_qps_goodput_summary(metrics)))
+        table.add_row("服务端", self._final_server_summary(metrics))
         table.add_row("场景结果", self._final_scenario_summary(result, scenario))
         table.add_row("说明", self._final_result_message(record))
         title = f"用例详情 · {self._final_selected_case + 1}/{len(records)} · {record.get('name', '-')}"
@@ -558,17 +573,17 @@ class RichProgressReporter(ProgressReporter):
     def _final_scenario_label(scenario: str) -> str:
         """Return a user-facing Chinese label for a finalized scenario key."""
         labels = {
-            "single": "单一负载 API",
+            "single": "单一负载接口",
             "offline": "离线引擎",
-            "mixed-workload": "混合负载 API",
+            "mixed-workload": "混合负载接口",
             "sweep": "吞吐扫描",
-            "slo-capacity-search": "SLO 容量搜索",
-            "pd-ratio": "P/D 容量评估",
+            "slo-capacity-search": "服务等级目标容量搜索",
+            "pd-ratio": "预填充/解码容量评估",
         }
         return labels.get(scenario, scenario)
 
     def _final_request_summary(self, metrics: dict[str, Any]) -> str:
-        """Format request and concurrency aggregates for compact layouts."""
+        """Format request and concurrency aggregates for the result details."""
         return self._final_join_lines(
             self._final_concurrency_requests(metrics),
             self._final_success_failure_rate(metrics),
@@ -577,28 +592,31 @@ class RichProgressReporter(ProgressReporter):
     def _final_concurrency_requests(self, metrics: dict[str, Any]) -> str:
         """Format configured concurrency and aggregate request count."""
         parts = []
-        concurrency = self._format_integer(metrics.get("concurrency"))
-        total = self._format_integer(metrics.get("total_requests"))
+        concurrency = self._format_request_count(metrics.get("concurrency"))
+        total = self._format_request_count(metrics.get("total_requests"))
         if concurrency != "-":
             parts.append(f"并发 {concurrency}")
         if total != "-":
-            parts.append(f"请求 {total}")
-        wall_time = self._format_number(metrics.get("wall_time"), 2)
+            parts.append(f"总请求数 {total}")
+        wall_time = self._format_seconds(metrics.get("wall_time"))
         if wall_time != "-":
-            parts.append(f"耗时 {wall_time}")
+            parts.append(f"测试耗时 {wall_time}")
         return " · ".join(parts) if parts else "-"
 
     def _final_success_failure_rate(self, metrics: dict[str, Any]) -> str:
         """Format success, failure, and failure-rate aggregates."""
-        success_failure = self._format_success_failure(metrics)
+        successful = self._format_request_count(metrics.get("successful"))
+        failed = self._format_request_count(metrics.get("failed"))
         failure_rate = self._format_percent_ratio_value(metrics.get("failure_rate"))
-        if success_failure == "-":
-            return "-"
-        return (
-            f"成功/失败 {success_failure} · 失败 {failure_rate}"
-            if failure_rate != "-"
-            else f"成功/失败 {success_failure}"
-        )
+        return " · ".join(
+            part
+            for part in (
+                f"成功 {successful}" if successful != "-" else "",
+                f"失败 {failed}" if failed != "-" else "",
+                f"失败率 {failure_rate}" if failure_rate != "-" else "",
+            )
+            if part
+        ) or "-"
 
     def _final_workload_summary(
         self, result: dict[str, Any], metrics: dict[str, Any]
@@ -615,48 +633,66 @@ class RichProgressReporter(ProgressReporter):
         shared = self._final_stat_value(workload.get("shared_prefix_tokens"))
         shape_parts = []
         if prompt != "-":
-            shape_parts.append(f"P {prompt}")
+            shape_parts.append(f"输入 {prompt}")
         if output != "-":
-            shape_parts.append(f"O {output}")
+            shape_parts.append(f"输出上限 {output}")
         if shared != "-":
-            shape_parts.append(f"共享 {shared}")
+            shape_parts.append(f"共享前缀 {shared}")
         actual_prompt = self._format_token_count(metrics.get("total_prompt_tokens"))
         actual_generated = self._format_token_count(metrics.get("total_generated_tokens"))
         actual_parts = []
         if actual_prompt != "-":
-            actual_parts.append(f"P {actual_prompt}")
+            actual_parts.append(f"实际输入 {actual_prompt}")
         if actual_generated != "-":
-            actual_parts.append(f"G {actual_generated}")
+            actual_parts.append(f"实际生成 {actual_generated}")
         return self._final_join_lines(
             " / ".join(shape_parts) if shape_parts else "-",
-            f"总计 {' / '.join(actual_parts)}" if actual_parts else "-",
+            " / ".join(actual_parts) if actual_parts else "-",
         )
 
     def _final_latency_summary(self, metrics: dict[str, Any]) -> str:
-        """Format the primary latency aggregates for compact layouts."""
+        """Format primary latency aggregates with complete labels and units."""
         return self._final_join_lines(
-            self._final_latency_values(metrics, "ttft", compact=True),
-            self._final_latency_values(metrics, "tpot", compact=True),
-            self._final_latency_values(metrics, "e2e", compact=True),
+            self._final_latency_values(metrics, "ttft"),
+            self._final_latency_values(metrics, "tpot"),
+            self._final_latency_values(metrics, "e2e"),
             self._final_labeled_value(
-                "请求均耗", self._format_milliseconds_value(metrics.get("avg_request_time"))
+                "请求平均耗时", self._format_milliseconds_value(metrics.get("avg_request_time"))
             ),
             self._final_labeled_value(
-                "SLO TTFT≤", self._format_milliseconds_value(metrics.get("slo_ttft"))
+                "首个内容 token 时间目标不超过",
+                self._format_milliseconds_value(metrics.get("slo_ttft")),
             ),
             self._final_labeled_value(
-                "SLO TPOT≤", self._format_milliseconds_value(metrics.get("slo_tpot"))
+                "每个输出 token 时间目标不超过",
+                self._format_milliseconds_value(metrics.get("slo_tpot")),
             ),
         )
 
-    def _final_latency_values(
-        self, metrics: dict[str, Any], metric: str, compact: bool = False
-    ) -> str:
-        """Format latency percentiles in milliseconds with explicit labels."""
+    def _final_latency_values(self, metrics: dict[str, Any], metric: str) -> str:
+        """Format latency percentiles in milliseconds with complete labels."""
         metric_keys = {
-            "ttft": ("TTFT", "avg_ttft", "p50_ttft", "p90_ttft", "p99_ttft"),
-            "tpot": ("TPOT", "avg_tpot", "p50_tpot", "p90_tpot", "p99_tpot"),
-            "e2e": ("E2E", "avg_total_time", "p50_e2e", "p90_e2e", "p99_e2e"),
+            "ttft": (
+                "首个内容 token 时间",
+                "avg_ttft",
+                "p50_ttft",
+                "p90_ttft",
+                "p99_ttft",
+            ),
+            "tpot": (
+                "每个输出 token 时间",
+                "avg_tpot",
+                "p50_tpot",
+                "p90_tpot",
+                "p99_tpot",
+            ),
+            "e2e": (
+                "端到端耗时",
+                "avg_total_time",
+                "p50_e2e",
+                "p90_e2e",
+                "p99_e2e",
+            ),
         }
         label, average_key, p50_key, p90_key, p99_key = metric_keys[metric]
         values = (
@@ -667,57 +703,60 @@ class RichProgressReporter(ProgressReporter):
         )
         if all(value == "-" for value in values):
             return "-"
-        if compact:
-            return f"{label} avg/P50/P90/P99: {' / '.join(values)}"
-        return " / ".join(f"{value} ms" if value != "-" else value for value in values)
+        return (
+            f"{label}：平均 {values[0]} / 第 50 百分位 {values[1]} / "
+            f"第 90 百分位 {values[2]} / 第 99 百分位 {values[3]}"
+        )
 
     def _final_throughput_summary(
         self, result: dict[str, Any], metrics: dict[str, Any]
     ) -> str:
         """Format all available phase and overall throughput aggregates."""
         labels = (
-            ("Prompt", "prompt_throughput"),
-            ("Prefill", "prefill_throughput"),
-            ("Decode", "decode_throughput"),
-            ("Overall", "overall_throughput"),
+            ("输入处理吞吐", "prompt_throughput"),
+            ("预填充吞吐", "prefill_throughput"),
+            ("解码吞吐", "decode_throughput"),
+            ("整体吞吐", "overall_throughput"),
         )
         parts = []
         for label, key in labels:
-            value = self._format_number(metrics.get(key), 1)
+            value = self._format_throughput(metrics.get(key))
             if value != "-":
                 parts.append(f"{label} {value}")
         if parts:
             return "\n".join(parts)
-        best = self._format_number(result.get("best_throughput"), 1)
+        best = self._format_throughput(result.get("best_throughput"))
         if best != "-":
-            return f"峰值 {best}"
+            return f"峰值吞吐 {best}"
         prefill = result.get("prefill")
         decode = result.get("decode")
         if isinstance(prefill, dict) and isinstance(decode, dict):
             return self._final_join_lines(
                 self._final_labeled_value(
-                    "Prefill", self._format_number(prefill.get("prefill_throughput"), 1)
+                    "预填充吞吐",
+                    self._format_throughput(prefill.get("prefill_throughput")),
                 ),
                 self._final_labeled_value(
-                    "Decode", self._format_number(decode.get("decode_throughput"), 1)
+                    "解码吞吐",
+                    self._format_throughput(decode.get("decode_throughput")),
                 ),
             )
         return "-"
 
     def _final_qps_goodput_summary(self, metrics: dict[str, Any]) -> str:
-        """Format completed-request rate and SLO compliance aggregates."""
+        """Format completed-request rate and service-level compliance aggregates."""
         return self._final_join_lines(
-            self._final_labeled_value("QPS", self._format_number(metrics.get("qps"), 2)),
             self._final_labeled_value(
-                "Goodput", self._format_percent_value(metrics.get("goodput_pct"))
+                "每秒完成请求数", self._format_request_rate(metrics.get("qps"))
             ),
+            self._final_labeled_value("达标率", self._format_percent_value(metrics.get("goodput_pct"))),
             self._final_labeled_value(
-                "GP QPS", self._format_number(metrics.get("goodput_qps"), 2)
+                "每秒达标请求数", self._format_request_rate(metrics.get("goodput_qps"))
             ),
         )
 
     def _final_server_summary(self, metrics: dict[str, Any]) -> str:
-        """Format cache, GPU, and queue observations from server metrics."""
+        """Format cache and queue observations from server metrics."""
         server_metrics = metrics.get("server_metrics")
         if not isinstance(server_metrics, dict):
             server_metrics = metrics.get("server_metrics_peak")
@@ -732,29 +771,37 @@ class RichProgressReporter(ProgressReporter):
         cpu = self._format_percent_value(
             self._final_stat_number(raw_metrics.get("cpu_cache_usage_pct"))
         )
-        running = self._format_number(self._final_stat_number(raw_metrics.get("running_requests")), 1)
-        waiting = self._format_number(self._final_stat_number(raw_metrics.get("waiting_requests")), 1)
+        running = self._format_request_count(
+            self._final_stat_number(raw_metrics.get("running_requests")), precision=1
+        )
+        waiting = self._format_request_count(
+            self._final_stat_number(raw_metrics.get("waiting_requests")), precision=1
+        )
         return self._final_join_lines(
-            self._final_labeled_value("Cache", cache),
-            self._final_labeled_value("GPU", gpu),
-            self._final_labeled_value("CPU", cpu),
-            (
-                f"运行/等待 {running}/{waiting}"
-                if running != "-" or waiting != "-"
-                else "-"
-            ),
+            self._final_labeled_value("KV 缓存命中率", cache),
+            self._final_labeled_value("图形处理器缓存使用率", gpu),
+            self._final_labeled_value("中央处理器缓存使用率", cpu),
+            self._final_labeled_value("运行请求数", running),
+            self._final_labeled_value("等待请求数", waiting),
         )
 
     def _final_scenario_summary(self, result: dict[str, Any], scenario: str) -> str:
         """Format scenario-specific aggregates without inferring missing rounds."""
         if scenario == "sweep":
+            metric_labels = {
+                "prompt_throughput": "输入处理吞吐",
+                "prefill_throughput": "预填充吞吐",
+                "decode_throughput": "解码吞吐",
+                "overall_throughput": "整体吞吐",
+            }
+            metric = self._format_text(result.get("metric"))
             return self._final_join_lines(
-                self._final_labeled_value("指标", self._format_text(result.get("metric"))),
+                self._final_labeled_value("评估指标", metric_labels.get(metric, metric)),
                 self._final_labeled_value(
-                    "最佳并发", self._format_integer(result.get("best_concurrency"))
+                    "最佳并发", self._format_request_count(result.get("best_concurrency"))
                 ),
                 self._final_labeled_value(
-                    "峰值", self._format_throughput(result.get("best_throughput"))
+                    "峰值吞吐", self._format_throughput(result.get("best_throughput"))
                 ),
             )
         if scenario == "slo-capacity-search":
@@ -763,17 +810,19 @@ class RichProgressReporter(ProgressReporter):
                 boundary = result.get("failure_boundary")
             return self._final_join_lines(
                 self._final_labeled_value(
-                    "最大通过", self._format_integer(result.get("max_passing_concurrency"))
+                    "最大通过并发",
+                    self._format_request_count(result.get("max_passing_concurrency")),
                 ),
                 self._final_labeled_value(
-                    "确认", self._format_integer(result.get("confirmed_concurrency"))
+                    "确认并发", self._format_request_count(result.get("confirmed_concurrency"))
                 ),
-                self._final_labeled_value("失败边界", self._format_integer(boundary)),
+                self._final_labeled_value("失败边界", self._format_request_count(boundary)),
                 self._final_labeled_value(
-                    "要求 Goodput", self._format_percent(result.get("required_goodput_pct"))
+                    "要求达标率", self._format_percent(result.get("required_goodput_pct"))
                 ),
                 self._final_labeled_value(
-                    "最大失败", self._format_percent_from_ratio(result.get("max_failure_rate"))
+                    "允许最大失败率",
+                    self._format_percent_from_ratio(result.get("max_failure_rate")),
                 ),
             )
         if scenario == "pd-ratio":
@@ -789,14 +838,18 @@ class RichProgressReporter(ProgressReporter):
                 else "不建议分离" if recommendation is False
                 else "-"
             )
-            ratio_text = f"建议 P:D {prefill}:{decode}" if prefill != "-" and decode != "-" else "-"
+            ratio_text = (
+                f"建议预填充/解码实例比 {prefill}:{decode}"
+                if prefill != "-" and decode != "-"
+                else "-"
+            )
             return self._final_join_lines(
                 ratio_text,
                 self._final_labeled_value(
-                    "Prefill 占比", self._format_percent(analysis.get("prefill_share_pct"))
+                    "预填充占比", self._format_percent(analysis.get("prefill_share_pct"))
                 ),
                 self._final_labeled_value(
-                    "Decode 占比", self._format_percent(analysis.get("decode_share_pct"))
+                    "解码占比", self._format_percent(analysis.get("decode_share_pct"))
                 ),
                 self._final_labeled_value("建议", recommendation_text),
             )
@@ -825,6 +878,23 @@ class RichProgressReporter(ProgressReporter):
         """Format an integer-like result value for a table cell."""
         return str(value) if isinstance(value, int) and not isinstance(value, bool) else "-"
 
+    @classmethod
+    def _format_request_count(cls, value: Any, precision: int = 0) -> str:
+        """Format a request count with a nearby unit."""
+        return (
+            f"{value:.{precision}f} 个请求" if cls._is_number(value) else "-"
+        )
+
+    @classmethod
+    def _format_request_rate(cls, value: Any) -> str:
+        """Format a completed-request rate with a nearby unit."""
+        return f"{value:.2f} 个请求/秒" if cls._is_number(value) else "-"
+
+    @classmethod
+    def _format_seconds(cls, value: Any) -> str:
+        """Format a duration measured in seconds with a nearby unit."""
+        return f"{value:.2f} 秒" if cls._is_number(value) else "-"
+
     def _format_success_failure(self, metrics: dict[str, Any]) -> str:
         """Format request success and failure totals for a table cell."""
         successful = self._format_integer(metrics.get("successful"))
@@ -847,45 +917,38 @@ class RichProgressReporter(ProgressReporter):
 
     @classmethod
     def _format_milliseconds_value(cls, value: Any) -> str:
-        """Format a seconds metric as a unitless millisecond value."""
-        return f"{value * 1000:.1f}" if cls._is_number(value) else "-"
+        """Format a seconds metric as milliseconds with a nearby unit."""
+        return f"{value * 1000:.1f} 毫秒" if cls._is_number(value) else "-"
 
     @classmethod
     def _format_throughput(cls, value: Any) -> str:
-        """Format a token-throughput metric with its unit."""
-        return f"{value:.1f} tok/s" if cls._is_number(value) else "-"
+        """Format a token-throughput metric with a nearby unit."""
+        return f"{value:.1f} 个 token/秒" if cls._is_number(value) else "-"
 
     @classmethod
     def _format_percent_value(cls, value: Any) -> str:
-        """Format a percentage metric without its percent suffix."""
-        return f"{value:.1f}" if cls._is_number(value) else "-"
+        """Format a percentage metric with a nearby unit."""
+        return f"{value:.1f}%" if cls._is_number(value) else "-"
 
     @classmethod
     def _format_percent_ratio_value(cls, value: Any) -> str:
-        """Format a 0–1 ratio as a unitless percentage value."""
-        return f"{value * 100:.1f}" if cls._is_number(value) else "-"
+        """Format a 0–1 ratio as a percentage with a nearby unit."""
+        return f"{value * 100:.1f}%" if cls._is_number(value) else "-"
 
     @classmethod
     def _format_percent(cls, value: Any) -> str:
         """Format a percentage metric already expressed on a 0–100 scale."""
-        formatted = cls._format_percent_value(value)
-        return f"{formatted}%" if formatted != "-" else "-"
+        return cls._format_percent_value(value)
 
     @classmethod
     def _format_percent_from_ratio(cls, value: Any) -> str:
         """Format a fraction metric as a percentage."""
-        return f"{value * 100:.1f}%" if cls._is_number(value) else "-"
+        return cls._format_percent_ratio_value(value)
 
     @classmethod
     def _format_token_count(cls, value: Any) -> str:
-        """Format a token count compactly without repeating its column unit."""
-        if not cls._is_number(value):
-            return "-"
-        if abs(value) >= 1_000_000:
-            return f"{value / 1_000_000:.1f}M"
-        if abs(value) >= 1_000:
-            return f"{value / 1_000:.1f}K"
-        return f"{value:.0f}"
+        """Format a token count with a nearby unit and no magnitude abbreviation."""
+        return f"{value:,.0f} 个 token" if cls._is_number(value) else "-"
 
     @classmethod
     def _final_stat_value(cls, value: Any) -> str:

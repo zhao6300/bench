@@ -388,17 +388,20 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
     overview_table = final_dashboard["overview"].content.content
     details_table = final_dashboard["details"].content.content
     assert [column[0] for column in overview_table.columns] == [
-        "用例 / 场景", "状态", "负载（个 · tok）", "核心指标（ms · tok/s · %）", "结论",
+        "用例 / 场景", "状态", "负载", "核心指标", "结论",
     ]
     assert any(
-        "smoke" in row[0] and "吞吐 100.0" in row[3]
+        "smoke" in row[0] and "整体吞吐 100.0 个 token/秒" in row[3]
         for row in overview_table.rows
     )
     assert any(
         "failed-case" in row[0] and "quality gate failed" in row[4]
         for row in overview_table.rows
     )
-    assert any(row[0] == "延迟（ms）" for row in details_table.rows)
+    assert any(
+        row[0] == "延迟" and "首个内容 token 时间：平均 200.0 毫秒" in row[1]
+        for row in details_table.rows
+    )
     assert "↑/↓ 或 j/k" in final_dashboard["footer"].content.content
     monkeypatch.setattr(
         reporter,
@@ -566,10 +569,23 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
         "用例 / 状态", "核心指标", "结论",
     ]
     assert len(narrow_table.rows) == 2
-    assert "吞吐 350.0" in narrow_table.rows[0][1]
+    assert "整体吞吐 350.0 个 token/秒" in narrow_table.rows[0][1]
     assert any(
-        row[0] == "延迟（ms）"
-        and "TTFT avg/P50/P90/P99: 200.0 / 150.0 / 300.0 / 500.0" in row[1]
+        row[0] == "请求 / 负载"
+        and "输入 4,000 个 token" in row[1]
+        and "实际输入 32,000 个 token" in row[1]
+        for row in narrow_details.rows
+    )
+    assert any(
+        row[0] == "延迟"
+        and "首个内容 token 时间：平均 200.0 毫秒 / 第 50 百分位 150.0 毫秒" in row[1]
+        for row in narrow_details.rows
+    )
+    assert any(
+        row[0] == "性能"
+        and "整体吞吐 350.0 个 token/秒" in row[1]
+        and "每秒完成请求数 3.50 个请求/秒" in row[1]
+        and "达标率 87.5%" in row[1]
         for row in narrow_details.rows
     )
 
@@ -577,21 +593,23 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
     medium_dashboard = reporter._render_final_results()
     medium_table = medium_dashboard["overview"].content.content
     assert [column[0] for column in medium_table.columns] == [
-        "用例 / 场景", "状态", "负载（个 · tok）", "核心指标（ms · tok/s · %）", "结论",
+        "用例 / 场景", "状态", "负载", "核心指标", "结论",
     ]
     assert len(medium_table.rows) == 3
-    assert "C 4 · N 8" in medium_table.rows[0][2]
-    assert "TTFT P99 500.0" in medium_table.rows[0][3]
-    assert "最佳并发 16" in medium_table.rows[2][4]
+    assert "并发 4 个请求 · 总请求数 8 个请求" in medium_table.rows[0][2]
+    assert "首个内容 token 时间第 99 百分位 500.0 毫秒" in medium_table.rows[0][3]
+    assert "最佳并发 16 个请求" in medium_table.rows[2][4]
 
     reporter._console.size.width = 180
     wide_dashboard = reporter._render_final_results()
     wide_table = wide_dashboard["overview"].content.content
     assert [column[0] for column in wide_table.columns] == [
-        "用例 / 场景", "状态", "负载（个 · tok）", "核心指标（ms · tok/s · %）", "场景结果", "说明",
+        "用例 / 场景", "状态", "负载", "核心指标", "场景结果", "说明",
     ]
     assert len(wide_table.rows) == 4
-    assert "最大通过 8" in wide_table.rows[3][4]
+    assert "最大通过并发 8 个请求" in wide_table.rows[3][4]
+    assert "负载（" not in "".join(column[0] for column in wide_table.columns)
+    assert "核心指标（" not in "".join(column[0] for column in wide_table.columns)
 
     reporter._move_final_selection(4)
     selected_dashboard = reporter._render_final_results()
@@ -599,7 +617,7 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
     selected_details = selected_dashboard["details"].content.content
     assert "▶ pd" in selected_table.rows[0][0]
     assert any(
-        row[0] == "性能（tok/s · req/s · %）" and "Prefill 600.0" in row[1]
+        row[0] == "性能" and "预填充吞吐 600.0 个 token/秒" in row[1]
         for row in selected_details.rows
     )
 
@@ -609,12 +627,12 @@ def test_rich_final_scenario_labels_are_user_facing() -> None:
     from benchmark import progress as progress_module
 
     labels = {
-        "single": "单一负载 API",
+        "single": "单一负载接口",
         "offline": "离线引擎",
-        "mixed-workload": "混合负载 API",
+        "mixed-workload": "混合负载接口",
         "sweep": "吞吐扫描",
-        "slo-capacity-search": "SLO 容量搜索",
-        "pd-ratio": "P/D 容量评估",
+        "slo-capacity-search": "服务等级目标容量搜索",
+        "pd-ratio": "预填充/解码容量评估",
     }
 
     assert {
