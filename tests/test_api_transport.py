@@ -309,11 +309,11 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
     assert all(snapshot["elapsed_seconds"] >= 0 for snapshot in progress_snapshots)
 
 
-def test_progress_parser_defaults_to_auto_and_is_not_suite_parameter() -> None:
-    """Keep progress rendering as a CLI-only concern outside suite JSON schema."""
+def test_progress_parser_defaults_to_off_and_is_not_suite_parameter() -> None:
+    """Keep progress opt-in and outside the suite JSON schema."""
     parser = build_parser()
 
-    assert parser.parse_args([]).progress == "auto"
+    assert parser.parse_args([]).progress == "off"
     assert parser.parse_args(["--progress", "plain"]).progress == "plain"
     assert parser.parse_args(["--progress", "rich"]).progress == "rich"
     assert parser.parse_args(["--progress", "off"]).progress == "off"

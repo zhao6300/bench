@@ -4824,9 +4824,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="配置模式下忽略同路径的历史报告并从头运行；默认会恢复，并只跳过没有请求级失败的已通过用例"
     )
     parser.add_argument(
-        "--progress", choices=["auto", "plain", "rich", "off"], default="auto",
-        help="实时进度显示：auto 在交互终端使用 Rich、其他终端使用 plain；"
-             "plain 为行式输出，rich 为 Rich 面板，off 关闭实时进度（默认：auto）"
+        "--progress", choices=["auto", "plain", "rich", "off"], default="off",
+        help="实时进度显示：默认关闭；auto 在交互终端使用 Rich、其他终端使用 plain；"
+             "plain 为行式输出，rich 为 Rich 面板，off 关闭实时进度（默认：off）"
     )
     parser.add_argument(
         "--preset", choices=get_preset_names(), default=None,
