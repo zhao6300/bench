@@ -36,6 +36,17 @@ uv pip install -e .
 pre-commit install
 ```
 
+### 构建和安装 wheel
+
+项目使用 `pyproject.toml` 中的标准 PEP 517 配置构建 wheel，不需要额外维护 `setup.py` 或 `setup.cfg`。在仓库根目录执行：
+
+```zsh
+uv build --wheel
+uv pip install 'dist/llm_inference_benchmark-0.1.0-py3-none-any.whl[api,random]'
+```
+
+`uv build --wheel` 会将 wheel 写入 `dist/`；wheel 只包含 `benchmark` Python 包和 `llm-benchmark` 命令，不包含 `examples/`、`tests/` 或本地配置。使用 wheel 安装后，示例仍需从源码仓库获取。`[api,random]` 是可选 extras；如果只使用基础功能，可安装不带 extras 的 wheel。
+
 安装后可使用 `llm-benchmark` 命令；也可直接执行 `.venv/bin/python benchmark/benchmark.py`。离线 vLLM 依赖与 CUDA、PyTorch 的组合强相关，请按照目标环境安装兼容版本后再使用 `offline` 模式。
 
 通用依赖已默认包含 `boto3` 和 `aiohttp`；本地报告与 S3 报告均无需额外安装依赖，`aiohttp` 可用于 API 正式流式轮次的异步连接池。S3 凭据和 endpoint 在运行时通过环境变量配置。
@@ -307,3 +318,35 @@ llm-benchmark \
 ```
 
 这要求容器内已有 `nsys`，并且当前用户有 Docker 访问权限。profile 产物不会自动提交。
+
+## 开发约定
+
+开发和验证均应在仓库根目录执行，并统一使用虚拟环境中的 Python；不要使用系统 `python3`、bare `pip` 或未固定环境的 `pytest`。
+
+开发完成后建议依次执行：
+
+```zsh
+# 编译检查
+.venv/bin/python -m compileall benchmark tests
+
+# CLI 和配置检查（不会发送模型或 API 请求）
+.venv/bin/python benchmark/benchmark.py --help
+.venv/bin/python benchmark/benchmark.py \
+  --config examples/benchmark-config.example.json --validate-config
+.venv/bin/python benchmark/benchmark.py \
+  --config examples/benchmark-config.example.json --list-cases
+
+# 运行全部单元测试
+.venv/bin/python -m pytest -q
+
+# 检查 Git 差异中的空白错误
+/usr/bin/git diff --check
+```
+
+如果已安装并配置 pre-commit，可额外运行：
+
+```zsh
+.venv/bin/pre-commit run --all-files
+```
+
+不要在默认验证流程中启动 API server、watch 进程或真实 GPU/API benchmark；这类场景应由使用者明确配置后单独执行。
