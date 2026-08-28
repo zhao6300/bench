@@ -387,10 +387,11 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
     final_dashboard = live.updates[-1]
     final_table = final_dashboard["results"].content.content
     assert [column[0] for column in final_table.columns] == [
-        "用例 / 状态", "请求 / 负载", "延迟", "性能 / 服务", "场景结果 / 说明",
+        "用例 / 状态", "请求 / 负载\n（个 · tok · s · %）", "延迟（ms）",
+        "性能 / 服务\n（tok/s · req/s · %）", "场景结果 / 说明\n（单位见指标）",
     ]
     assert any(
-        "smoke" in row[0] and "All 100.0 tok/s" in row[3]
+        "smoke" in row[0] and "Overall 100.0" in row[3]
         for row in final_table.rows
     )
     assert any(
@@ -443,12 +444,15 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
                         "wall_time": 2.0,
                         "avg_ttft": 0.2,
                         "p50_ttft": 0.15,
+                        "p90_ttft": 0.3,
                         "p99_ttft": 0.5,
                         "avg_tpot": 0.04,
                         "p50_tpot": 0.03,
+                        "p90_tpot": 0.06,
                         "p99_tpot": 0.08,
                         "avg_total_time": 1.2,
                         "p50_e2e": 1.0,
+                        "p90_e2e": 1.5,
                         "p99_e2e": 2.0,
                         "prompt_throughput": 300.0,
                         "prefill_throughput": 250.0,
@@ -556,33 +560,59 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
     reporter._console.size.width = 80
     narrow_table = reporter._render_final_results()["results"].content.content
     assert [column[0] for column in narrow_table.columns] == [
-        "用例 / 状态", "结果摘要", "说明",
+        "用例 / 状态", "结果摘要\n（tok · s · ms · tok/s · req/s · %）", "说明",
     ]
     assert all(len(row) == 3 for row in narrow_table.rows)
-    assert "TTFT avg/P99 200.0 ms/500.0 ms" in narrow_table.rows[0][1]
+    assert "TTFT avg/P50/P90/P99: 200.0 / 150.0 / 300.0 / 500.0" in narrow_table.rows[0][1]
     assert "建议 P:D 2:3" in narrow_table.rows[4][1]
 
     reporter._console.size.width = 120
     medium_table = reporter._render_final_results()["results"].content.content
     assert [column[0] for column in medium_table.columns] == [
-        "用例 / 状态", "请求 / 负载", "延迟", "性能 / 服务", "场景结果 / 说明",
+        "用例 / 状态", "请求 / 负载\n（个 · tok · s · %）", "延迟（ms）",
+        "性能 / 服务\n（tok/s · req/s · %）", "场景结果 / 说明\n（单位见指标）",
     ]
     assert all(len(row) == 5 for row in medium_table.rows)
-    assert "耗时 2.00 s" in medium_table.rows[0][1]
-    assert "SLO TTFT≤ 300.0 ms" in medium_table.rows[0][3]
-    assert "Cache 70.0%" in medium_table.rows[0][3]
+    assert "耗时 2.00" in medium_table.rows[0][1]
+    assert "失败 12.5" in medium_table.rows[0][1]
+    assert "SLO TTFT≤ 300.0" in medium_table.rows[0][2]
+    assert "Cache 70.0" in medium_table.rows[0][3]
     assert "最佳并发 16" in medium_table.rows[2][4]
     assert "建议 推荐分离" in medium_table.rows[4][4]
 
     reporter._console.size.width = 180
     wide_table = reporter._render_final_results()["results"].content.content
     assert [column[0] for column in wide_table.columns] == [
-        "用例 / 状态", "请求 / 负载", "延迟", "性能", "服务端观测", "场景结果", "说明",
+        "用例 / 状态", "请求 / 负载\n（个 · tok · s · %）", "延迟（ms）",
+        "性能（tok/s · req/s · %）", "服务端观测（% · req）",
+        "场景结果（单位见指标）", "说明",
     ]
     assert all(len(row) == 7 for row in wide_table.rows)
-    assert "TTFT avg/P99 200.0 ms/500.0 ms" in wide_table.rows[0][2]
-    assert "All 350.0 tok/s" in wide_table.rows[0][3]
+    assert "TTFT avg/P50/P90/P99: 200.0 / 150.0 / 300.0 / 500.0" in wide_table.rows[0][2]
+    assert "Overall 350.0" in wide_table.rows[0][3]
     assert wide_table.rows[1][2] == "-"
     assert "最大通过 8" in wide_table.rows[3][5]
-    assert "Pre 600.0 tok/s" in wide_table.rows[4][3]
+    assert "Prefill 600.0" in wide_table.rows[4][3]
     assert wide_table.rows[5][5] == "-"
+
+
+def test_rich_final_scenario_labels_are_user_facing() -> None:
+    """Use clear Chinese display names while preserving unknown scenario keys."""
+    from benchmark import progress as progress_module
+
+    labels = {
+        "single": "单一负载 API",
+        "offline": "离线引擎",
+        "mixed-workload": "混合负载 API",
+        "sweep": "吞吐扫描",
+        "slo-capacity-search": "SLO 容量搜索",
+        "pd-ratio": "P/D 容量评估",
+    }
+
+    assert {
+        scenario: progress_module.RichProgressReporter._final_scenario_label(scenario)
+        for scenario in labels
+    } == labels
+    assert progress_module.RichProgressReporter._final_scenario_label("future-scenario") == (
+        "future-scenario"
+    )

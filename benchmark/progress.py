@@ -402,26 +402,39 @@ class RichProgressReporter(ProgressReporter):
         if profile == "narrow":
             return [
                 ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
-                ("结果摘要", {"overflow": "fold"}),
+                ("结果摘要\n（tok · s · ms · tok/s · req/s · %）", {"overflow": "fold"}),
                 ("说明", {"overflow": "fold"}),
             ]
         if profile == "medium":
             return [
                 ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
-                ("请求 / 负载", {"overflow": "fold"}),
-                ("延迟", {"overflow": "fold"}),
-                ("性能 / 服务", {"overflow": "fold"}),
-                ("场景结果 / 说明", {"overflow": "fold"}),
+                ("请求 / 负载\n（个 · tok · s · %）", {"overflow": "fold"}),
+                ("延迟（ms）", {"overflow": "fold"}),
+                ("性能 / 服务\n（tok/s · req/s · %）", {"overflow": "fold"}),
+                ("场景结果 / 说明\n（单位见指标）", {"overflow": "fold"}),
             ]
         return [
             ("用例 / 状态", {"style": "cyan", "overflow": "fold"}),
-            ("请求 / 负载", {"overflow": "fold"}),
-            ("延迟", {"overflow": "fold"}),
-            ("性能", {"overflow": "fold"}),
-            ("服务端观测", {"overflow": "fold"}),
-            ("场景结果", {"overflow": "fold"}),
+            ("请求 / 负载\n（个 · tok · s · %）", {"overflow": "fold"}),
+            ("延迟（ms）", {"overflow": "fold"}),
+            ("性能（tok/s · req/s · %）", {"overflow": "fold"}),
+            ("服务端观测（% · req）", {"overflow": "fold"}),
+            ("场景结果（单位见指标）", {"overflow": "fold"}),
             ("说明", {"overflow": "fold"}),
         ]
+
+    @staticmethod
+    def _final_scenario_label(scenario: str) -> str:
+        """Return a user-facing Chinese label for a finalized scenario key."""
+        labels = {
+            "single": "单一负载 API",
+            "offline": "离线引擎",
+            "mixed-workload": "混合负载 API",
+            "sweep": "吞吐扫描",
+            "slo-capacity-search": "SLO 容量搜索",
+            "pd-ratio": "P/D 容量评估",
+        }
+        return labels.get(scenario, scenario)
 
     def _final_result_row(self, record: dict[str, Any], profile: str) -> tuple[str, ...]:
         """Format one finalized case record for a grouped table layout."""
@@ -435,7 +448,7 @@ class RichProgressReporter(ProgressReporter):
         name = str(record.get("name", "-"))
         status = str(record.get("status", "-"))
         message = self._final_result_message(record)
-        case_summary = f"{name}\n{scenario} · {status}"
+        case_summary = f"{name}\n{self._final_scenario_label(scenario)} · {status}"
         request_workload = self._final_join_lines(
             self._final_request_summary(metrics),
             self._final_workload_summary(result, metrics),
@@ -497,7 +510,7 @@ class RichProgressReporter(ProgressReporter):
             parts.append(f"并发 {concurrency}")
         if total != "-":
             parts.append(f"请求 {total}")
-        wall_time = self._format_seconds(metrics.get("wall_time"))
+        wall_time = self._format_number(metrics.get("wall_time"), 2)
         if wall_time != "-":
             parts.append(f"耗时 {wall_time}")
         return " · ".join(parts) if parts else "-"
@@ -505,7 +518,7 @@ class RichProgressReporter(ProgressReporter):
     def _final_success_failure_rate(self, metrics: dict[str, Any]) -> str:
         """Format success, failure, and failure-rate aggregates."""
         success_failure = self._format_success_failure(metrics)
-        failure_rate = self._format_percent(metrics.get("failure_rate"))
+        failure_rate = self._format_percent_ratio_value(metrics.get("failure_rate"))
         if success_failure == "-":
             return "-"
         return (
@@ -553,7 +566,13 @@ class RichProgressReporter(ProgressReporter):
             self._final_latency_values(metrics, "tpot", compact=True),
             self._final_latency_values(metrics, "e2e", compact=True),
             self._final_labeled_value(
-                "请求均耗", self._format_milliseconds(metrics.get("avg_request_time"))
+                "请求均耗", self._format_milliseconds_value(metrics.get("avg_request_time"))
+            ),
+            self._final_labeled_value(
+                "SLO TTFT≤", self._format_milliseconds_value(metrics.get("slo_ttft"))
+            ),
+            self._final_labeled_value(
+                "SLO TPOT≤", self._format_milliseconds_value(metrics.get("slo_tpot"))
             ),
         )
 
@@ -562,38 +581,41 @@ class RichProgressReporter(ProgressReporter):
     ) -> str:
         """Format latency percentiles in milliseconds with explicit labels."""
         metric_keys = {
-            "ttft": ("TTFT", "avg_ttft", "p50_ttft", "p99_ttft"),
-            "tpot": ("TPOT", "avg_tpot", "p50_tpot", "p99_tpot"),
-            "e2e": ("E2E", "avg_total_time", "p50_e2e", "p99_e2e"),
+            "ttft": ("TTFT", "avg_ttft", "p50_ttft", "p90_ttft", "p99_ttft"),
+            "tpot": ("TPOT", "avg_tpot", "p50_tpot", "p90_tpot", "p99_tpot"),
+            "e2e": ("E2E", "avg_total_time", "p50_e2e", "p90_e2e", "p99_e2e"),
         }
-        label, average_key, p50_key, p99_key = metric_keys[metric]
-        average = self._format_milliseconds(metrics.get(average_key))
-        p50 = self._format_milliseconds(metrics.get(p50_key))
-        p99 = self._format_milliseconds(metrics.get(p99_key))
-        if average == p50 == p99 == "-":
+        label, average_key, p50_key, p90_key, p99_key = metric_keys[metric]
+        values = (
+            self._format_milliseconds_value(metrics.get(average_key)),
+            self._format_milliseconds_value(metrics.get(p50_key)),
+            self._format_milliseconds_value(metrics.get(p90_key)),
+            self._format_milliseconds_value(metrics.get(p99_key)),
+        )
+        if all(value == "-" for value in values):
             return "-"
         if compact:
-            return f"{label} avg/P99 {average}/{p99}"
-        return f"{average} / {p50} / {p99}"
+            return f"{label} avg/P50/P90/P99: {' / '.join(values)}"
+        return " / ".join(f"{value} ms" if value != "-" else value for value in values)
 
     def _final_throughput_summary(
         self, result: dict[str, Any], metrics: dict[str, Any]
     ) -> str:
         """Format all available phase and overall throughput aggregates."""
         labels = (
-            ("P", "prompt_throughput"),
-            ("Pre", "prefill_throughput"),
-            ("Dec", "decode_throughput"),
-            ("All", "overall_throughput"),
+            ("Prompt", "prompt_throughput"),
+            ("Prefill", "prefill_throughput"),
+            ("Decode", "decode_throughput"),
+            ("Overall", "overall_throughput"),
         )
-        parts = [
-            f"{label} {self._format_throughput(metrics.get(key))}"
-            for label, key in labels
-            if self._format_throughput(metrics.get(key)) != "-"
-        ]
+        parts = []
+        for label, key in labels:
+            value = self._format_number(metrics.get(key), 1)
+            if value != "-":
+                parts.append(f"{label} {value}")
         if parts:
             return "\n".join(parts)
-        best = self._format_throughput(result.get("best_throughput"))
+        best = self._format_number(result.get("best_throughput"), 1)
         if best != "-":
             return f"峰值 {best}"
         prefill = result.get("prefill")
@@ -601,10 +623,10 @@ class RichProgressReporter(ProgressReporter):
         if isinstance(prefill, dict) and isinstance(decode, dict):
             return self._final_join_lines(
                 self._final_labeled_value(
-                    "Pre", self._format_throughput(prefill.get("prefill_throughput"))
+                    "Prefill", self._format_number(prefill.get("prefill_throughput"), 1)
                 ),
                 self._final_labeled_value(
-                    "Dec", self._format_throughput(decode.get("decode_throughput"))
+                    "Decode", self._format_number(decode.get("decode_throughput"), 1)
                 ),
             )
         return "-"
@@ -612,18 +634,12 @@ class RichProgressReporter(ProgressReporter):
     def _final_qps_goodput_summary(self, metrics: dict[str, Any]) -> str:
         """Format completed-request rate and SLO compliance aggregates."""
         return self._final_join_lines(
-            self._final_labeled_value("QPS", self._format_qps(metrics.get("qps"))),
+            self._final_labeled_value("QPS", self._format_number(metrics.get("qps"), 2)),
             self._final_labeled_value(
-                "Goodput", self._format_percent(metrics.get("goodput_pct"))
+                "Goodput", self._format_percent_value(metrics.get("goodput_pct"))
             ),
             self._final_labeled_value(
-                "GP QPS", self._format_qps(metrics.get("goodput_qps"))
-            ),
-            self._final_labeled_value(
-                "SLO TTFT≤", self._format_milliseconds(metrics.get("slo_ttft"))
-            ),
-            self._final_labeled_value(
-                "SLO TPOT≤", self._format_milliseconds(metrics.get("slo_tpot"))
+                "GP QPS", self._format_number(metrics.get("goodput_qps"), 2)
             ),
         )
 
@@ -634,9 +650,15 @@ class RichProgressReporter(ProgressReporter):
             server_metrics = metrics.get("server_metrics_peak")
         raw_metrics = server_metrics.get("metrics") if isinstance(server_metrics, dict) else {}
         raw_metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
-        cache = self._format_percent(self._final_stat_number(raw_metrics.get("cache_hit_rate")))
-        gpu = self._format_percent(self._final_stat_number(raw_metrics.get("gpu_cache_usage_pct")))
-        cpu = self._format_percent(self._final_stat_number(raw_metrics.get("cpu_cache_usage_pct")))
+        cache = self._format_percent_value(
+            self._final_stat_number(raw_metrics.get("cache_hit_rate"))
+        )
+        gpu = self._format_percent_value(
+            self._final_stat_number(raw_metrics.get("gpu_cache_usage_pct"))
+        )
+        cpu = self._format_percent_value(
+            self._final_stat_number(raw_metrics.get("cpu_cache_usage_pct"))
+        )
         running = self._format_number(self._final_stat_number(raw_metrics.get("running_requests")), 1)
         waiting = self._format_number(self._final_stat_number(raw_metrics.get("waiting_requests")), 1)
         return self._final_join_lines(
@@ -751,14 +773,9 @@ class RichProgressReporter(ProgressReporter):
         return f"{value:.{precision}f}" if cls._is_number(value) else "-"
 
     @classmethod
-    def _format_seconds(cls, value: Any) -> str:
-        """Format a duration metric in seconds."""
-        return f"{value:.2f} s" if cls._is_number(value) else "-"
-
-    @classmethod
-    def _format_milliseconds(cls, value: Any) -> str:
-        """Format a seconds metric as milliseconds."""
-        return f"{value * 1000:.1f} ms" if cls._is_number(value) else "-"
+    def _format_milliseconds_value(cls, value: Any) -> str:
+        """Format a seconds metric as a unitless millisecond value."""
+        return f"{value * 1000:.1f}" if cls._is_number(value) else "-"
 
     @classmethod
     def _format_throughput(cls, value: Any) -> str:
@@ -766,14 +783,20 @@ class RichProgressReporter(ProgressReporter):
         return f"{value:.1f} tok/s" if cls._is_number(value) else "-"
 
     @classmethod
-    def _format_qps(cls, value: Any) -> str:
-        """Format a request-rate metric with its unit."""
-        return f"{value:.2f} req/s" if cls._is_number(value) else "-"
+    def _format_percent_value(cls, value: Any) -> str:
+        """Format a percentage metric without its percent suffix."""
+        return f"{value:.1f}" if cls._is_number(value) else "-"
+
+    @classmethod
+    def _format_percent_ratio_value(cls, value: Any) -> str:
+        """Format a 0–1 ratio as a unitless percentage value."""
+        return f"{value * 100:.1f}" if cls._is_number(value) else "-"
 
     @classmethod
     def _format_percent(cls, value: Any) -> str:
         """Format a percentage metric already expressed on a 0–100 scale."""
-        return f"{value:.1f}%" if cls._is_number(value) else "-"
+        formatted = cls._format_percent_value(value)
+        return f"{formatted}%" if formatted != "-" else "-"
 
     @classmethod
     def _format_percent_from_ratio(cls, value: Any) -> str:
@@ -782,14 +805,14 @@ class RichProgressReporter(ProgressReporter):
 
     @classmethod
     def _format_token_count(cls, value: Any) -> str:
-        """Format a token count compactly while retaining its token unit."""
+        """Format a token count compactly without repeating its column unit."""
         if not cls._is_number(value):
             return "-"
         if abs(value) >= 1_000_000:
-            return f"{value / 1_000_000:.1f}M tok"
+            return f"{value / 1_000_000:.1f}M"
         if abs(value) >= 1_000:
-            return f"{value / 1_000:.1f}K tok"
-        return f"{value:.0f} tok"
+            return f"{value / 1_000:.1f}K"
+        return f"{value:.0f}"
 
     @classmethod
     def _final_stat_value(cls, value: Any) -> str:
