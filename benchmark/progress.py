@@ -42,6 +42,11 @@ class ProgressReporter:
     def event(self, message: str) -> None:
         """Record an informational benchmark event."""
 
+    def show_final_results(
+        self, report: dict[str, Any], report_location: str | None = None
+    ) -> None:
+        """Optionally render final benchmark results before closing."""
+
     def close(self) -> None:
         """Release terminal resources held by the reporter."""
 
@@ -118,7 +123,7 @@ def _load_rich_dashboard_components() -> dict[str, Any]:
 
 
 class RichProgressReporter(ProgressReporter):
-    """Render a full-screen, non-interactive Rich benchmark dashboard."""
+    """Render a full-screen Rich dashboard and interactive final result view."""
 
     def __init__(self, stream: TextIO) -> None:
         components = _load_rich_dashboard_components()
@@ -148,6 +153,8 @@ class RichProgressReporter(ProgressReporter):
         self._last_ttft: float | None = None
         self._last_error: str | None = None
         self._events: list[str] = []
+        self._final_report: dict[str, Any] | None = None
+        self._final_report_location: str | None = None
 
     def case_started(
         self, case_name: str, scenario: str, position: int, total_cases: int
@@ -223,6 +230,22 @@ class RichProgressReporter(ProgressReporter):
             self._ensure_live()
             self._refresh()
 
+    def show_final_results(
+        self, report: dict[str, Any], report_location: str | None = None
+    ) -> None:
+        """Show a final result table until the user exits the dashboard.
+
+        Args:
+            report: Fully finalized benchmark report used to populate the table.
+            report_location: Optional persisted JSON report location.
+        """
+        with self._lock:
+            self._final_report = report
+            self._final_report_location = report_location
+            self._ensure_live()
+            self._refresh()
+        self._wait_for_final_exit()
+
     def close(self) -> None:
         with self._lock:
             if self._live is not None:
@@ -257,7 +280,41 @@ class RichProgressReporter(ProgressReporter):
         self._events.append(message)
         del self._events[:-8]
 
+    def _wait_for_final_exit(self) -> None:
+        """Wait for Q or Ctrl-C when a terminal input stream is available."""
+        try:
+            while True:
+                key = self._read_final_key()
+                if key is None or key.lower() == "q":
+                    return
+        except KeyboardInterrupt:
+            return
+
+    @staticmethod
+    def _read_final_key() -> str | None:
+        """Read one cbreak-mode terminal key without requiring Enter."""
+        stream = sys.stdin
+        if not getattr(stream, "isatty", lambda: False)():
+            return None
+        try:
+            import termios
+            import tty
+        except ImportError:
+            return None
+        try:
+            file_descriptor = stream.fileno()
+            original_settings = termios.tcgetattr(file_descriptor)
+        except (AttributeError, OSError, termios.error):
+            return None
+        try:
+            tty.setcbreak(file_descriptor)
+            return stream.read(1)
+        finally:
+            termios.tcsetattr(file_descriptor, termios.TCSADRAIN, original_settings)
+
     def _render(self) -> Any:
+        if self._final_report is not None:
+            return self._render_final_results()
         terminal_width = self._console.size.width
         layout = self._Layout(name="root")
         layout.split_column(
@@ -283,6 +340,132 @@ class RichProgressReporter(ProgressReporter):
         layout["events"].update(self._events_panel())
         layout["footer"].update(self._footer_panel())
         return layout
+
+    def _render_final_results(self) -> Any:
+        """Build the completion view shown after benchmark results are persisted."""
+        summary = self._final_report.get("summary", {}) if self._final_report else {}
+        layout = self._Layout(name="root")
+        layout.split_column(
+            self._Layout(name="header", size=3),
+            self._Layout(name="results", ratio=1),
+            self._Layout(name="footer", size=3),
+        )
+        header = self._Text(
+            "LLM Benchmark 最终结果",
+            justify="center",
+            style="bold white",
+        )
+        layout["header"].update(self._Panel(header, style="green", padding=(0, 1)))
+        layout["results"].update(self._final_results_panel(summary))
+        report_text = (
+            f"JSON report: {self._final_report_location}"
+            if self._final_report_location
+            else "JSON report: 未输出"
+        )
+        footer = f"{report_text}  ·  按 Q 退出  ·  Ctrl-C 退出"
+        layout["footer"].update(
+            self._Panel(footer, title="结果已完成", border_style="magenta", padding=(0, 1))
+        )
+        return layout
+
+    def _final_results_panel(self, summary: dict[str, Any]) -> Any:
+        """Return a compact table for all completed benchmark cases."""
+        table = self._Table(expand=True, show_lines=True, padding=(0, 1))
+        table.add_column("Case", style="cyan", overflow="fold")
+        table.add_column("场景", style="blue", no_wrap=True)
+        table.add_column("状态", no_wrap=True)
+        table.add_column("请求", justify="right", no_wrap=True)
+        table.add_column("成功/失败", justify="right", no_wrap=True)
+        table.add_column("平均 TTFT", justify="right", no_wrap=True)
+        table.add_column("吞吐", justify="right", no_wrap=True)
+        table.add_column("QPS", justify="right", no_wrap=True)
+        table.add_column("说明", overflow="fold")
+        for record in (self._final_report or {}).get("cases", []):
+            if isinstance(record, dict):
+                table.add_row(*self._final_result_row(record))
+        if not table.rows:
+            table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "无可显示的用例")
+        title = (
+            "最终结果 · "
+            f"通过 {summary.get('passed', 0)}  失败 {summary.get('failed', 0)}  "
+            f"中断 {summary.get('interrupted', 0)}  跳过 {summary.get('skipped', 0)}"
+        )
+        return self._Panel(table, title=title, border_style="green")
+
+    def _final_result_row(self, record: dict[str, Any]) -> tuple[str, ...]:
+        """Format one finalized case record into final-table columns."""
+        result = record.get("result")
+        result = result if isinstance(result, dict) else {}
+        metrics = result.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = result.get("selected_metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        scenario = str(record.get("scenario") or result.get("scenario") or "-")
+        throughput = self._final_throughput(result, metrics)
+        message = self._final_result_message(record)
+        return (
+            str(record.get("name", "-")),
+            scenario,
+            str(record.get("status", "-")),
+            self._format_integer(metrics.get("total_requests")),
+            self._format_success_failure(metrics),
+            self._format_seconds(metrics.get("avg_ttft")),
+            throughput,
+            self._format_number(metrics.get("qps"), 2),
+            message,
+        )
+
+    def _final_throughput(
+        self, result: dict[str, Any], metrics: dict[str, Any]
+    ) -> str:
+        """Select a meaningful aggregate throughput value for one scenario."""
+        for key in ("overall_throughput", "decode_throughput", "prefill_throughput"):
+            value = metrics.get(key)
+            if isinstance(value, (int, float)):
+                return f"{value:.1f} tok/s"
+        if isinstance(result.get("best_throughput"), (int, float)):
+            return f"峰值 {result['best_throughput']:.1f} tok/s"
+        prefill = result.get("prefill")
+        decode = result.get("decode")
+        if isinstance(prefill, dict) and isinstance(decode, dict):
+            return (
+                "P/D "
+                f"{self._format_number(prefill.get('prefill_throughput'), 1)}/"
+                f"{self._format_number(decode.get('decode_throughput'), 1)}"
+            )
+        return "-"
+
+    @staticmethod
+    def _format_integer(value: Any) -> str:
+        """Format an integer-like result value for a table cell."""
+        return str(value) if isinstance(value, int) else "-"
+
+    def _format_success_failure(self, metrics: dict[str, Any]) -> str:
+        """Format request success and failure totals for a table cell."""
+        successful = self._format_integer(metrics.get("successful"))
+        failed = self._format_integer(metrics.get("failed"))
+        return f"{successful}/{failed}" if successful != "-" or failed != "-" else "-"
+
+    @staticmethod
+    def _format_seconds(value: Any) -> str:
+        """Format a seconds measurement for a table cell."""
+        return f"{value:.3f}s" if isinstance(value, (int, float)) else "-"
+
+    @staticmethod
+    def _format_number(value: Any, precision: int) -> str:
+        """Format a numeric measurement for a table cell."""
+        return f"{value:.{precision}f}" if isinstance(value, (int, float)) else "-"
+
+    @staticmethod
+    def _final_result_message(record: dict[str, Any]) -> str:
+        """Extract a concise failure, quality, or skip message for a case."""
+        error = record.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        quality_failures = record.get("quality_failures")
+        if isinstance(quality_failures, list) and quality_failures:
+            return "; ".join(str(item) for item in quality_failures)
+        return str(record.get("skip_reason") or "-")
 
     def _header_panel(self) -> Any:
         elapsed = time.perf_counter() - self._started_perf

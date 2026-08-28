@@ -73,6 +73,7 @@ def test_plain_progress_ignores_stage_and_information_events() -> None:
     reporter.stage_started("加载 tokenizer", "placeholder")
     reporter.stage_finished("加载 tokenizer")
     reporter.event("跳过预热请求")
+    reporter.show_final_results({"summary": {}, "cases": []})
 
     assert stream.getvalue() == ""
 
@@ -95,6 +96,7 @@ def test_off_progress_suppresses_lifecycle_output(capsys) -> None:
     })
     reporter.round_finished()
     reporter.case_finished("passed", 1, 1)
+    reporter.show_final_results({"summary": {}, "cases": []})
     reporter.close()
 
     captured = capsys.readouterr()
@@ -129,6 +131,17 @@ class _SuiteReporter:
         self.events.append(("closed",))
 
 
+class _FinalSuiteReporter(_SuiteReporter):
+    """Capture final-result callbacks in addition to suite lifecycle events."""
+
+    def show_final_results(
+        self, report: dict[str, object], report_location: str | None
+    ) -> None:
+        summary = report["summary"]
+        assert isinstance(summary, dict)
+        self.events.append(("final", summary["passed"], report_location))
+
+
 def test_optional_stage_events_support_legacy_reporters() -> None:
     """Do not require suite reporters to implement dashboard-only callbacks."""
     reporter = _SuiteReporter()
@@ -137,6 +150,15 @@ def test_optional_stage_events_support_legacy_reporters() -> None:
     benchmark_module._emit_progress_event(args, "stage_started", "加载 tokenizer")
     benchmark_module._emit_progress_event(args, "stage_finished", "加载 tokenizer")
     benchmark_module._emit_progress_event(args, "event", "跳过预热请求")
+
+    assert reporter.events == []
+
+
+def test_optional_final_results_support_legacy_reporters() -> None:
+    """Preserve suite execution for reporters without a final-result hook."""
+    reporter = _SuiteReporter()
+
+    benchmark_module._show_final_progress_results(reporter, {"cases": []}, None)
 
     assert reporter.events == []
 
@@ -156,7 +178,7 @@ def test_configured_suite_reports_case_lifecycle_without_network(
         }),
         encoding="utf-8",
     )
-    reporter = _SuiteReporter()
+    reporter = _FinalSuiteReporter()
     monkeypatch.setattr(
         benchmark_module, "create_progress_reporter", lambda _mode: reporter
     )
@@ -181,6 +203,7 @@ def test_configured_suite_reports_case_lifecycle_without_network(
     assert reporter.events == [
         ("started", "smoke", "single", 1, 1),
         ("finished", "passed", 1, 1),
+        ("final", 1, str(report_path)),
         ("closed",),
     ]
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -228,14 +251,14 @@ class _FakeLayout:
 class _FakeTable:
     """Record dashboard rows without Rich rendering behavior."""
 
-    def __init__(self) -> None:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
         self.rows: list[tuple[object, ...]] = []
 
     @classmethod
     def grid(cls, **_kwargs: object) -> "_FakeTable":
         return cls()
 
-    def add_column(self, **_kwargs: object) -> None:
+    def add_column(self, *_args: object, **_kwargs: object) -> None:
         pass
 
     def add_row(self, *values: object) -> None:
@@ -328,6 +351,47 @@ def test_rich_progress_uses_full_screen_dashboard(monkeypatch) -> None:
     assert any("阶段开始: 加载 tokenizer：placeholder" in row[0] for row in dashboard["events"].content.content.rows)
     assert any("阶段完成: 加载 tokenizer" in row[0] for row in dashboard["events"].content.content.rows)
     assert any("跳过预热请求" in row[0] for row in dashboard["events"].content.content.rows)
+
+    final_report = {
+        "summary": {"passed": 1, "failed": 1, "interrupted": 0, "skipped": 0},
+        "cases": [
+            {
+                "name": "smoke",
+                "scenario": "single",
+                "status": "passed",
+                "result": {
+                    "metrics": {
+                        "total_requests": 4,
+                        "successful": 4,
+                        "failed": 0,
+                        "avg_ttft": 0.2,
+                        "overall_throughput": 100.0,
+                        "qps": 2.5,
+                    },
+                },
+            },
+            {
+                "name": "failed-case",
+                "scenario": "single",
+                "status": "failed",
+                "error": {"message": "quality gate failed"},
+            },
+        ],
+    }
+    monkeypatch.setattr(reporter, "_read_final_key", lambda: "q")
+    reporter.show_final_results(final_report, "/tmp/final-report.json")
+
+    final_dashboard = live.updates[-1]
+    final_table = final_dashboard["results"].content.content
+    assert any(row[0] == "smoke" and row[6] == "100.0 tok/s" for row in final_table.rows)
+    assert any(row[0] == "failed-case" and row[8] == "quality gate failed" for row in final_table.rows)
+    assert "按 Q 退出" in final_dashboard["footer"].content.content
+    monkeypatch.setattr(
+        reporter,
+        "_read_final_key",
+        lambda: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    reporter.show_final_results(final_report)
 
     reporter.close()
     assert live.stopped is True

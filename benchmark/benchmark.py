@@ -304,6 +304,13 @@ def _emit_progress_event(args, method: str, *event_args: str) -> None:
         callback(*event_args)
 
 
+def _show_final_progress_results(reporter, report, report_location: str | None) -> None:
+    """Show optional final dashboard results without requiring reporter support."""
+    callback = getattr(reporter, "show_final_results", None)
+    if callable(callback):
+        callback(report, report_location)
+
+
 def nsys_start():
     """Trigger nsys to start collecting profile data in the inference container."""
     if not NSYS_PROFILE:
@@ -4764,7 +4771,14 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     )
     _print_failed_case_summary(report)
     print(f"JSON report: {report_location.display_name}")
-    progress_reporter.close()
+    try:
+        _show_final_progress_results(
+            progress_reporter, report, report_location.display_name
+        )
+    except Exception as exc:
+        print(f"WARNING: cannot show final dashboard results: {exc}", file=sys.stderr)
+    finally:
+        progress_reporter.close()
     return exit_code
 
 
@@ -5108,6 +5122,7 @@ def main():
         print()
 
     exit_code = 1
+    interrupted = False
     try:
         progress_reporter.case_started(record["name"], scenario, 1, 1)
         if args.mode == "api":
@@ -5128,6 +5143,7 @@ def main():
             record["status"] = "passed"
             exit_code = 0
     except KeyboardInterrupt:
+        interrupted = True
         record["error"] = {"type": "KeyboardInterrupt", "message": "interrupted by user"}
         raise
     except Exception as exc:
@@ -5136,12 +5152,30 @@ def main():
     finally:
         record["finished_at"] = _now_iso()
         record["duration_seconds"] = time.perf_counter() - started_perf
+        display_report = report
+        display_report_location = None
         if report is not None:
             _update_report_summary(report, started_perf)
             _write_json_report(report_storage, report)
-            print(f"JSON report: {report_storage.location.display_name}")
+            display_report_location = report_storage.location.display_name
+            print(f"JSON report: {display_report_location}")
+        else:
+            display_report = _new_report("single-benchmark")
+            display_report["suite"]["started_at"] = started_at
+            display_report["cases"].append(record)
+            _update_report_summary(display_report, started_perf, terminal=True)
         progress_reporter.case_finished(record["status"], 1, 1)
-        progress_reporter.close()
+        if interrupted:
+            progress_reporter.close()
+        else:
+            try:
+                _show_final_progress_results(
+                    progress_reporter, display_report, display_report_location
+                )
+            except Exception as exc:
+                print(f"WARNING: cannot show final dashboard results: {exc}", file=sys.stderr)
+            finally:
+                progress_reporter.close()
     return exit_code
 
 
