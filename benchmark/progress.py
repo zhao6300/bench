@@ -690,8 +690,8 @@ class RichProgressReporter(ProgressReporter):
         if all(value == "-" for value in values):
             return "-"
         return (
-            f"{label}：平均 {values[0]} / 第 50 百分位 {values[1]} / "
-            f"第 90 百分位 {values[2]} / 第 99 百分位 {values[3]}"
+            f"{label}：平均 {values[0]} / P50 {values[1]} / "
+            f"P90 {values[2]} / P99 {values[3]}"
         )
 
     def _final_throughput_summary(
@@ -764,9 +764,9 @@ class RichProgressReporter(ProgressReporter):
             self._final_stat_number(raw_metrics.get("waiting_requests")), precision=1
         )
         return self._final_join_lines(
-            self._final_labeled_value("KV 缓存命中率", cache),
-            self._final_labeled_value("图形处理器缓存使用率", gpu),
-            self._final_labeled_value("中央处理器缓存使用率", cpu),
+            self._final_labeled_value("KV Cache 命中率", cache),
+            self._final_labeled_value("GPU Cache 使用率", gpu),
+            self._final_labeled_value("CPU Cache 使用率", cpu),
             self._final_labeled_value("运行请求数", running),
             self._final_labeled_value("等待请求数", waiting),
         )

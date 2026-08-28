@@ -578,7 +578,9 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
     )
     assert any(
         row[0] == "延迟"
-        and "TTFT：平均 200.0 毫秒 / 第 50 百分位 150.0 毫秒" in row[1]
+        and "TTFT：平均 200.0 毫秒 / P50 150.0 毫秒" in row[1]
+        and "P90 300.0 毫秒" in row[1]
+        and "P99 500.0 毫秒" in row[1]
         and "TPOT：平均 40.0 毫秒" in row[1]
         and "E2E：平均 1200.0 毫秒" in row[1]
         for row in narrow_details.rows
@@ -588,6 +590,13 @@ def test_rich_final_results_adapt_to_terminal_width(monkeypatch) -> None:
         and "整体吞吐 350.0 个 token/秒" in row[1]
         and "每秒完成请求数 3.50 个请求/秒" in row[1]
         and "达标率 87.5%" in row[1]
+        for row in narrow_details.rows
+    )
+    assert any(
+        row[0] == "服务端"
+        and "KV Cache 命中率 70.0%" in row[1]
+        and "GPU Cache 使用率 85.0%" in row[1]
+        and "CPU Cache 使用率 5.0%" in row[1]
         for row in narrow_details.rows
     )
 
