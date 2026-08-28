@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "name": "mixed-workload-api-example",
+  "description": "随机混合短入长出、中等请求与长入短出的 API 负载示例",
+  "metadata": {
+    "owner": "inference-team",
+    "purpose": "mixed-workload-comparison"
+  },
+  "continue_on_error": true,
+  "defaults": {
+    "mode": "api",
+    "api_base": "http://localhost:8000/v1",
+    "api_transport": "requests",
+    "model": "your-served-model",
+    "tokenizer": "/path/to/model-or-tokenizer",
+    "dataset": "random",
+    "ignore_eos": true,
+    "seed": 42,
+    "max_failure_rate": 0.0,
+    "min_goodput_pct": 90.0,
+    "slo": {
+      "ttft_seconds": 5.0,
+      "tpot_seconds": 0.1
+    },
+    "warmup": {
+      "enabled": true,
+      "rounds": 1
+    }
+  },
+  "report": {
+    "path": "mixed-workload-report.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "mixed-production-shape",
+      "description": "按权重混合短入长出、中等请求与长入短出",
+      "enabled": false,
+      "tags": [
+        "mixed",
+        "production",
+        "expensive"
+      ],
+      "scenario": "mixed-workload",
+      "params": {
+        "requests": {
+          "concurrency": 8,
+          "count": 32
+        },
+        "workload_mix": [
+          {
+            "input_tokens": 128,
+            "output_tokens": 1024,
+            "weight": 0.3
+          },
+          {
+            "input_tokens": 4096,
+            "output_tokens": 512,
+            "weight": 0.5
+          },
+          {
+            "input_tokens": 32768,
+            "output_tokens": 32,
+            "weight": 0.2
+          }
+        ]
+      }
+    }
+  ]
+}

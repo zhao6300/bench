@@ -88,6 +88,7 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 | 256K 并发阶梯 | [`benchmark-config-concurrency-staircase-256k.json`](examples/benchmark-config-concurrency-staircase-256k.json) | 固定 256K 请求形状的多档并发测试。 |
 | 64K / 128K / 240K 并发矩阵 | [`benchmark-config-concurrency-matrix-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-64k-128k-240k.json) | 多上下文长度和并发组合。 |
 | 128K / 2K P/D 分离评估 | [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json) | 分别测量单实例 Prefill/Decode 并给出 P:D 实例比例和调度参数建议；默认禁用。 |
+| 混合负载 API 压测 | [`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json) | 随机混合短入长出、中等请求与长入短出；默认禁用。 |
 
 长上下文示例包含部署相关地址、模型名、tokenizer 路径或环境变量名。它们是参数参考，不应直接对陌生环境运行。以下流程以真实的 128K 吞吐配置为例：
 
@@ -132,7 +133,27 @@ cp examples/benchmark-config-pd-ratio-128k-2k.json \
   --config examples/benchmark-config-pd-ratio-128k-2k.local.json
 ```
 
-## 报告输出：本地文件或 S3
+### 4. 混合负载评估
+
+[`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json) 提供一个独立的混合负载 API 示例：默认使用随机 token 数据集，以 30% 短输入长输出、50% 中等请求和 20% 长输入短输出组成 32 个请求，并发度为 8。`workload_mix` 中的 `input_tokens`、`output_tokens` 和 `weight` 分别表示每类请求的输入长度、输出上限和分配权重；实际请求会按种子随机打散，报告同时记录配置形状与 tokenizer 重编码后的实际长度。
+
+该用例默认 `enabled: false`，不会因配置校验或列出用例而发送请求。复制后设置服务地址、模型、tokenizer 和鉴权环境变量，再启用本地副本中的 case：
+
+```zsh
+cp examples/benchmark-config-mixed-workload.json \
+  examples/benchmark-config-mixed-workload.local.json
+# 编辑本地副本的 api_base、model、tokenizer 和鉴权设置
+
+.venv/bin/python benchmark/benchmark.py \
+  --config examples/benchmark-config-mixed-workload.local.json --validate-config
+.venv/bin/python benchmark/benchmark.py \
+  --config examples/benchmark-config-mixed-workload.local.json --list-cases
+
+# 确认服务和负载成本后，将本地副本中 cases[0].enabled 改为 true，再执行：
+.venv/bin/python benchmark/benchmark.py \
+  --config examples/benchmark-config-mixed-workload.local.json
+```
+
 
 `report.path` 和 CLI 的 `--report` 都支持本地路径与 `s3://bucket/key`。保持 [`examples/benchmark-config.example.json`](examples/benchmark-config.example.json) 中的本地 `report.path` 作为默认选择；需要 S3 时，复制该模板为 `*.local.json`，将其中的 `report.path` 改为类似 `s3://my-benchmark-reports/reports/benchmark-{timestamp}.json`，然后运行该本地副本。
 
@@ -176,6 +197,7 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 - [`benchmark-config-concurrency-staircase-128k.json`](examples/benchmark-config-concurrency-staircase-128k.json)
 - [`benchmark-config-concurrency-staircase-256k.json`](examples/benchmark-config-concurrency-staircase-256k.json)
 - [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json)
+- [`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json)
 
 对 `random` 数据集，`random_input_len`、`random_output_len` 和 `random_prefix_len` 是权威参数，分别表示独有输入、输出上限和共享前缀；它们优先于通用的 `context_len`/`max_tokens`。实际统计以发送前 tokenizer 重编码后的 `DatasetBatch` 为准，报告可能与目标长度有少量差异。`share_prefix` 与 `prefix_ratio` 仅对 `text` 生效。
 
