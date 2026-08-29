@@ -109,7 +109,7 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 
 不要将密钥写入 JSON 或提交 `*.local.json`。工具默认拒绝将 bearer key 发往非 loopback 的明文 HTTP 服务；仅在受信任内网且明确知悉风险时，才在本地配置启用 `allow_insecure_api_key`。
 
-默认 `api_transport` 为 `requests`，以保持既有行为。高并发 API 基准可在命令行使用 `--api-transport aiohttp`，或在本地 JSON 的 `defaults` / case 参数中设置 `"api_transport": "aiohttp"`。该选项仅切换正式 chat-completions 流式测量轮次；预热、服务诊断和 Prometheus 指标采集仍使用 `requests`。无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
+默认 `api_transport` 为 `requests`，以保持既有行为。高并发 API 基准可在命令行使用 `--api-transport aiohttp`，或在本地 JSON 的 `defaults` / case 参数中设置 `"api_transport": "aiohttp"`。`--api-timeout-seconds`（JSON：`api_timeout_seconds`）控制每条正式 chat-completions 流式请求的超时，默认 `600` 秒，两个 transport 都适用；`requests` 使用连接/读取超时语义，`aiohttp` 使用单请求总时长。该参数不影响预热、服务诊断、Prometheus 指标采集或 automation `/models` preflight，它们仍使用各自的 `requests` 超时。无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
 
 ### 2. 选择与目标匹配的现有配置
 

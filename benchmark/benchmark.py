@@ -981,7 +981,17 @@ def run_offline_benchmark(args):
     }
 
 
-def send_single_api_request(req_id, prompt, url, headers, model, max_tokens, tokenizer=None, ignore_eos=True):
+def send_single_api_request(
+    req_id,
+    prompt,
+    url,
+    headers,
+    model,
+    max_tokens,
+    tokenizer=None,
+    ignore_eos=True,
+    timeout_seconds=600.0,
+):
     """Send one chat request through the default requests transport."""
     return send_requests_chat_request(
         req_id,
@@ -993,6 +1003,7 @@ def send_single_api_request(req_id, prompt, url, headers, model, max_tokens, tok
         requests,
         tokenizer,
         ignore_eos,
+        timeout_seconds,
     )
 
 
@@ -1705,6 +1716,7 @@ def run_api_benchmark_round(
     slo_ttft=5.0,
     slo_tpot=0.1,
     api_transport="requests",
+    api_timeout_seconds=600.0,
     progress_reporter=None,
 ):
     """
@@ -1843,6 +1855,7 @@ def run_api_benchmark_round(
             tokenizer,
             ignore_eos,
             _record_result,
+            timeout_seconds=api_timeout_seconds,
         )
     elif api_transport == "requests":
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
@@ -1858,6 +1871,7 @@ def run_api_benchmark_round(
                     max_tokens_list[i],
                     tokenizer,
                     ignore_eos,
+                    api_timeout_seconds,
                 )
                 future.benchmark_req_id = i
                 future.add_done_callback(_on_complete)
@@ -2107,6 +2121,7 @@ def run_api_benchmark(args):
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
+        api_timeout_seconds=getattr(args, "api_timeout_seconds", 600.0),
         progress_reporter=getattr(args, "_progress_reporter", None),
     )
     nsys_stop()
@@ -2295,6 +2310,7 @@ def run_mixed_benchmark(args):
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
+        api_timeout_seconds=getattr(args, "api_timeout_seconds", 600.0),
         progress_reporter=getattr(args, "_progress_reporter", None),
     )
     nsys_stop()
@@ -2457,6 +2473,7 @@ class ApiBenchmarkSession:
             slo_ttft=self.args.slo_ttft,
             slo_tpot=self.args.slo_tpot,
             api_transport=self.args.api_transport,
+            api_timeout_seconds=getattr(self.args, "api_timeout_seconds", 600.0),
             progress_reporter=getattr(self.args, "_progress_reporter", None),
         )
 
@@ -3280,6 +3297,7 @@ def run_pd_ratio_benchmark(args):
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
+        api_timeout_seconds=getattr(args, "api_timeout_seconds", 600.0),
         progress_reporter=getattr(args, "_progress_reporter", None),
     )
     if not prefill_metrics["successful"]:
@@ -3320,6 +3338,7 @@ def run_pd_ratio_benchmark(args):
         slo_ttft=args.slo_ttft,
         slo_tpot=args.slo_tpot,
         api_transport=args.api_transport,
+        api_timeout_seconds=getattr(args, "api_timeout_seconds", 600.0),
         progress_reporter=getattr(args, "_progress_reporter", None),
     )
     if not decode_metrics["successful"]:
@@ -4197,6 +4216,15 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
     if args.api_transport not in {"requests", "aiohttp"}:
         raise BenchmarkConfigError(
             f"{location}.api_transport must be requests or aiohttp"
+        )
+    if (
+        not isinstance(args.api_timeout_seconds, (int, float))
+        or isinstance(args.api_timeout_seconds, bool)
+        or not math.isfinite(args.api_timeout_seconds)
+        or args.api_timeout_seconds <= 0
+    ):
+        raise BenchmarkConfigError(
+            f"{location}.api_timeout_seconds must be a positive finite number"
         )
     if not isinstance(args.model, str) or not args.model:
         raise BenchmarkConfigError(f"{location}.model must be a non-empty string")
@@ -5253,6 +5281,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-transport", choices=["requests", "aiohttp"], default="requests",
         help="[api模式] chat completions 流式 transport；requests 为默认线程实现，"
              "aiohttp 使用异步连接池，适合高并发（默认：requests）"
+    )
+    parser.add_argument(
+        "--api-timeout-seconds", type=float, default=600.0,
+        help="[api模式] 每条正式 chat-completions 流式请求的超时秒数；"
+             "适用于 requests 和 aiohttp，不影响预热或 preflight（默认：600）"
     )
     parser.add_argument(
         "--api-key", default=None,

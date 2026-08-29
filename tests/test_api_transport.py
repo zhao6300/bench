@@ -189,15 +189,28 @@ def test_aiohttp_transport_returns_failed_record_for_http_error() -> None:
 
 
 def test_api_transport_parser_and_suite_config_accept_aiohttp() -> None:
-    assert build_parser().parse_args([]).api_transport == "requests"
+    parser = build_parser()
+    assert parser.parse_args([]).api_transport == "requests"
+    assert parser.parse_args([]).api_timeout_seconds == 600.0
 
     args, _ = _build_case_args(
-        {"mode": "api", "api_transport": "aiohttp"},
+        {"mode": "api", "api_transport": "aiohttp", "api_timeout_seconds": 12.5},
         {"name": "async-transport"},
         {},
     )
 
     assert args.api_transport == "aiohttp"
+    assert args.api_timeout_seconds == 12.5
+
+
+@pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf")])
+def test_suite_config_rejects_invalid_api_timeout_seconds(value: object) -> None:
+    with pytest.raises(BenchmarkConfigError, match="api_timeout_seconds"):
+        _build_case_args(
+            {"mode": "api", "api_timeout_seconds": value},
+            {"name": "invalid-api-timeout"},
+            {},
+        )
 
 
 def test_suite_config_rejects_invalid_api_transport() -> None:
@@ -246,6 +259,8 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
         tokenizer: Any,
         ignore_eos: bool,
         on_complete: Any,
+        *,
+        timeout_seconds: float,
     ) -> None:
         observed.update({
             "prompts": prompts,
@@ -255,6 +270,7 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
             "max_tokens": max_tokens,
             "concurrency": concurrency,
             "ignore_eos": ignore_eos,
+            "timeout_seconds": timeout_seconds,
         })
         for req_id in range(len(prompts)):
             on_complete({
@@ -283,7 +299,9 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
     metrics = benchmark_module.run_api_benchmark_round(
         ["first", "second"], [1, 1], "http://localhost/v1/chat/completions",
         {"Content-Type": "application/json"}, "model", [2, 2], 2,
-        api_transport="aiohttp", progress_reporter=_Reporter(),
+        api_transport="aiohttp",
+        api_timeout_seconds=12.5,
+        progress_reporter=_Reporter(),
     )
 
     assert observed == {
@@ -294,6 +312,7 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
         "max_tokens": [2, 2],
         "concurrency": 2,
         "ignore_eos": True,
+        "timeout_seconds": 12.5,
         "finalized_req_ids": [0, 1],
     }
     assert metrics["successful"] == 2

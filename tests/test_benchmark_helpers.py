@@ -241,6 +241,7 @@ def test_pd_ratio_uses_business_shapes_and_respects_ignore_eos(monkeypatch) -> N
         slo_ttft=60.0,
         slo_tpot=0.05,
         api_transport="requests",
+        api_timeout_seconds=12.5,
         _progress_reporter=_ProgressSpy(),
     )
     batches = iter([
@@ -296,6 +297,7 @@ def test_pd_ratio_uses_business_shapes_and_respects_ignore_eos(monkeypatch) -> N
             "prompt_lens": round_args[1],
             "max_tokens": round_args[5],
             "ignore_eos": round_args[8],
+            "api_timeout_seconds": _kwargs["api_timeout_seconds"],
         })
         return next(round_metrics)
 
@@ -312,8 +314,10 @@ def test_pd_ratio_uses_business_shapes_and_respects_ignore_eos(monkeypatch) -> N
          "random_range_ratio": 0.0, "run_id": build_calls[1]["run_id"]},
     ]
     assert round_calls == [
-        {"prompt_lens": [800] * 8, "max_tokens": [1] * 8, "ignore_eos": False},
-        {"prompt_lens": [800] * 8, "max_tokens": [5000] * 8, "ignore_eos": False},
+        {"prompt_lens": [800] * 8, "max_tokens": [1] * 8, "ignore_eos": False,
+         "api_timeout_seconds": 12.5},
+        {"prompt_lens": [800] * 8, "max_tokens": [5000] * 8, "ignore_eos": False,
+         "api_timeout_seconds": 12.5},
     ]
     assert progress_events == [
         ("stage_started", "加载 tokenizer", "test-tokenizer"),

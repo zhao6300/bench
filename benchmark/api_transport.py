@@ -248,6 +248,7 @@ def send_requests_chat_request(
     requests_client: Any,
     tokenizer: Any | None = None,
     ignore_eos: bool = True,
+    timeout_seconds: float = 600.0,
 ) -> RequestResult:
     """Send one streaming chat request through requests.
 
@@ -261,6 +262,7 @@ def send_requests_chat_request(
         requests_client: The requests-compatible module or session.
         tokenizer: Optional tokenizer for output-token fallback.
         ignore_eos: Whether the server should ignore EOS.
+        timeout_seconds: Timeout applied to the streaming HTTP request.
 
     Returns:
         A benchmark request record.
@@ -272,7 +274,7 @@ def send_requests_chat_request(
             json=build_chat_payload(model, prompt, max_tokens, ignore_eos),
             headers=headers,
             stream=True,
-            timeout=600,
+            timeout=timeout_seconds,
         ) as response:
             response.raise_for_status()
             for data in iter_sse_data(response.iter_content(chunk_size=None)):
@@ -357,6 +359,8 @@ def run_aiohttp_chat_requests(
     tokenizer: Any | None,
     ignore_eos: bool,
     on_complete: Callable[[RequestResult], None],
+    *,
+    timeout_seconds: float = 600.0,
 ) -> None:
     """Run one concurrent chat round through a shared aiohttp session.
 
@@ -370,6 +374,7 @@ def run_aiohttp_chat_requests(
         tokenizer: Optional tokenizer for output-token fallback.
         ignore_eos: Whether the server should ignore EOS.
         on_complete: Callback invoked once for each completed record.
+        timeout_seconds: Total timeout applied to each streaming HTTP request.
 
     Raises:
         RuntimeError: If aiohttp is unavailable or an event loop is already running.
@@ -377,7 +382,7 @@ def run_aiohttp_chat_requests(
     aiohttp = _require_aiohttp()
 
     async def run() -> None:
-        timeout = aiohttp.ClientTimeout(total=600)
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         connector = aiohttp.TCPConnector(limit=concurrency)
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             semaphore = asyncio.Semaphore(concurrency)

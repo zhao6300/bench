@@ -84,7 +84,13 @@ def test_send_single_api_request_uses_chunked_sse_stream(monkeypatch) -> None:
             b"data: [DONE]",
         ]
     )
-    monkeypatch.setattr(benchmark_module.requests, "post", lambda *_args, **_kwargs: response)
+    requests_calls = []
+
+    def post(*_args: object, **kwargs: object) -> _FakeResponse:
+        requests_calls.append(kwargs)
+        return response
+
+    monkeypatch.setattr(benchmark_module.requests, "post", post)
 
     result = benchmark_module.send_single_api_request(
         req_id=1,
@@ -93,6 +99,7 @@ def test_send_single_api_request_uses_chunked_sse_stream(monkeypatch) -> None:
         headers={"Content-Type": "application/json"},
         model="test-model",
         max_tokens=2,
+        timeout_seconds=12.5,
     )
 
     assert result["error"] is None
@@ -104,3 +111,4 @@ def test_send_single_api_request_uses_chunked_sse_stream(monkeypatch) -> None:
 
     assert result["output_tokens"] == 2
     assert result["output_token_source"] == "server_usage"
+    assert requests_calls[0]["timeout"] == 12.5

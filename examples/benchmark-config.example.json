@@ -13,6 +13,7 @@
     "mode": "api",
     "api_base": "http://localhost:8000/v1",
     "api_transport": "requests",
+    "api_timeout_seconds": 600,
     "model": "your-served-model",
     "tokenizer": "/path/to/model-or-tokenizer",
     "ignore_eos": true,
