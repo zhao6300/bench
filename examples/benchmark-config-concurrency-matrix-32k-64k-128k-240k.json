@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "concurrency-matrix-32k-64k-128k-240k",
-  "description": "随机长上下文并发矩阵：32K/2K、64K/4K、128K/8K 和 240K/16K。每档正式请求数为并发数两倍，目标共享前缀约占输入的 70%。所有用例默认启用；某一长度组失败时跳过该组剩余并发档位；运行前应复制为本地配置并确认成本。",
+  "description": "随机长上下文并发矩阵：32K/2K、64K/4K、128K/8K 和 240K/16K。每档正式请求数为并发数两倍，目标共享前缀约占输入的 70%。所有用例默认启用；某一长度组变体失败后会再确认一次，仍失败时跳过该组剩余并发档位；运行前应复制为本地配置并确认成本。",
   "metadata": {
     "purpose": "long-context-concurrency-matrix",
     "workloads": [
@@ -15,6 +15,7 @@
   },
   "continue_on_error": true,
   "failure_policy": "stop-current-matrix",
+  "matrix_failure_confirm_rounds": 2,
   "defaults": {
     "mode": "api",
     "api_base": "http://localhost:8000/v1",

@@ -8,6 +8,7 @@
   },
   "continue_on_error": true,
   "failure_policy": "continue",
+  "matrix_failure_confirm_rounds": 1,
   "defaults": {
     "mode": "api",
     "api_base": "http://localhost:8000/v1",

@@ -342,6 +342,7 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 - `repeat`：重复运行同一个 case。
 - `continue_on_error`：是否在任一 case 失败后停止整个 suite，默认为 `true`。
 - `failure_policy`：失败策略；默认 `continue`。设为 `stop-current-matrix` 时，质量门禁失败或执行异常会将同一原始 matrix case 的后续展开变体写为 `skipped`，并继续下一个 matrix 组。
+- `matrix_failure_confirm_rounds`：`stop-current-matrix` 下同一 matrix 变体的失败确认总次数，默认 `1`。设为大于 `1` 时，只要任一次成功就继续下一个变体；全部失败后只保留最后一次的结果或错误，再跳过该 matrix 组剩余变体。
 - `protocol`：可选的版本化评测协议声明。当前支持 `{ "id": "standard-v1" }`。
 - `standard_workload`：`standard-v1` case 的固定 workload ID。
 - `automation`：可选的单机无人值守策略；启用后需要预算和唯一命名报告路径。
@@ -349,7 +350,7 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 
 `standard-v1` 必须包含且仅包含 `latency-short`、`prefill-long-context`、`decode-long-output`、`prefix-cache`、`concurrency-capacity` 和 `mixed-production` 六个启用的 workload；不允许使用 `matrix` 或 `repeat` 改变其合同。报告会额外写入 `standard_summary`：其中仅保留协议 ID、workload 合同摘要、状态和固定白名单指标，不包含时间戳、主机名、绝对路径、端点或模型名，可作为后续 baseline compare 的稳定输入。比较两份结果前必须确认其 `protocol_id` 和 `contract_sha256` 一致。请复制 [`benchmark-config-standard-v1.json`](examples/benchmark-config-standard-v1.json) 为本地配置，设置目标服务后先执行 `--validate-config` 和 `--list-cases`；运行会发送真实请求。
 
-`continue_on_error: false` 或命令行 `--fail-fast` 始终优先于 `failure_policy`，会按既有行为停止整个 suite，而不是只停止当前 matrix 组。
+`continue_on_error: false` 或命令行 `--fail-fast` 始终优先于 `failure_policy` 与 `matrix_failure_confirm_rounds`，会在首次失败时按既有行为停止整个 suite，而不是确认当前变体或只停止当前 matrix 组。
 
 请以 [`examples/benchmark-config.example.json`](examples/benchmark-config.example.json) 为 schema 参考，而不是复制 README 中的片段。配置中的 `${VAR}` 会读取环境变量；需要密钥时使用 `api_key_env`，不要使用明文 `api_key`。
 

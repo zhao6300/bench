@@ -8,7 +8,7 @@ import json
 import pytest
 
 from benchmark import benchmark as benchmark_module
-from benchmark.benchmark import build_parser
+from benchmark.benchmark import BenchmarkConfigError, build_parser
 from benchmark.progress import (
     OffProgressReporter,
     PlainProgressReporter,
@@ -663,12 +663,14 @@ def _matrix_suite_config(
     continue_on_error: bool = True,
     first_concurrencies: list[int] | None = None,
     second_concurrencies: list[int] | None = None,
+    matrix_failure_confirm_rounds: int = 1,
 ) -> dict[str, object]:
     """Build a minimal no-network suite with two independent matrix groups."""
     return {
         "version": 1,
         "name": "matrix-failure-policy",
         "failure_policy": "stop-current-matrix",
+        "matrix_failure_confirm_rounds": matrix_failure_confirm_rounds,
         "continue_on_error": continue_on_error,
         "defaults": {
             "mode": "offline",
@@ -816,6 +818,7 @@ def test_global_failure_controls_override_stop_current_matrix(
         continue_on_error=continue_on_error,
         first_concurrencies=[1, 2],
         second_concurrencies=[10],
+        matrix_failure_confirm_rounds=3,
     )
     exit_code, report = _run_matrix_suite(
         monkeypatch, tmp_path, config, execute, fail_fast=fail_fast
@@ -827,3 +830,114 @@ def test_global_failure_controls_override_stop_current_matrix(
         "failed", "pending", "pending",
     ]
     assert report["suite"]["run_state"] == "stopped"
+
+
+def test_matrix_failure_confirmation_continues_after_later_success(
+    monkeypatch, tmp_path
+) -> None:
+    """Retry a failed matrix variant and continue when a confirmation passes."""
+    attempts: dict[int, int] = {}
+    executed: list[int] = []
+
+    def execute(args, _scenario: str) -> dict[str, object]:
+        executed.append(args.concurrency)
+        attempts[args.concurrency] = attempts.get(args.concurrency, 0) + 1
+        if args.concurrency == 1 and attempts[args.concurrency] == 1:
+            return _single_result(1.0)
+        return _single_result(0.0)
+
+    config = _matrix_suite_config(
+        first_concurrencies=[1, 2],
+        second_concurrencies=[10],
+        matrix_failure_confirm_rounds=2,
+    )
+    exit_code, report = _run_matrix_suite(monkeypatch, tmp_path, config, execute)
+
+    assert exit_code == 0
+    assert executed == [1, 1, 2, 10]
+    assert [case["status"] for case in report["cases"]] == [
+        "passed", "passed", "passed",
+    ]
+    assert report["cases"][0]["attempt"] == 2
+    assert report["cases"][0]["result"]["metrics"]["failure_rate"] == 0.0
+    assert report["suite"]["matrix_failure_confirm_rounds"] == 2
+
+
+def test_matrix_failure_confirmation_keeps_only_last_failed_result(
+    monkeypatch, tmp_path
+) -> None:
+    """Record only the final failed attempt before blocking the matrix group."""
+    attempts: dict[int, int] = {}
+    executed: list[int] = []
+
+    def execute(args, _scenario: str) -> dict[str, object]:
+        executed.append(args.concurrency)
+        attempts[args.concurrency] = attempts.get(args.concurrency, 0) + 1
+        result = _single_result(1.0 if args.concurrency == 1 else 0.0)
+        result["attempt_marker"] = attempts[args.concurrency]
+        return result
+
+    config = _matrix_suite_config(
+        first_concurrencies=[1, 2],
+        second_concurrencies=[10],
+        matrix_failure_confirm_rounds=2,
+    )
+    exit_code, report = _run_matrix_suite(monkeypatch, tmp_path, config, execute)
+
+    assert exit_code == 1
+    assert executed == [1, 1, 10]
+    assert [case["status"] for case in report["cases"]] == [
+        "failed", "skipped", "passed",
+    ]
+    assert report["cases"][0]["attempt"] == 2
+    assert report["cases"][0]["result"]["attempt_marker"] == 2
+    assert report["cases"][1]["skip_reason"] == (
+        "previous matrix variant failed: first-group[concurrency=1]"
+    )
+
+
+@pytest.mark.parametrize("value", [0, True, "2"])
+def test_matrix_failure_confirm_rounds_requires_positive_integer(
+    tmp_path, value: object
+) -> None:
+    """Reject invalid matrix failure confirmation counts before execution."""
+    config_path = tmp_path / "suite.json"
+    config_path.write_text(json.dumps({
+        "version": 1,
+        "matrix_failure_confirm_rounds": value,
+        "cases": [{"name": "smoke"}],
+    }), encoding="utf-8")
+
+    with pytest.raises(BenchmarkConfigError, match="matrix_failure_confirm_rounds"):
+        benchmark_module.load_suite_config(str(config_path))
+
+
+def test_matrix_failure_confirmation_keeps_only_last_exception(
+    monkeypatch, tmp_path
+) -> None:
+    """Persist the last executor exception after all confirmations fail."""
+    attempts: dict[int, int] = {}
+    executed: list[int] = []
+
+    def execute(args, _scenario: str) -> dict[str, object]:
+        executed.append(args.concurrency)
+        attempts[args.concurrency] = attempts.get(args.concurrency, 0) + 1
+        if args.concurrency == 1:
+            raise RuntimeError(f"failure {attempts[args.concurrency]}")
+        return _single_result(0.0)
+
+    config = _matrix_suite_config(
+        first_concurrencies=[1, 2],
+        second_concurrencies=[10],
+        matrix_failure_confirm_rounds=2,
+    )
+    exit_code, report = _run_matrix_suite(monkeypatch, tmp_path, config, execute)
+
+    assert exit_code == 1
+    assert executed == [1, 1, 10]
+    assert report["cases"][0]["attempt"] == 2
+    assert report["cases"][0]["result"] is None
+    assert report["cases"][0]["error"] == {
+        "type": "RuntimeError",
+        "message": "failure 2",
+    }

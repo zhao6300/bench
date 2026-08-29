@@ -3849,7 +3849,8 @@ def load_suite_config(path: str) -> Dict[str, Any]:
 
     allowed_root = {
         "version", "name", "description", "defaults", "cases", "report",
-        "continue_on_error", "failure_policy", "metadata", "protocol", "automation",
+        "continue_on_error", "failure_policy", "matrix_failure_confirm_rounds",
+        "metadata", "protocol", "automation",
     }
     unknown_root = sorted(set(config) - allowed_root)
     if unknown_root:
@@ -3870,6 +3871,16 @@ def load_suite_config(path: str) -> Dict[str, Any]:
         allowed_policies = ", ".join(sorted(SUITE_FAILURE_POLICIES))
         raise BenchmarkConfigError(
             f"failure_policy must be one of: {allowed_policies}"
+        )
+
+    matrix_failure_confirm_rounds = config.get("matrix_failure_confirm_rounds", 1)
+    if (
+        not isinstance(matrix_failure_confirm_rounds, int)
+        or isinstance(matrix_failure_confirm_rounds, bool)
+        or matrix_failure_confirm_rounds < 1
+    ):
+        raise BenchmarkConfigError(
+            "matrix_failure_confirm_rounds must be a positive integer"
         )
 
     cases = config.get("cases")
@@ -4714,6 +4725,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     include_details = report_options.get("include_request_details", False)
     indent = report_options.get("indent", 2)
     failure_policy = config.get("failure_policy", "continue")
+    matrix_failure_confirm_rounds = config.get("matrix_failure_confirm_rounds", 1)
     protocol_id = config.get("protocol", {}).get("id")
     continue_on_error = config.get("continue_on_error", True) and not cli_args.fail_fast
     plan_fingerprint = _checkpoint_plan_fingerprint(prepared)
@@ -4751,6 +4763,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         "metadata": config.get("metadata", {}),
         "protocol_id": protocol_id,
         "failure_policy": failure_policy,
+        "matrix_failure_confirm_rounds": matrix_failure_confirm_rounds,
         "execution_plan_sha256": plan_fingerprint,
         "run_state": "running",
         "updated_at": _now_iso(),
@@ -4960,17 +4973,58 @@ def run_configured_suite(config_path: str, cli_args) -> int:
                 case["name"], scenario, position, len(prepared)
             )
 
-            with _redirect_runtime_output(args):
-                result = execute_benchmark(args, scenario)
-            if result is None:
-                raise RuntimeError("benchmark produced no successful result")
-            record["result"] = result if include_details else _strip_request_details(result)
-            record["quality_failures"] = _quality_failures(result, args)
-            if record["quality_failures"]:
+            confirmation_attempts = (
+                matrix_failure_confirm_rounds
+                if (
+                    continue_on_error
+                    and failure_policy == "stop-current-matrix"
+                    and case["matrix"]
+                )
+                else 1
+            )
+            final_result = None
+            final_quality_failures = []
+            for confirmation_index in range(confirmation_attempts):
+                if confirmation_index:
+                    record["attempt"] += 1
+                try:
+                    with _redirect_runtime_output(args):
+                        result = execute_benchmark(args, scenario)
+                    if result is None:
+                        raise RuntimeError("benchmark produced no successful result")
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    if confirmation_index + 1 < confirmation_attempts:
+                        _print_runtime_message(
+                            args,
+                            f"WARNING: case {case['name']} failed confirmation "
+                            f"attempt {confirmation_index + 1}/{confirmation_attempts}: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    raise
+
+                final_result = result if include_details else _strip_request_details(result)
+                final_quality_failures = _quality_failures(result, args)
+                if not final_quality_failures:
+                    break
+                if confirmation_index + 1 < confirmation_attempts:
+                    _print_runtime_message(
+                        args,
+                        f"WARNING: case {case['name']} failed quality confirmation "
+                        f"attempt {confirmation_index + 1}/{confirmation_attempts}: "
+                        f"{'; '.join(final_quality_failures)}",
+                        file=sys.stderr,
+                    )
+
+            record["result"] = final_result
+            record["quality_failures"] = final_quality_failures
+            if final_quality_failures:
                 record["status"] = "failed"
                 record["error"] = {
                     "type": "QualityGateError",
-                    "message": "; ".join(record["quality_failures"]),
+                    "message": "; ".join(final_quality_failures),
                 }
                 _print_runtime_message(
                     args,
