@@ -195,3 +195,16 @@ def test_s3_storage_creates_boto_client_from_environment(monkeypatch) -> None:
             "aws_secret_access_key": "secret-key",
         },
     }
+
+
+def test_suite_config_rejects_unknown_failure_policy(tmp_path) -> None:
+    """Reject unsupported suite failure policies before benchmark execution."""
+    config_path = tmp_path / "suite.json"
+    config_path.write_text(json.dumps({
+        "version": 1,
+        "failure_policy": "stop-all-matrices",
+        "cases": [{"name": "smoke"}],
+    }), encoding="utf-8")
+
+    with pytest.raises(BenchmarkConfigError, match="failure_policy must be one of"):
+        load_suite_config(str(config_path))

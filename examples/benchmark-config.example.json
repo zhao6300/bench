@@ -7,6 +7,7 @@
     "purpose": "release-comparison"
   },
   "continue_on_error": true,
+  "failure_policy": "continue",
   "defaults": {
     "mode": "api",
     "api_base": "http://localhost:8000/v1",

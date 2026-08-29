@@ -3761,6 +3761,7 @@ def apply_final_defaults(args) -> None:
 # ── Configurable Benchmark Suites / JSON Reports ──────────────────────
 
 SUITE_SCHEMA_VERSION = 1
+SUITE_FAILURE_POLICIES = {"continue", "stop-current-matrix"}
 SUITE_SCENARIOS = {"single", "mixed-workload", "sweep", "slo-capacity-search", "pd-ratio"}
 SUITE_MANAGEMENT_ARGS = {
     "config", "report", "case_filters", "tag_filters", "list_cases",
@@ -3818,7 +3819,7 @@ def load_suite_config(path: str) -> Dict[str, Any]:
 
     allowed_root = {
         "version", "name", "description", "defaults", "cases", "report",
-        "continue_on_error", "metadata",
+        "continue_on_error", "failure_policy", "metadata",
     }
     unknown_root = sorted(set(config) - allowed_root)
     if unknown_root:
@@ -3831,6 +3832,15 @@ def load_suite_config(path: str) -> Dict[str, Any]:
         raise BenchmarkConfigError("report must be an object")
     if not isinstance(config.get("continue_on_error", True), bool):
         raise BenchmarkConfigError("continue_on_error must be true or false")
+    failure_policy = config.get("failure_policy", "continue")
+    if (
+        not isinstance(failure_policy, str)
+        or failure_policy not in SUITE_FAILURE_POLICIES
+    ):
+        allowed_policies = ", ".join(sorted(SUITE_FAILURE_POLICIES))
+        raise BenchmarkConfigError(
+            f"failure_policy must be one of: {allowed_policies}"
+        )
 
     cases = config.get("cases")
     if not isinstance(cases, list) or not cases:
@@ -4627,6 +4637,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
 
     include_details = report_options.get("include_request_details", False)
     indent = report_options.get("indent", 2)
+    failure_policy = config.get("failure_policy", "continue")
     continue_on_error = config.get("continue_on_error", True) and not cli_args.fail_fast
     plan_fingerprint = _checkpoint_plan_fingerprint(prepared)
 
@@ -4653,6 +4664,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         "started_at": now,
         "description": config.get("description", ""),
         "metadata": config.get("metadata", {}),
+        "failure_policy": failure_policy,
         "execution_plan_sha256": plan_fingerprint,
         "run_state": "running",
         "updated_at": _now_iso(),
@@ -4728,6 +4740,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
 
     abort_remaining = False
     interrupted = False
+    blocked_matrix_base_names: Dict[str, str] = {}
     for position, ((case, args, scenario, _), record) in enumerate(zip(prepared, records), start=1):
         if record["status"] == "passed":
             _print_runtime_message(
@@ -4740,6 +4753,30 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             progress_reporter.case_finished("skipped (disabled)", position, len(prepared))
             continue
         if abort_remaining:
+            continue
+        failed_variant = blocked_matrix_base_names.get(case["base_name"])
+        if failed_variant is not None:
+            record.update({
+                "status": "skipped",
+                "started_at": None,
+                "finished_at": _now_iso(),
+                "duration_seconds": 0.0,
+                "result": None,
+                "quality_failures": [],
+                "error": None,
+                "skip_reason": f"previous matrix variant failed: {failed_variant}",
+            })
+            report["suite"]["updated_at"] = _now_iso()
+            _update_report_summary(report, started_perf)
+            _write_json_report(report_storage, report, indent)
+            _print_runtime_message(
+                cli_args,
+                f"[{position}/{len(prepared)}] {case['name']} "
+                f"(skipped; previous matrix variant failed)",
+            )
+            progress_reporter.case_finished(
+                "skipped (previous matrix variant failed)", position, len(prepared)
+            )
             continue
 
         _print_runtime_message(
@@ -4785,6 +4822,8 @@ def run_configured_suite(config_path: str, cli_args) -> int:
                 )
                 if not continue_on_error:
                     abort_remaining = True
+                elif failure_policy == "stop-current-matrix":
+                    blocked_matrix_base_names[case["base_name"]] = case["name"]
             else:
                 record["status"] = "passed"
         except KeyboardInterrupt:
@@ -4804,6 +4843,8 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             )
             if not continue_on_error:
                 abort_remaining = True
+            elif failure_policy == "stop-current-matrix":
+                blocked_matrix_base_names[case["base_name"]] = case["name"]
         finally:
             record["finished_at"] = _now_iso()
             record["duration_seconds"] = time.perf_counter() - case_started

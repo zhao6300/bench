@@ -121,6 +121,7 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 | 128K 并发阶梯 | [`benchmark-config-concurrency-staircase-128k.json`](examples/benchmark-config-concurrency-staircase-128k.json) | 固定 128K 请求形状的多档并发测试。 |
 | 256K 并发阶梯 | [`benchmark-config-concurrency-staircase-256k.json`](examples/benchmark-config-concurrency-staircase-256k.json) | 固定 256K 请求形状的多档并发测试。 |
 | 64K / 128K / 240K 并发矩阵 | [`benchmark-config-concurrency-matrix-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-64k-128k-240k.json) | 多上下文长度和并发组合。 |
+| 32K / 64K / 128K / 240K 并发矩阵 | [`benchmark-config-concurrency-matrix-32k-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-32k-64k-128k-240k.json) | 2K / 4K / 8K / 16K 输出；每组覆盖 18 个指定并发档位，70% 共享前缀，正式请求数为并发两倍；默认启用，失败时停止当前长度组的剩余档位。 |
 | 128K / 2K P/D 分离评估 | [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json) | 分别测量单实例 Prefill/Decode 并给出 P:D 实例比例和调度参数建议；默认禁用。 |
 | 混合负载 API 压测 | [`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json) | 随机混合短入长出、中等请求与长入短出；默认禁用。 |
 
@@ -293,6 +294,7 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 - [`benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json`](examples/benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json)
 - [`benchmark-config-concurrency-staircase-128k.json`](examples/benchmark-config-concurrency-staircase-128k.json)
 - [`benchmark-config-concurrency-staircase-256k.json`](examples/benchmark-config-concurrency-staircase-256k.json)
+- [`benchmark-config-concurrency-matrix-32k-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-32k-64k-128k-240k.json)
 - [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json)
 - [`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json)
 
@@ -306,7 +308,11 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 - `cases`：一个或多个基准用例；可用 `enabled: false` 暂停昂贵用例。
 - `matrix`：对指定参数做笛卡尔积展开。
 - `repeat`：重复运行同一个 case。
+- `continue_on_error`：是否在任一 case 失败后停止整个 suite，默认为 `true`。
+- `failure_policy`：失败策略；默认 `continue`。设为 `stop-current-matrix` 时，质量门禁失败或执行异常会将同一原始 matrix case 的后续展开变体写为 `skipped`，并继续下一个 matrix 组。
 - `report`：报告路径、缩进和请求详情保存策略。
+
+`continue_on_error: false` 或命令行 `--fail-fast` 始终优先于 `failure_policy`，会按既有行为停止整个 suite，而不是只停止当前 matrix 组。
 
 请以 [`examples/benchmark-config.example.json`](examples/benchmark-config.example.json) 为 schema 参考，而不是复制 README 中的片段。配置中的 `${VAR}` 会读取环境变量；需要密钥时使用 `api_key_env`，不要使用明文 `api_key`。
 

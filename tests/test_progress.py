@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import json
 
+import pytest
+
 from benchmark import benchmark as benchmark_module
 from benchmark.benchmark import build_parser
 from benchmark.progress import (
@@ -654,3 +656,174 @@ def test_rich_final_scenario_labels_are_user_facing() -> None:
     assert progress_module.RichProgressReporter._final_scenario_label("future-scenario") == (
         "future-scenario"
     )
+
+
+def _matrix_suite_config(
+    *,
+    continue_on_error: bool = True,
+    first_concurrencies: list[int] | None = None,
+    second_concurrencies: list[int] | None = None,
+) -> dict[str, object]:
+    """Build a minimal no-network suite with two independent matrix groups."""
+    return {
+        "version": 1,
+        "name": "matrix-failure-policy",
+        "failure_policy": "stop-current-matrix",
+        "continue_on_error": continue_on_error,
+        "defaults": {
+            "mode": "offline",
+            "model": "placeholder",
+            "max_failure_rate": 0.0,
+        },
+        "cases": [
+            {
+                "name": "first-group",
+                "matrix": {"concurrency": first_concurrencies or [1, 2, 3]},
+            },
+            {
+                "name": "second-group",
+                "matrix": {"concurrency": second_concurrencies or [10, 20]},
+            },
+        ],
+    }
+
+
+def _run_matrix_suite(
+    monkeypatch,
+    tmp_path,
+    config: dict[str, object],
+    execute,
+    *,
+    fail_fast: bool = False,
+) -> tuple[int, dict[str, object]]:
+    """Run a mocked matrix suite and return its status code and report."""
+    config_path = tmp_path / "suite.json"
+    report_path = tmp_path / "report.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setattr(benchmark_module, "execute_benchmark", execute)
+    arguments = [
+        "--config", str(config_path), "--report", str(report_path), "--no-resume",
+    ]
+    if fail_fast:
+        arguments.append("--fail-fast")
+    cli_args = build_parser().parse_args(arguments)
+    exit_code = benchmark_module.run_configured_suite(str(config_path), cli_args)
+    return exit_code, json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def _single_result(failure_rate: float) -> dict[str, object]:
+    """Return the smallest result shape accepted by quality-gate validation."""
+    return {
+        "scenario": "single",
+        "metrics": {
+            "total_requests": 1,
+            "successful": int(failure_rate == 0.0),
+            "failed": int(failure_rate > 0.0),
+            "failure_rate": failure_rate,
+        },
+    }
+
+
+def test_stop_current_matrix_skips_remaining_variants_after_quality_failure(
+    monkeypatch, tmp_path
+) -> None:
+    """Skip only later variants in a matrix group after a quality-gate failure."""
+    executed: list[int] = []
+
+    def execute(args, _scenario: str) -> dict[str, object]:
+        executed.append(args.concurrency)
+        return _single_result(1.0 if args.concurrency == 1 else 0.0)
+
+    exit_code, report = _run_matrix_suite(
+        monkeypatch, tmp_path, _matrix_suite_config(), execute
+    )
+
+    assert exit_code == 1
+    assert executed == [1, 10, 20]
+    assert [case["status"] for case in report["cases"]] == [
+        "failed", "skipped", "skipped", "passed", "passed",
+    ]
+    assert report["suite"]["failure_policy"] == "stop-current-matrix"
+    assert report["cases"][1]["skip_reason"] == (
+        "previous matrix variant failed: first-group[concurrency=1]"
+    )
+    assert report["summary"]["skipped"] == 2
+
+
+def test_stop_current_matrix_allows_next_group_after_final_variant_failure(
+    monkeypatch, tmp_path
+) -> None:
+    """Do not block the next group when the failed variant is already last."""
+    executed: list[int] = []
+
+    def execute(args, _scenario: str) -> dict[str, object]:
+        executed.append(args.concurrency)
+        return _single_result(1.0 if args.concurrency == 2 else 0.0)
+
+    config = _matrix_suite_config(
+        first_concurrencies=[1, 2], second_concurrencies=[10]
+    )
+    exit_code, report = _run_matrix_suite(monkeypatch, tmp_path, config, execute)
+
+    assert exit_code == 1
+    assert executed == [1, 2, 10]
+    assert [case["status"] for case in report["cases"]] == [
+        "passed", "failed", "passed",
+    ]
+    assert report["summary"]["skipped"] == 0
+
+
+def test_stop_current_matrix_skips_variants_after_execution_exception(
+    monkeypatch, tmp_path
+) -> None:
+    """Treat executor exceptions as group-stopping failures without stopping later groups."""
+    executed: list[int] = []
+
+    def execute(args, _scenario: str) -> dict[str, object]:
+        executed.append(args.concurrency)
+        if args.concurrency == 1:
+            raise RuntimeError("simulated executor failure")
+        return _single_result(0.0)
+
+    config = _matrix_suite_config(
+        first_concurrencies=[1, 2], second_concurrencies=[10]
+    )
+    exit_code, report = _run_matrix_suite(monkeypatch, tmp_path, config, execute)
+
+    assert exit_code == 1
+    assert executed == [1, 10]
+    assert [case["status"] for case in report["cases"]] == [
+        "failed", "skipped", "passed",
+    ]
+    assert report["cases"][0]["error"]["type"] == "RuntimeError"
+
+
+@pytest.mark.parametrize(
+    ("continue_on_error", "fail_fast"),
+    [(False, False), (True, True)],
+)
+def test_global_failure_controls_override_stop_current_matrix(
+    monkeypatch, tmp_path, continue_on_error: bool, fail_fast: bool
+) -> None:
+    """Preserve global stopping for continue_on_error=false and --fail-fast."""
+    executed: list[int] = []
+
+    def execute(args, _scenario: str) -> dict[str, object]:
+        executed.append(args.concurrency)
+        return _single_result(1.0)
+
+    config = _matrix_suite_config(
+        continue_on_error=continue_on_error,
+        first_concurrencies=[1, 2],
+        second_concurrencies=[10],
+    )
+    exit_code, report = _run_matrix_suite(
+        monkeypatch, tmp_path, config, execute, fail_fast=fail_fast
+    )
+
+    assert exit_code == 1
+    assert executed == [1]
+    assert [case["status"] for case in report["cases"]] == [
+        "failed", "pending", "pending",
+    ]
+    assert report["suite"]["run_state"] == "stopped"
