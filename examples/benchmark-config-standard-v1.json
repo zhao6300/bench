@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "name": "standard-v1",
+  "description": "standard-v1 LLM 推理性能评测协议。六个固定 workload 覆盖短请求延迟、长上下文 Prefill、长输出 Decode、共享前缀、SLO 容量和混合生产负载；运行前必须复制为本地配置并确认服务容量与成本。",
+  "protocol": {
+    "id": "standard-v1"
+  },
+  "metadata": {
+    "purpose": "versioned-standard-benchmark",
+    "protocol": "standard-v1"
+  },
+  "continue_on_error": true,
+  "failure_policy": "continue",
+  "defaults": {
+    "mode": "api",
+    "api_base": "http://localhost:8000/v1",
+    "model": "your-served-model",
+    "tokenizer": "/path/to/model-or-tokenizer",
+    "dataset": "random",
+    "random_range_ratio": "0.0",
+    "random_seed": 42,
+    "ignore_eos": true,
+    "max_failure_rate": 0.01,
+    "min_goodput_pct": 95.0,
+    "slo": {
+      "ttft_seconds": 5.0,
+      "tpot_seconds": 0.1
+    },
+    "warmup": {
+      "enabled": true,
+      "rounds": 1,
+      "requests_per_round": 1
+    }
+  },
+  "report": {
+    "path": "standard-v1-report-{timestamp}.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "latency-short",
+      "standard_workload": "latency-short",
+      "description": "短输入、短输出的流式延迟基线。",
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 512,
+          "output": 128
+        },
+        "random_input_len": 512,
+        "random_output_len": 128,
+        "requests": {
+          "concurrency": 1,
+          "count": 8
+        }
+      }
+    },
+    {
+      "name": "prefill-long-context",
+      "standard_workload": "prefill-long-context",
+      "description": "16K 输入、单输出 token 的 Prefill 性能基线。",
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 16384,
+          "output": 1
+        },
+        "random_input_len": 16384,
+        "random_output_len": 1,
+        "requests": {
+          "concurrency": 4,
+          "count": 8
+        }
+      }
+    },
+    {
+      "name": "decode-long-output",
+      "standard_workload": "decode-long-output",
+      "description": "中等输入、长输出的 Decode 性能基线。",
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 512,
+          "output": 1024
+        },
+        "random_input_len": 512,
+        "random_output_len": 1024,
+        "requests": {
+          "concurrency": 4,
+          "count": 8
+        }
+      }
+    },
+    {
+      "name": "prefix-cache",
+      "standard_workload": "prefix-cache",
+      "description": "约 75% 共享前缀的 Prefix Cache 性能基线。",
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 8192,
+          "output": 128
+        },
+        "random_input_len": 2048,
+        "random_prefix_len": 6144,
+        "random_output_len": 128,
+        "requests": {
+          "concurrency": 4,
+          "count": 8
+        }
+      }
+    },
+    {
+      "name": "concurrency-capacity",
+      "standard_workload": "concurrency-capacity",
+      "description": "在固定 SLO 下搜索最大通过并发。",
+      "scenario": "slo-capacity-search",
+      "params": {
+        "tokens": {
+          "input": 2048,
+          "output": 256
+        },
+        "random_input_len": 2048,
+        "random_output_len": 256,
+        "sweep": {
+          "max_concurrency": 16,
+          "requests_per_round": 8
+        },
+        "slo_capacity": {
+          "strategy": "binary-confirm",
+          "confirm_window": 2,
+          "confirm_rounds": 1
+        }
+      }
+    },
+    {
+      "name": "mixed-production",
+      "standard_workload": "mixed-production",
+      "description": "短请求、长输出与长上下文请求的固定生产形状混合负载。",
+      "scenario": "mixed-workload",
+      "params": {
+        "requests": {
+          "concurrency": 4,
+          "count": 16
+        },
+        "workload_mix": [
+          {
+            "input_tokens": 256,
+            "output_tokens": 512,
+            "weight": 0.4
+          },
+          {
+            "input_tokens": 2048,
+            "output_tokens": 256,
+            "weight": 0.4
+          },
+          {
+            "input_tokens": 8192,
+            "output_tokens": 32,
+            "weight": 0.2
+          }
+        ]
+      }
+    }
+  ]
+}

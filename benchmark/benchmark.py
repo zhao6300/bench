@@ -255,6 +255,21 @@ try:
         send_requests_chat_request,
     )
     from .progress import ProgressDependencyError, create_progress_reporter
+    from .standard_protocol import (
+        StandardProtocolError,
+        build_standard_summary,
+        validate_protocol,
+    )
+    from .suite_automation import (
+        AutomationConfigError,
+        budget_violation,
+        build_run_governance,
+        estimate_execution_plan,
+        parse_automation,
+        preflight_api_targets,
+        start_deadline,
+        validate_immutable_report_target,
+    )
 except ImportError:
     # Direct execution: python benchmark/benchmark.py ...
     from benchmark_datasets import (
@@ -276,6 +291,21 @@ except ImportError:
         send_requests_chat_request,
     )
     from progress import ProgressDependencyError, create_progress_reporter
+    from standard_protocol import (
+        StandardProtocolError,
+        build_standard_summary,
+        validate_protocol,
+    )
+    from suite_automation import (
+        AutomationConfigError,
+        budget_violation,
+        build_run_governance,
+        estimate_execution_plan,
+        parse_automation,
+        preflight_api_targets,
+        start_deadline,
+        validate_immutable_report_target,
+    )
 
 
 # ── Nsys Profiling Control ─────────────────────────────────────────────
@@ -3819,7 +3849,7 @@ def load_suite_config(path: str) -> Dict[str, Any]:
 
     allowed_root = {
         "version", "name", "description", "defaults", "cases", "report",
-        "continue_on_error", "failure_policy", "metadata",
+        "continue_on_error", "failure_policy", "metadata", "protocol", "automation",
     }
     unknown_root = sorted(set(config) - allowed_root)
     if unknown_root:
@@ -3848,7 +3878,7 @@ def load_suite_config(path: str) -> Dict[str, Any]:
 
     allowed_case = {
         "name", "description", "enabled", "tags", "preset", "scenario",
-        "params", "matrix", "repeat",
+        "params", "matrix", "repeat", "standard_workload",
     }
     seen_names = set()
     for index, case in enumerate(cases):
@@ -3888,6 +3918,12 @@ def load_suite_config(path: str) -> Dict[str, Any]:
         for key, values in case.get("matrix", {}).items():
             if not isinstance(values, list) or not values:
                 raise BenchmarkConfigError(f"{location}.matrix.{key} must be a non-empty array")
+
+    try:
+        validate_protocol(config)
+        parse_automation(config.get("automation"))
+    except (StandardProtocolError, AutomationConfigError) as exc:
+        raise BenchmarkConfigError(str(exc)) from exc
 
     report = config.get("report", {})
     unknown_report = sorted(set(report) - {"path", "include_request_details", "indent"})
@@ -4263,6 +4299,7 @@ def expand_suite_cases(config: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "enabled": case.get("enabled", True),
                     "preset": case.get("preset"),
                     "scenario": case.get("scenario"),
+                    "standard_workload": case.get("standard_workload"),
                     "params": case.get("params", {}),
                     "matrix": matrix_values,
                     "repeat_index": repeat_index,
@@ -4413,6 +4450,7 @@ def _checkpoint_case_key(case: Dict[str, Any], args, scenario: str) -> str:
     """Identify one expanded execution independently of its display position."""
     return _checkpoint_hash({
         "base_name": case["base_name"],
+        "standard_workload": case.get("standard_workload"),
         "name": case["name"],
         "scenario": scenario,
         "repeat_index": case["repeat_index"],
@@ -4437,6 +4475,7 @@ def _new_case_record(case: Dict[str, Any], args, scenario: str, case_key: str) -
         "case_key": case_key,
         "name": case["name"],
         "base_name": case["base_name"],
+        "standard_workload": case.get("standard_workload"),
         "description": case["description"],
         "tags": case["tags"],
         "scenario": scenario,
@@ -4452,6 +4491,23 @@ def _new_case_record(case: Dict[str, Any], args, scenario: str, case_key: str) -
         "quality_failures": [],
         "error": None,
     }
+
+
+def _skip_pending_records(records: list[Dict[str, Any]], reason: str) -> None:
+    """Mark unstarted selected cases as skipped with a shared lifecycle reason."""
+    for record in records:
+        if record["status"] != "pending":
+            continue
+        record.update({
+            "status": "skipped",
+            "started_at": None,
+            "finished_at": _now_iso(),
+            "duration_seconds": 0.0,
+            "result": None,
+            "quality_failures": [],
+            "error": None,
+            "skip_reason": reason,
+        })
 
 
 def _load_resume_report(storage, suite_name: str, plan_fingerprint: str) -> Dict[str, Any] | None:
@@ -4526,6 +4582,9 @@ def _update_report_summary(report, started_perf, *, terminal: bool = False):
         "interrupted": sum(case["status"] == "interrupted" for case in cases),
         "skipped": sum(case["status"] == "skipped" for case in cases),
     }
+    standard_summary = build_standard_summary(report)
+    if standard_summary is not None:
+        report["standard_summary"] = standard_summary
     if terminal:
         report["suite"]["finished_at"] = _now_iso()
         report["suite"]["duration_seconds"] = time.perf_counter() - started_perf
@@ -4591,12 +4650,29 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         args, scenario = _build_case_args(config.get("defaults", {}), case, case["matrix"])
         prepared.append((case, args, scenario, _checkpoint_case_key(case, args, scenario)))
 
+    automation = parse_automation(config.get("automation"))
+    budget_estimate = estimate_execution_plan(prepared) if automation.enabled else None
+    raw_report_target = cli_args.report or config.get("report", {}).get("path")
+    try:
+        validate_immutable_report_target(automation, raw_report_target)
+    except AutomationConfigError as exc:
+        raise BenchmarkConfigError(str(exc)) from exc
+    budget_error = (
+        budget_violation(budget_estimate, automation.budget)
+        if automation.enabled and budget_estimate is not None and automation.budget is not None
+        else None
+    )
+
     if cli_args.list_cases:
+        if budget_error:
+            raise BenchmarkConfigError(f"automation budget rejected: {budget_error}")
         for case, _, scenario, _ in prepared:
             state = "enabled" if case["enabled"] else "disabled"
             print(f"{case['id']}  {case['name']}  scenario={scenario}  {state}  tags={','.join(case['tags'])}")
         return 0
     if cli_args.validate_config:
+        if budget_error:
+            raise BenchmarkConfigError(f"automation budget rejected: {budget_error}")
         print(f"配置有效: {config_path} ({len(prepared)} 个展开后的测试用例)")
         return 0
 
@@ -4609,7 +4685,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         args._progress_reporter = progress_reporter
 
     report_options = config.get("report", {})
-    report_target = cli_args.report or report_options.get("path")
+    report_target = raw_report_target
     # Microseconds plus PID prevent colliding report names when multiple
     # benchmark processes start in the same second.
     timestamp = f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-p{os.getpid()}"
@@ -4638,18 +4714,27 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     include_details = report_options.get("include_request_details", False)
     indent = report_options.get("indent", 2)
     failure_policy = config.get("failure_policy", "continue")
+    protocol_id = config.get("protocol", {}).get("id")
     continue_on_error = config.get("continue_on_error", True) and not cli_args.fail_fast
     plan_fingerprint = _checkpoint_plan_fingerprint(prepared)
 
     try:
         report = None
-        if not cli_args.no_resume:
+        if not cli_args.no_resume and not automation.enabled:
             report = _load_resume_report(
                 report_storage, config.get("name", "benchmark-suite"), plan_fingerprint
             )
         resumed = report is not None
         if report is None:
             report = _new_report(config.get("name", "benchmark-suite"), config_path)
+        run_governance, provenance = build_run_governance(
+            automation,
+            budget_estimate,
+            plan_fingerprint,
+            report_location.display_name,
+        )
+        report["run"] = run_governance
+        report["provenance"] = provenance
     except Exception:
         report_storage.release_checkpoint_lock(checkpoint_lock)
         raise
@@ -4664,6 +4749,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         "started_at": now,
         "description": config.get("description", ""),
         "metadata": config.get("metadata", {}),
+        "protocol_id": protocol_id,
         "failure_policy": failure_policy,
         "execution_plan_sha256": plan_fingerprint,
         "run_state": "running",
@@ -4711,6 +4797,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         _write_json_report(report_storage, report, indent)
     except KeyboardInterrupt:
         report["suite"]["run_state"] = "interrupted"
+        report["run"]["state"] = "interrupted"
         report["suite"]["updated_at"] = _now_iso()
         _update_report_summary(report, started_perf, terminal=True)
         _write_json_report(report_storage, report, indent)
@@ -4721,6 +4808,58 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         raise BenchmarkConfigError(
             f"cannot write report to {report_location.display_name!r}: {exc}"
         ) from exc
+
+    if automation.enabled and budget_error:
+        _skip_pending_records(records, f"automation budget rejected: {budget_error}")
+        report["run"]["state"] = "rejected"
+        report["run"]["automation"]["budget"]["decision"] = "rejected"
+        report["suite"]["run_state"] = "rejected"
+        report["suite"]["updated_at"] = _now_iso()
+        _update_report_summary(report, started_perf, terminal=True)
+        _write_json_report(report_storage, report, indent)
+        report_storage.release_checkpoint_lock(checkpoint_lock)
+        _print_runtime_message(cli_args, f"Automation rejected suite: {budget_error}", file=sys.stderr)
+        progress_reporter.close()
+        return 2
+
+    deadline_started_perf = None
+    if automation.enabled:
+        report["run"]["automation"]["budget"]["decision"] = "accepted"
+        try:
+            if automation.api_preflight.enabled and any(
+                case["enabled"] and args.mode == "api"
+                for case, args, _, _ in prepared
+            ):
+                require_requests()
+                preflight_records = preflight_api_targets(prepared, automation, requests.get)
+            else:
+                preflight_records = []
+        except Exception as exc:
+            preflight_records = [{
+                "outcome": "failed",
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            }]
+        report["run"]["automation"]["preflight"] = preflight_records
+        if any(record["outcome"] == "failed" for record in preflight_records):
+            _skip_pending_records(records, "automation API preflight failed")
+            report["run"]["state"] = "preflight_failed"
+            report["suite"]["run_state"] = "preflight_failed"
+            report["suite"]["updated_at"] = _now_iso()
+            _update_report_summary(report, started_perf, terminal=True)
+            _write_json_report(report_storage, report, indent)
+            report_storage.release_checkpoint_lock(checkpoint_lock)
+            _print_runtime_message(
+                cli_args, "Automation API preflight failed; suite was not started.", file=sys.stderr
+            )
+            progress_reporter.close()
+            return 2
+        deadline = start_deadline(automation)
+        report["run"]["automation"]["deadline"].update(deadline)
+        deadline_started_perf = time.perf_counter()
+        report["suite"]["updated_at"] = _now_iso()
+        _update_report_summary(report, started_perf)
+        _write_json_report(report_storage, report, indent)
 
     _print_runtime_message(cli_args, f"Benchmark suite: {report['suite']['name']}")
     _print_runtime_message(cli_args, f"Cases: {len(prepared)}")
@@ -4740,8 +4879,27 @@ def run_configured_suite(config_path: str, cli_args) -> int:
 
     abort_remaining = False
     interrupted = False
+    timed_out = False
     blocked_matrix_base_names: Dict[str, str] = {}
     for position, ((case, args, scenario, _), record) in enumerate(zip(prepared, records), start=1):
+        if (
+            automation.enabled
+            and deadline_started_perf is not None
+            and automation.max_total_duration_seconds is not None
+            and case["enabled"]
+            and record["status"] == "pending"
+            and time.perf_counter() - deadline_started_perf
+            >= automation.max_total_duration_seconds
+        ):
+            _skip_pending_records(records, "automation deadline exceeded")
+            report["run"]["state"] = "timed_out"
+            report["run"]["automation"]["deadline"]["exceeded_at"] = _now_iso()
+            report["suite"]["run_state"] = "timed_out"
+            report["suite"]["updated_at"] = _now_iso()
+            _update_report_summary(report, started_perf)
+            _write_json_report(report_storage, report, indent)
+            timed_out = True
+            break
         if record["status"] == "passed":
             _print_runtime_message(
                 cli_args,
@@ -4830,6 +4988,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             record["status"] = "interrupted"
             record["error"] = {"type": "KeyboardInterrupt", "message": "interrupted by user"}
             report["suite"]["run_state"] = "interrupted"
+            report["run"]["state"] = "interrupted"
             report["suite"]["updated_at"] = _now_iso()
             abort_remaining = True
             interrupted = True
@@ -4858,18 +5017,23 @@ def run_configured_suite(config_path: str, cli_args) -> int:
                 report_storage.release_checkpoint_lock(checkpoint_lock)
 
     try:
-        report["suite"]["run_state"] = "completed" if not abort_remaining else "stopped"
+        final_state = "timed_out" if timed_out else (
+            "completed" if not abort_remaining else "stopped"
+        )
+        report["suite"]["run_state"] = final_state
+        report["run"]["state"] = final_state
         report["suite"]["updated_at"] = _now_iso()
         _update_report_summary(report, started_perf, terminal=True)
         _write_json_report(report_storage, report, indent)
     except KeyboardInterrupt:
         report["suite"]["run_state"] = "interrupted"
+        report["run"]["state"] = "interrupted"
         report["suite"]["updated_at"] = _now_iso()
         _update_report_summary(report, started_perf, terminal=True)
         _write_json_report(report_storage, report, indent)
         report_storage.release_checkpoint_lock(checkpoint_lock)
         raise
-    exit_code = 1 if report["summary"]["failed"] else 0
+    exit_code = 124 if timed_out else (1 if report["summary"]["failed"] else 0)
     report_storage.release_checkpoint_lock(checkpoint_lock)
     _print_runtime_message(
         cli_args,

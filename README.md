@@ -116,6 +116,8 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 | 目标 | 配置文件 | 内容 |
 | --- | --- | --- |
 | 通用 API 回归套件 | [`benchmark-config.example.json`](examples/benchmark-config.example.json) | 冒烟、缓存、Decode 矩阵、混合负载与禁用的昂贵用例。 |
+| standard-v1 标准评测 | [`benchmark-config-standard-v1.json`](examples/benchmark-config-standard-v1.json) | 六个固定 workload 的版本化性能协议；报告包含可比较的 `standard_summary`。 |
+| 单机无人值守编排 | [`benchmark-config-automation.example.json`](examples/benchmark-config-automation.example.json) | 带 API preflight、请求/输出 token 预算、协作式期限和唯一报告命名的默认禁用模板。 |
 | 128K Prefill / Decode 峰值吞吐 | [`benchmark-config-throughput-sweep-128k-2k.json`](examples/benchmark-config-throughput-sweep-128k-2k.json) | 随机 128K 输入 / 2K 输出的吞吐扫描。 |
 | 128K / 2K、70% 缓存命中的 SLO 容量 | [`benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json`](examples/benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json) | 随机共享前缀、线性精扫和候选确认。 |
 | 128K 并发阶梯 | [`benchmark-config-concurrency-staircase-128k.json`](examples/benchmark-config-concurrency-staircase-128k.json) | 固定 128K 请求形状的多档并发测试。 |
@@ -229,7 +231,36 @@ cp examples/benchmark-config-mixed-workload.json \
   --config examples/benchmark-config-mixed-workload.local.json
 ```
 
-### 6. 报告输出与 S3 存储
+### 6. 单机无人值守编排
+
+[`benchmark-config-automation.example.json`](examples/benchmark-config-automation.example.json) 展示 suite 根级 `automation` 配置。复制它为 `*.local.json`，替换 endpoint、模型和 tokenizer，核对预算后再启用其中的 case。`--validate-config` 与 `--list-cases` 会展开并计算计划预算，但绝不执行 HTTP preflight 或 benchmark 请求。
+
+```json
+{
+  "automation": {
+    "enabled": true,
+    "budget": {
+      "max_total_requests": 5000,
+      "max_estimated_output_tokens": 2000000
+    },
+    "api_preflight": {
+      "enabled": true,
+      "timeout_seconds": 5
+    },
+    "max_total_duration_seconds": 3600
+  }
+}
+```
+
+启用 automation 时，两个 budget 上限和带 `{timestamp}` 的 `report.path`（或 `--report` 覆盖值）都是必填约束。预算只计算启用的 `api` case：包含正式请求、预热请求和其请求输出上限；扫描及容量搜索按保守上界估算。超限时工具会在发送 benchmark 或 preflight 流量前写出 `run.state: "rejected"` 的报告并返回状态码 `2`。automation 报告不恢复旧 checkpoint，以避免意外向已存在报告继续写入。
+
+在预算通过后，工具会使用与正式请求相同的 bearer header 对每个 API 目标执行 `GET {api_base}/models`。该请求必须返回 2xx 和包含 `data` 数组的 JSON；目标模型没有列在数组中只记录 `model_listed: false`，不会阻止运行。preflight 失败会写出 `run.state: "preflight_failed"` 并返回 `2`，不会发送 benchmark 请求。离线 case 不执行 preflight。
+
+`max_total_duration_seconds` 是协作式 case 边界期限：已开始的 case 会自然结束，随后尚未开始的 runnable case 会以 `skip_reason: "automation deadline exceeded"` 写入报告，运行状态为 `timed_out` 且退出码为 `124`。它不是对流式请求的强制取消，也不能代替底层客户端超时。
+
+所有 suite 报告都包含无密钥的 `run` 与 `provenance` 对象。它们记录 run ID、automation 决策、preflight 结果、期限状态、解析后的报告目标和 `execution_plan_sha256`，便于单机调度器归档和审计；不会保存 `api_key`、展开后的密钥配置或 S3 凭据。
+
+### 7. 报告输出与 S3 存储
 
 #### 本地报告
 
@@ -241,7 +272,7 @@ llm-benchmark \
   --report reports/benchmark.json
 ```
 
-本地固定路径使用原子替换和 POSIX 文件锁，适合单机 checkpoint 恢复。固定路径默认会恢复此前成功且无请求级失败的用例；包含 `{timestamp}` 的路径每次都会创建新报告，因此不会恢复旧 checkpoint。
+本地固定路径使用原子替换和 POSIX 文件锁，适合单机 checkpoint 恢复。固定路径默认会恢复此前成功且无请求级失败的用例；包含 `{timestamp}` 的路径会生成带微秒和进程 ID 的唯一名称，正常情况下不会恢复旧 checkpoint。它是唯一命名约定，不是存储后端的严格 create-only 保证。
 
 #### S3 报告
 
@@ -282,7 +313,7 @@ export BENCHMARK_S3_SECRET_ACCESS_KEY='your-access-key-secret'
 llm-benchmark --config examples/benchmark-config.s3.local.json
 ```
 
-S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 或 URI 内嵌凭据。S3 路径支持读取同一对象来恢复 checkpoint，但没有分布式锁：同一个 `s3://bucket/key` 在任意时刻只能由一个 benchmark 进程写入。包含 `{timestamp}` 的 S3 路径每次都会创建新报告，因此不会恢复旧 checkpoint。
+S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 或 URI 内嵌凭据。S3 路径支持读取同一对象来恢复 checkpoint，但没有分布式锁：同一个 `s3://bucket/key` 在任意时刻只能由一个 benchmark 进程写入。包含 `{timestamp}` 的 S3 路径会生成唯一命名的对象 key，正常情况下不会恢复旧 checkpoint；S3 `put_object` 仍允许具有相同 key 的写入覆盖，因此它不是严格 create-only 保证。
 
 ## 数据集与长度语义
 
@@ -294,6 +325,7 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 - [`benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json`](examples/benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json)
 - [`benchmark-config-concurrency-staircase-128k.json`](examples/benchmark-config-concurrency-staircase-128k.json)
 - [`benchmark-config-concurrency-staircase-256k.json`](examples/benchmark-config-concurrency-staircase-256k.json)
+- [`benchmark-config-standard-v1.json`](examples/benchmark-config-standard-v1.json)
 - [`benchmark-config-concurrency-matrix-32k-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-32k-64k-128k-240k.json)
 - [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json)
 - [`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json)
@@ -310,7 +342,12 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 - `repeat`：重复运行同一个 case。
 - `continue_on_error`：是否在任一 case 失败后停止整个 suite，默认为 `true`。
 - `failure_policy`：失败策略；默认 `continue`。设为 `stop-current-matrix` 时，质量门禁失败或执行异常会将同一原始 matrix case 的后续展开变体写为 `skipped`，并继续下一个 matrix 组。
+- `protocol`：可选的版本化评测协议声明。当前支持 `{ "id": "standard-v1" }`。
+- `standard_workload`：`standard-v1` case 的固定 workload ID。
+- `automation`：可选的单机无人值守策略；启用后需要预算和唯一命名报告路径。
 - `report`：报告路径、缩进和请求详情保存策略。
+
+`standard-v1` 必须包含且仅包含 `latency-short`、`prefill-long-context`、`decode-long-output`、`prefix-cache`、`concurrency-capacity` 和 `mixed-production` 六个启用的 workload；不允许使用 `matrix` 或 `repeat` 改变其合同。报告会额外写入 `standard_summary`：其中仅保留协议 ID、workload 合同摘要、状态和固定白名单指标，不包含时间戳、主机名、绝对路径、端点或模型名，可作为后续 baseline compare 的稳定输入。比较两份结果前必须确认其 `protocol_id` 和 `contract_sha256` 一致。请复制 [`benchmark-config-standard-v1.json`](examples/benchmark-config-standard-v1.json) 为本地配置，设置目标服务后先执行 `--validate-config` 和 `--list-cases`；运行会发送真实请求。
 
 `continue_on_error: false` 或命令行 `--fail-fast` 始终优先于 `failure_policy`，会按既有行为停止整个 suite，而不是只停止当前 matrix 组。
 

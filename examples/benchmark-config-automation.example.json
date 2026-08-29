@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "name": "single-host-automation-example",
+  "description": "无人值守 API 套件示例：启用前先替换目标参数，并确认预算与最长运行时长。",
+  "defaults": {
+    "mode": "api",
+    "api_base": "http://localhost:8000/v1",
+    "api_transport": "requests",
+    "model": "your-served-model",
+    "tokenizer": "/path/to/model-or-tokenizer",
+    "max_failure_rate": 0.0,
+    "min_goodput_pct": 90.0,
+    "slo": {
+      "ttft_seconds": 5.0,
+      "tpot_seconds": 0.1
+    },
+    "warmup": {
+      "enabled": true,
+      "rounds": 1
+    }
+  },
+  "automation": {
+    "enabled": true,
+    "budget": {
+      "max_total_requests": 20,
+      "max_estimated_output_tokens": 4096
+    },
+    "api_preflight": {
+      "enabled": true,
+      "timeout_seconds": 5
+    },
+    "max_total_duration_seconds": 300
+  },
+  "report": {
+    "path": "reports/automation-{timestamp}.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "api-smoke",
+      "description": "默认禁用；复制为本地配置并确认成本后再启用。",
+      "enabled": false,
+      "tags": ["smoke", "automation"],
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 128,
+          "output": 32
+        },
+        "requests": {
+          "concurrency": 1,
+          "count": 2
+        }
+      }
+    }
+  ]
+}
