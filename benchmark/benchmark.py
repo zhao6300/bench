@@ -211,19 +211,23 @@ LLM Prefill / Decode 性能基准测试工具 (benchmark.py)
 
 import argparse
 import concurrent.futures
+import copy
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import hashlib
 import json
 import math
 import os
+from pathlib import Path
 import platform
 import random
+import re
 try:
     import requests
 except ImportError:
     requests = None
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -255,6 +259,7 @@ try:
         send_requests_chat_request,
     )
     from .progress import ProgressDependencyError, create_progress_reporter
+    from .host_inventory import collect_host_inventory
     from .standard_protocol import (
         StandardProtocolError,
         build_standard_summary,
@@ -267,8 +272,15 @@ try:
         estimate_execution_plan,
         parse_automation,
         preflight_api_targets,
+        reportable_compose_environment,
         start_deadline,
         validate_immutable_report_target,
+        wait_for_api_targets,
+    )
+    from .compose_service import (
+        ComposeServiceError,
+        ManagedComposeService,
+        resolve_compose_service,
     )
 except ImportError:
     # Direct execution: python benchmark/benchmark.py ...
@@ -291,6 +303,7 @@ except ImportError:
         send_requests_chat_request,
     )
     from progress import ProgressDependencyError, create_progress_reporter
+    from host_inventory import collect_host_inventory
     from standard_protocol import (
         StandardProtocolError,
         build_standard_summary,
@@ -303,8 +316,15 @@ except ImportError:
         estimate_execution_plan,
         parse_automation,
         preflight_api_targets,
+        reportable_compose_environment,
         start_deadline,
         validate_immutable_report_target,
+        wait_for_api_targets,
+    )
+    from compose_service import (
+        ComposeServiceError,
+        ManagedComposeService,
+        resolve_compose_service,
     )
 
 
@@ -4672,8 +4692,16 @@ def _case_selected(case, case_filters, tag_filters):
     return True
 
 
-def run_configured_suite(config_path: str, cli_args) -> int:
-    config = load_suite_config(config_path)
+def _run_configured_suite_single(
+    config_path: str,
+    cli_args,
+    *,
+    config: Dict[str, Any] | None = None,
+    timestamp_override: str | None = None,
+) -> int:
+    """Run one suite against one configured API service lifecycle."""
+    if config is None:
+        config = load_suite_config(config_path)
     expanded = expand_suite_cases(config)
 
     selected = [
@@ -4690,8 +4718,27 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         prepared.append((case, args, scenario, _checkpoint_case_key(case, args, scenario)))
 
     automation = parse_automation(config.get("automation"))
+    try:
+        resolved_compose_service = resolve_compose_service(automation.docker_service, config_path)
+    except ComposeServiceError as exc:
+        raise BenchmarkConfigError(str(exc)) from exc
+    if resolved_compose_service is not None:
+        enabled_api_targets = {
+            args.api_base.rstrip("/")
+            for case, args, _, _ in prepared
+            if case["enabled"] and args.mode == "api"
+        }
+        if len(enabled_api_targets) != 1:
+            raise BenchmarkConfigError(
+                "automation.docker_service requires exactly one enabled API target"
+            )
     budget_estimate = estimate_execution_plan(prepared) if automation.enabled else None
     raw_report_target = cli_args.report or config.get("report", {}).get("path")
+    cli_timestamp = getattr(cli_args, "report_timestamp", None)
+    if cli_timestamp is not None and not re.fullmatch(r"[A-Za-z0-9_.-]+", cli_timestamp):
+        raise BenchmarkConfigError(
+            "--report-timestamp may contain only letters, numbers, dots, underscores, and hyphens"
+        )
     try:
         validate_immutable_report_target(automation, raw_report_target)
     except AutomationConfigError as exc:
@@ -4727,7 +4774,9 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     report_target = raw_report_target
     # Microseconds plus PID prevent colliding report names when multiple
     # benchmark processes start in the same second.
-    timestamp = f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-p{os.getpid()}"
+    timestamp = timestamp_override or cli_timestamp or (
+        f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-p{os.getpid()}"
+    )
     if not report_target:
         report_target = f"benchmark-report-{timestamp}.json"
     else:
@@ -4742,6 +4791,11 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         checkpoint_lock = report_storage.acquire_checkpoint_lock()
     except ReportStorageError as exc:
         raise BenchmarkConfigError(f"cannot prepare report {report_target!r}: {exc}") from exc
+    if resolved_compose_service is not None and not report_location.supports_checkpoint_lock:
+        report_storage.release_checkpoint_lock(checkpoint_lock)
+        raise BenchmarkConfigError(
+            "automation.docker_service requires a local report path with a lifecycle lock"
+        )
     if not report_location.supports_checkpoint_lock:
         _print_runtime_message(
             cli_args,
@@ -4760,7 +4814,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
 
     try:
         report = None
-        if not cli_args.no_resume and not automation.enabled:
+        if not cli_args.no_resume and (not automation.enabled or automation.resume):
             report = _load_resume_report(
                 report_storage, config.get("name", "benchmark-suite"), plan_fingerprint
             )
@@ -4801,6 +4855,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         "platform": platform.platform(),
         "hostname": platform.node(),
         "benchmark_script": os.path.abspath(__file__),
+        "host_inventory": collect_host_inventory(),
     }
 
     previous_records = {
@@ -4850,6 +4905,23 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             f"cannot write report to {report_location.display_name!r}: {exc}"
         ) from exc
 
+    if resumed and automation.resume and all(
+        not case["enabled"] or record["status"] == "passed"
+        for (case, _, _, _), record in zip(prepared, records)
+    ):
+        report["run"]["state"] = "completed"
+        report["suite"]["run_state"] = "completed"
+        report["suite"]["updated_at"] = _now_iso()
+        _update_report_summary(report, started_perf, terminal=True)
+        _write_json_report(report_storage, report, indent)
+        report_storage.release_checkpoint_lock(checkpoint_lock)
+        progress_reporter.close()
+        _print_runtime_message(
+            cli_args,
+            "Resume: all enabled cases previously passed; skipping service lifecycle.",
+        )
+        return 0
+
     if automation.enabled and budget_error:
         _skip_pending_records(records, f"automation budget rejected: {budget_error}")
         report["run"]["state"] = "rejected"
@@ -4864,10 +4936,86 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         return 2
 
     deadline_started_perf = None
+    managed_compose_service = None
     if automation.enabled:
         report["run"]["automation"]["budget"]["decision"] = "accepted"
+        docker_report = report["run"]["automation"]["docker_service"]
+        if resolved_compose_service is not None:
+            docker_report["state"] = "starting"
+            report["suite"]["updated_at"] = _now_iso()
+            _update_report_summary(report, started_perf)
+            _write_json_report(report_storage, report, indent)
+            managed_compose_service = ManagedComposeService(resolved_compose_service)
+            try:
+                managed_compose_service.start()
+                docker_report["started_at"] = _now_iso()
+                require_requests()
+                preflight_records, readiness_attempts = wait_for_api_targets(
+                    prepared,
+                    probe_timeout_seconds=automation.docker_service.probe_timeout_seconds,
+                    ready_timeout_seconds=automation.docker_service.ready_timeout_seconds,
+                    poll_interval_seconds=automation.docker_service.poll_interval_seconds,
+                    request_get=requests.get,
+                )
+                docker_report["readiness_attempts"] = readiness_attempts
+                docker_report["readiness"] = preflight_records
+                if any(record["outcome"] == "failed" for record in preflight_records):
+                    raise RuntimeError("managed service readiness check failed")
+                docker_report["state"] = "ready"
+                docker_report["ready_at"] = _now_iso()
+            except BaseException as exc:
+                if docker_report["started_at"] is None:
+                    docker_report["state"] = "start_failed"
+                else:
+                    docker_report["state"] = "readiness_failed"
+                docker_report["error"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                try:
+                    managed_compose_service.stop()
+                    docker_report["stopped_at"] = _now_iso()
+                except BaseException as cleanup_exc:
+                    docker_report["state"] = "teardown_failed"
+                    docker_report["error"] = {
+                        "type": type(cleanup_exc).__name__,
+                        "message": str(cleanup_exc),
+                    }
+                if isinstance(exc, KeyboardInterrupt):
+                    _skip_pending_records(records, "managed Docker Compose service interrupted")
+                    report["run"]["state"] = "interrupted"
+                    report["suite"]["run_state"] = "interrupted"
+                    report["suite"]["updated_at"] = _now_iso()
+                    _update_report_summary(report, started_perf, terminal=True)
+                    _write_json_report(report_storage, report, indent)
+                    report_storage.release_checkpoint_lock(checkpoint_lock)
+                    progress_reporter.close()
+                    raise
+                _skip_pending_records(records, "managed Docker Compose service failed to start")
+                failure_state = (
+                    "service_start_failed"
+                    if docker_report["started_at"] is None
+                    else "service_readiness_failed"
+                )
+                if docker_report["state"] == "teardown_failed":
+                    failure_state = "teardown_failed"
+                report["run"]["state"] = failure_state
+                report["suite"]["run_state"] = failure_state
+                report["suite"]["updated_at"] = _now_iso()
+                _update_report_summary(report, started_perf, terminal=True)
+                _write_json_report(report_storage, report, indent)
+                report_storage.release_checkpoint_lock(checkpoint_lock)
+                _print_runtime_message(
+                    cli_args,
+                    "Managed Docker Compose service did not become ready; suite was not started.",
+                    file=sys.stderr,
+                )
+                progress_reporter.close()
+                return 2
         try:
-            if automation.api_preflight.enabled and any(
+            if resolved_compose_service is not None:
+                pass
+            elif automation.api_preflight.enabled and any(
                 case["enabled"] and args.mode == "api"
                 for case, args, _, _ in prepared
             ):
@@ -4901,6 +5049,25 @@ def run_configured_suite(config_path: str, cli_args) -> int:
         report["suite"]["updated_at"] = _now_iso()
         _update_report_summary(report, started_perf)
         _write_json_report(report_storage, report, indent)
+        if (
+            managed_compose_service is not None
+            and automation.docker_service.benchmark_container.enabled
+        ):
+            return _run_benchmark_container_suite(
+                config=config,
+                config_path=config_path,
+                cli_args=cli_args,
+                timestamp=timestamp,
+                report_location=report_location,
+                report_storage=report_storage,
+                checkpoint_lock=checkpoint_lock,
+                report=report,
+                records=records,
+                started_perf=started_perf,
+                indent=indent,
+                managed_compose_service=managed_compose_service,
+                docker_report=docker_report,
+            )
 
     _print_runtime_message(cli_args, f"Benchmark suite: {report['suite']['name']}")
     _print_runtime_message(cli_args, f"Cases: {len(prepared)}")
@@ -5071,6 +5238,19 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             record["error"] = {"type": "KeyboardInterrupt", "message": "interrupted by user"}
             report["suite"]["run_state"] = "interrupted"
             report["run"]["state"] = "interrupted"
+            if managed_compose_service is not None:
+                docker_report = report["run"]["automation"]["docker_service"]
+                docker_report["state"] = "stopping"
+                try:
+                    managed_compose_service.stop()
+                    docker_report["state"] = "stopped"
+                    docker_report["stopped_at"] = _now_iso()
+                except ComposeServiceError as cleanup_exc:
+                    docker_report["state"] = "teardown_failed"
+                    docker_report["error"] = {
+                        "type": type(cleanup_exc).__name__,
+                        "message": str(cleanup_exc),
+                    }
             report["suite"]["updated_at"] = _now_iso()
             abort_remaining = True
             interrupted = True
@@ -5098,10 +5278,36 @@ def run_configured_suite(config_path: str, cli_args) -> int:
             if interrupted:
                 report_storage.release_checkpoint_lock(checkpoint_lock)
 
+    teardown_failed = False
+    teardown_interrupted: KeyboardInterrupt | None = None
+    if managed_compose_service is not None:
+        docker_report = report["run"]["automation"]["docker_service"]
+        docker_report["state"] = "stopping"
+        try:
+            managed_compose_service.stop()
+            docker_report["state"] = "stopped"
+            docker_report["stopped_at"] = _now_iso()
+        except BaseException as exc:
+            teardown_failed = True
+            if isinstance(exc, KeyboardInterrupt):
+                teardown_interrupted = exc
+            docker_report["state"] = "teardown_failed"
+            docker_report["error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+
     try:
-        final_state = "timed_out" if timed_out else (
+        workload_state = "timed_out" if timed_out else (
             "completed" if not abort_remaining else "stopped"
         )
+        final_state = (
+            "interrupted" if teardown_interrupted is not None
+            else "teardown_failed" if teardown_failed
+            else workload_state
+        )
+        if teardown_failed:
+            report["run"]["workload_state"] = workload_state
         report["suite"]["run_state"] = final_state
         report["run"]["state"] = final_state
         report["suite"]["updated_at"] = _now_iso()
@@ -5110,12 +5316,31 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     except KeyboardInterrupt:
         report["suite"]["run_state"] = "interrupted"
         report["run"]["state"] = "interrupted"
+        if managed_compose_service is not None:
+            docker_report = report["run"]["automation"]["docker_service"]
+            docker_report["state"] = "stopping"
+            try:
+                managed_compose_service.stop()
+                docker_report["state"] = "stopped"
+                docker_report["stopped_at"] = _now_iso()
+            except BaseException as cleanup_exc:
+                docker_report["state"] = "teardown_failed"
+                docker_report["error"] = {
+                    "type": type(cleanup_exc).__name__,
+                    "message": str(cleanup_exc),
+                }
         report["suite"]["updated_at"] = _now_iso()
         _update_report_summary(report, started_perf, terminal=True)
         _write_json_report(report_storage, report, indent)
         report_storage.release_checkpoint_lock(checkpoint_lock)
         raise
-    exit_code = 124 if timed_out else (1 if report["summary"]["failed"] else 0)
+    if teardown_interrupted is not None:
+        report_storage.release_checkpoint_lock(checkpoint_lock)
+        progress_reporter.close()
+        raise teardown_interrupted
+    exit_code = 124 if timed_out else (
+        1 if report["summary"]["failed"] or teardown_failed else 0
+    )
     report_storage.release_checkpoint_lock(checkpoint_lock)
     _print_runtime_message(
         cli_args,
@@ -5141,6 +5366,471 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     return exit_code
 
 
+def _run_benchmark_container_suite(
+    *,
+    config: Dict[str, Any],
+    config_path: str,
+    cli_args,
+    timestamp: str,
+    report_location,
+    report_storage,
+    checkpoint_lock,
+    report: Dict[str, Any],
+    records: list[Dict[str, Any]],
+    started_perf: float,
+    indent: int,
+    managed_compose_service,
+    docker_report: Dict[str, Any],
+) -> int:
+    """Run one suite in the configured Compose benchmark client container."""
+    container_policy = parse_automation(
+        config.get("automation")
+    ).docker_service.benchmark_container
+    assert container_policy.enabled
+    assert container_policy.service is not None
+    assert container_policy.api_base is not None
+    assert report_location.path is not None
+
+    container_report = {
+        "enabled": True,
+        "service": container_policy.service,
+        "state": "running",
+        "started_at": _now_iso(),
+        "finished_at": None,
+        "exit_code": None,
+        "error": None,
+    }
+    docker_report["benchmark_container"] = container_report
+    report["suite"]["updated_at"] = _now_iso()
+    _update_report_summary(report, started_perf)
+    _write_json_report(report_storage, report, indent)
+    report_storage.release_checkpoint_lock(checkpoint_lock)
+
+    host_run_id = report["run"].get("id")
+    config_file = None
+    container_exit_code = 2
+    container_error = None
+    interrupted = False
+    try:
+        config_file = _write_benchmark_container_config(
+            config,
+            report_location.path,
+            container_policy.api_base,
+        )
+        container_exit_code = managed_compose_service.run_benchmark_container(
+            config_file=Path(config_file),
+            report_directory=Path(report_location.path).parent,
+            report_template_name=_container_report_template_name(config, cli_args),
+            report_timestamp=timestamp,
+            case_filters=list(cli_args.case_filters),
+            tag_filters=list(cli_args.tag_filters),
+            fail_fast=cli_args.fail_fast,
+            resume=(
+                parse_automation(config.get("automation")).resume
+                and not cli_args.no_resume
+            ),
+        )
+    except KeyboardInterrupt:
+        interrupted = True
+    except Exception as exc:
+        container_error = exc
+    finally:
+        if config_file is not None:
+            try:
+                os.unlink(config_file)
+            except FileNotFoundError:
+                pass
+
+    child_report = None
+    lock = None
+    teardown_error = None
+    try:
+        lock = report_storage.acquire_checkpoint_lock()
+        try:
+            child_report = _read_container_report(report_storage)
+        except (ReportStorageError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            container_error = container_error or exc
+        if (
+            child_report is not None
+            and child_report.get("run", {}).get("id") == host_run_id
+        ):
+            child_report = None
+        if child_report is None or container_error is not None:
+            _skip_pending_records(records, "benchmark container did not complete the suite")
+            _update_report_summary(report, started_perf, terminal=True)
+            report["run"]["state"] = "container_failed"
+            report["suite"]["run_state"] = "container_failed"
+            child_report = report
+        docker_report["benchmark_container"] = container_report
+        container_report["finished_at"] = _now_iso()
+        container_report["exit_code"] = container_exit_code
+        if container_error is not None:
+            container_report["state"] = "failed"
+            container_report["error"] = {
+                "type": type(container_error).__name__,
+                "message": str(container_error),
+            }
+        elif container_exit_code:
+            container_report["state"] = "failed"
+        else:
+            container_report["state"] = "completed"
+
+        child_run = child_report.setdefault("run", {}).setdefault("automation", {})
+        child_docker_report = child_run.setdefault("docker_service", {})
+        child_docker_report.update(docker_report)
+        child_report.setdefault("suite", {})["config_file"] = os.path.abspath(config_path)
+        child_environment = child_report.setdefault("environment", {})
+        child_environment["host_inventory"] = report["environment"]["host_inventory"]
+
+        child_docker_report["state"] = "stopping"
+        try:
+            managed_compose_service.stop()
+            child_docker_report["state"] = "stopped"
+            child_docker_report["stopped_at"] = _now_iso()
+        except BaseException as exc:
+            teardown_error = exc
+            child_docker_report["state"] = "teardown_failed"
+            child_docker_report["error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+        if interrupted:
+            child_report["run"]["state"] = "interrupted"
+            child_report["suite"]["run_state"] = "interrupted"
+        elif teardown_error is not None:
+            child_report["run"]["workload_state"] = child_report["run"].get("state")
+            child_report["run"]["state"] = "teardown_failed"
+            child_report["suite"]["run_state"] = "teardown_failed"
+        elif container_error is not None:
+            child_report["run"]["state"] = "container_failed"
+            child_report["suite"]["run_state"] = "container_failed"
+        child_report["suite"]["updated_at"] = _now_iso()
+        _write_json_report(report_storage, child_report, indent)
+    finally:
+        report_storage.release_checkpoint_lock(lock)
+        progress_reporter = getattr(cli_args, "_progress_reporter", None)
+        if progress_reporter is not None:
+            progress_reporter.close()
+
+    if interrupted:
+        raise KeyboardInterrupt()
+    if teardown_error is not None:
+        return 1
+    if container_error is not None:
+        return 2
+    return container_exit_code
+
+
+def _write_benchmark_container_config(
+    config: Dict[str, Any],
+    report_path: str,
+    api_base: str,
+) -> str:
+    """Write a private container-only config without recursive service startup."""
+    container_config = copy.deepcopy(config)
+    automation = container_config["automation"]
+    automation["docker_service"] = {"enabled": False}
+    defaults = container_config.setdefault("defaults", {})
+    defaults["api_base"] = api_base
+    descriptor, path = tempfile.mkstemp(
+        prefix=".benchmark-container-",
+        suffix=".json",
+        dir=os.path.dirname(report_path),
+        text=True,
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump(container_config, file, ensure_ascii=False, indent=2)
+            file.write("\n")
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        raise
+    return path
+
+
+def _container_report_template_name(config: Dict[str, Any], cli_args) -> str:
+    """Return the fixed container-local report filename template."""
+    target = cli_args.report or config.get("report", {}).get("path")
+    return os.path.basename(target or "benchmark-report-{timestamp}.json")
+
+
+def _read_container_report(report_storage) -> Dict[str, Any] | None:
+    """Load one JSON report written by the benchmark client container."""
+    content = report_storage.read_text()
+    if content is None:
+        return None
+    report = json.loads(content)
+    if not isinstance(report, dict):
+        raise ValueError("benchmark container report must be a JSON object")
+    return report
+
+
+def run_configured_suite(config_path: str, cli_args) -> int:
+    """Run a suite once or serially across its configured service profiles."""
+    config = load_suite_config(config_path)
+    automation = parse_automation(config.get("automation"))
+    profiles = automation.docker_service.profiles
+    if not profiles:
+        return _run_configured_suite_single(config_path, cli_args, config=config)
+
+    raw_report_target = cli_args.report or config.get("report", {}).get("path")
+    try:
+        validate_immutable_report_target(automation, raw_report_target)
+        summary_location = parse_report_location(
+            _profile_report_target(raw_report_target, "profiles-summary"),
+            base_dir=os.path.dirname(os.path.abspath(config_path)),
+        )
+    except (AutomationConfigError, ReportStorageError) as exc:
+        raise BenchmarkConfigError(str(exc)) from exc
+    if not summary_location.supports_checkpoint_lock:
+        raise BenchmarkConfigError(
+            "multi-profile docker_service requires a local aggregate report path"
+        )
+
+    for profile in profiles:
+        try:
+            resolve_compose_service(
+                automation.docker_service.select_profile(profile), config_path
+            )
+        except ComposeServiceError as exc:
+            raise BenchmarkConfigError(str(exc)) from exc
+
+    if cli_args.validate_config or cli_args.list_cases:
+        inspection_profile = next(
+            (profile for profile in profiles if profile.enabled), profiles[0]
+        )
+        inspection_config = _config_for_compose_profile(config, inspection_profile)
+        inspection_config["automation"]["docker_service"]["enabled"] = False
+        return _run_configured_suite_single(
+            config_path,
+            cli_args,
+            config=inspection_config,
+        )
+    return _run_profiled_configured_suite(
+        config_path,
+        cli_args,
+        config,
+        automation.docker_service,
+    )
+
+
+def _config_for_compose_profile(config: Dict[str, Any], profile) -> Dict[str, Any]:
+    """Build a single-profile suite config with effective deployment parameters.
+
+    Args:
+        config: Parsed multi-profile suite configuration.
+        profile: One validated Compose service profile.
+
+    Returns:
+        A deep-copied configuration accepted by the single-profile runner.
+    """
+    profile_config = copy.deepcopy(config)
+    service = profile_config["automation"]["docker_service"]
+    base_environment = service.get("base_environment", service.get("environment", {}))
+    environment = dict(base_environment)
+    environment.update(dict(profile.environment))
+    service.pop("profiles", None)
+    service.pop("environment", None)
+    service["base_environment"] = environment
+    service["profile_name"] = profile.name
+    service["project_name"] = profile.project_name
+    return profile_config
+
+
+def _profile_report_target(raw_target: str | None, profile_name: str) -> str:
+    """Create one unique profile report target for isolated or resume runs."""
+    target = raw_target or "benchmark-report-{timestamp}.json"
+    if "{timestamp}" in target:
+        return target.replace("{timestamp}", f"{{timestamp}}-{profile_name}")
+    root, extension = os.path.splitext(target)
+    return f"{root}-{profile_name}{extension}"
+
+
+def _run_profiled_configured_suite(
+    config_path: str,
+    cli_args,
+    config: Dict[str, Any],
+    service_policy,
+) -> int:
+    """Run profiles serially and checkpoint each profile lifecycle outcome."""
+    timestamp = f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-p{os.getpid()}"
+    raw_target = cli_args.report or config.get("report", {}).get("path")
+    automation = parse_automation(config.get("automation"))
+    outcomes = []
+    interrupted = False
+    stop_remaining = False
+    try:
+        for profile in service_policy.profiles:
+            environment = reportable_compose_environment(
+                service_policy.select_profile(profile).environment
+            )
+            if not profile.enabled:
+                outcomes.append(_profile_outcome(profile, "skipped", environment=environment))
+                continue
+            if stop_remaining:
+                outcomes.append(_profile_outcome(profile, "not_run", environment=environment))
+                continue
+            profile_cli_args = copy.copy(cli_args)
+            profile_cli_args.report = _profile_report_target(raw_target, profile.name)
+            profile_config = _config_for_compose_profile(config, profile)
+            report_target = profile_cli_args.report.replace("{timestamp}", timestamp)
+            outcome = _profile_outcome(
+                profile,
+                "running",
+                _profile_report_display_name(config_path, report_target),
+                environment=environment,
+            )
+            outcomes.append(outcome)
+            try:
+                exit_code = _run_configured_suite_single(
+                    config_path,
+                    profile_cli_args,
+                    config=profile_config,
+                    timestamp_override=timestamp,
+                )
+            except KeyboardInterrupt:
+                outcome["state"] = "interrupted"
+                raise
+            except BaseException:
+                outcome["state"] = "failed"
+                raise
+            outcome.update({
+                "state": _profile_exit_state(exit_code),
+                "exit_code": exit_code,
+            })
+            stop_remaining = bool(exit_code and cli_args.fail_fast)
+    except KeyboardInterrupt:
+        interrupted = True
+        raise
+    finally:
+        try:
+            _write_profile_summary(
+                config_path,
+                _profile_report_target(raw_target, "profiles-summary").replace(
+                    "{timestamp}", timestamp
+                ),
+                config,
+                outcomes,
+                interrupted,
+                resume=automation.resume,
+            )
+        except BenchmarkConfigError:
+            if interrupted:
+                _print_runtime_message(
+                    cli_args,
+                    "WARNING: cannot write multi-profile summary after interruption",
+                    file=sys.stderr,
+                )
+            else:
+                raise
+
+    exit_codes = [item["exit_code"] for item in outcomes if item["exit_code"] is not None]
+    if any(code == 124 for code in exit_codes):
+        return 124
+    return 1 if any(code != 0 for code in exit_codes) else 0
+
+
+def _profile_outcome(
+    profile,
+    state: str,
+    report: str | None = None,
+    exit_code: int | None = None,
+    *,
+    environment: Dict[str, str],
+) -> Dict[str, Any]:
+    """Build one aggregate profile outcome with deployment parameters."""
+    return {
+        "name": profile.name,
+        "project_name": profile.project_name,
+        "environment": environment,
+        "state": state,
+        "report": report,
+        "exit_code": exit_code,
+    }
+
+
+def _profile_exit_state(exit_code: int) -> str:
+    """Map a suite exit code to the aggregate profile state."""
+    if exit_code == 0:
+        return "completed"
+    if exit_code == 124:
+        return "timed_out"
+    return "failed"
+
+
+def _profile_report_display_name(config_path: str, target: str) -> str:
+    """Resolve one profile report target for the aggregate report."""
+    try:
+        return parse_report_location(
+            target,
+            base_dir=os.path.dirname(os.path.abspath(config_path)),
+        ).display_name
+    except ReportStorageError:
+        return target
+
+
+def _write_profile_summary(
+    config_path: str,
+    target: str,
+    config: Dict[str, Any],
+    outcomes: list[Dict[str, Any]],
+    interrupted: bool,
+    *,
+    resume: bool = False,
+) -> None:
+    """Persist a profile aggregate with redacted deployment parameters."""
+    try:
+        location = parse_report_location(
+            target,
+            base_dir=os.path.dirname(os.path.abspath(config_path)),
+        )
+        if not location.supports_checkpoint_lock:
+            raise BenchmarkConfigError(
+                "multi-profile docker_service requires a local aggregate report path"
+            )
+        storage = create_report_storage(location)
+        lock = storage.acquire_checkpoint_lock()
+        try:
+            _write_json_report(storage, {
+                "suite": config.get("name", "benchmark-suite"),
+                "config_file": os.path.abspath(config_path),
+                "environment": {"host_inventory": collect_host_inventory()},
+                "resume": {"enabled": resume},
+                "state": "interrupted" if interrupted else _profile_summary_state(outcomes),
+                "profiles": outcomes,
+                "summary": {
+                    "total": len(outcomes),
+                    "completed": sum(item["state"] == "completed" for item in outcomes),
+                    "failed": sum(item["state"] == "failed" for item in outcomes),
+                    "timed_out": sum(item["state"] == "timed_out" for item in outcomes),
+                    "skipped": sum(item["state"] == "skipped" for item in outcomes),
+                    "not_run": sum(item["state"] == "not_run" for item in outcomes),
+                },
+            })
+        finally:
+            storage.release_checkpoint_lock(lock)
+    except (ReportStorageError, TypeError, ValueError) as exc:
+        raise BenchmarkConfigError(f"cannot write profile summary {target!r}: {exc}") from exc
+
+
+def _profile_summary_state(outcomes: list[Dict[str, Any]]) -> str:
+    """Derive the aggregate state from completed profile lifecycle results."""
+    states = {item["state"] for item in outcomes}
+    if "failed" in states:
+        return "failed"
+    if "timed_out" in states:
+        return "timed_out"
+    return "completed"
+
+
 # ── CLI & Main ─────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -5157,6 +5847,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--report", default=None,
         help="JSON 报告输出路径，可为本地路径或 s3://bucket/key；配置模式下覆盖 report.path；传统单次模式下启用结果输出"
+    )
+    parser.add_argument(
+        "--report-timestamp", default=None,
+        help="固定配置套件报告中的 {timestamp} 值；供受管 benchmark 容器保持父子报告路径一致",
     )
     parser.add_argument(
         "--case", action="append", default=[], dest="case_filters",

@@ -5,12 +5,70 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 import math
+import re
+import time
 from typing import Any, Callable
+from urllib.parse import urlsplit
 import uuid
+
+try:
+    from .compose_service import (
+        BenchmarkContainerPolicy,
+        ComposeServicePolicy,
+        ComposeServiceProfile,
+    )
+except ImportError:
+    from compose_service import (
+        BenchmarkContainerPolicy,
+        ComposeServicePolicy,
+        ComposeServiceProfile,
+    )
 
 
 class AutomationConfigError(ValueError):
     """Raised when an automation policy is malformed or unsafe."""
+
+
+_REDACTED_COMPOSE_ENVIRONMENT_VALUE = "<redacted>"
+_SENSITIVE_COMPOSE_ENVIRONMENT_MARKERS = (
+    "ACCESS_KEY",
+    "API_KEY",
+    "PASSWORD",
+    "SECRET",
+    "SESSION_TOKEN",
+    "TOKEN",
+)
+_SENSITIVE_COMPOSE_ENVIRONMENT_NAMES = frozenset({
+    "AWS_ENDPOINT_URL",
+    "AWS_ENDPOINT_URL_S3",
+    "BENCHMARK_S3_ENDPOINT_URL",
+    "S3_ENDPOINT",
+})
+
+
+def reportable_compose_environment(
+    environment: tuple[tuple[str, str], ...],
+) -> dict[str, str]:
+    """Return effective Compose variables with sensitive values redacted.
+
+    Args:
+        environment: Ordered Compose substitution values. Later duplicate keys
+            override earlier values.
+
+    Returns:
+        A JSON-safe deployment parameter map for a benchmark report.
+    """
+    report_environment = {}
+    for key, value in environment:
+        upper_key = key.upper()
+        if (
+            upper_key in _SENSITIVE_COMPOSE_ENVIRONMENT_NAMES
+            or any(marker in upper_key for marker in _SENSITIVE_COMPOSE_ENVIRONMENT_MARKERS)
+        ):
+            report_environment[key] = _REDACTED_COMPOSE_ENVIRONMENT_VALUE
+        else:
+            report_environment[key] = value
+    return report_environment
 
 
 @dataclass(frozen=True)
@@ -34,8 +92,10 @@ class AutomationPolicy:
     """Validated orchestration policy for one configured suite."""
 
     enabled: bool
+    resume: bool
     budget: BudgetLimits | None
     api_preflight: ApiPreflightPolicy
+    docker_service: ComposeServicePolicy
     max_total_duration_seconds: float | None
 
 
@@ -79,14 +139,19 @@ def parse_automation(value: Any) -> AutomationPolicy:
     if value is None:
         return AutomationPolicy(
             enabled=False,
+            resume=False,
             budget=None,
             api_preflight=ApiPreflightPolicy(enabled=False, timeout_seconds=5.0),
+            docker_service=_disabled_compose_service(),
             max_total_duration_seconds=None,
         )
     if not isinstance(value, dict):
         raise AutomationConfigError("automation must be an object")
     unknown = sorted(
-        set(value) - {"enabled", "budget", "api_preflight", "max_total_duration_seconds"}
+        set(value) - {
+            "enabled", "resume", "budget", "api_preflight", "docker_service",
+            "max_total_duration_seconds",
+        }
     )
     if unknown:
         raise AutomationConfigError(
@@ -95,13 +160,12 @@ def parse_automation(value: Any) -> AutomationPolicy:
     enabled = value.get("enabled", True)
     if not isinstance(enabled, bool):
         raise AutomationConfigError("automation.enabled must be true or false")
+    resume = value.get("resume", False)
+    if not isinstance(resume, bool):
+        raise AutomationConfigError("automation.resume must be true or false")
 
     budget_value = value.get("budget")
     budget = _parse_budget(budget_value) if budget_value is not None else None
-    if enabled and budget is None:
-        raise AutomationConfigError(
-            "automation.budget is required when automation.enabled is true"
-        )
 
     preflight_value = value.get("api_preflight", {})
     if not isinstance(preflight_value, dict):
@@ -123,6 +187,12 @@ def parse_automation(value: Any) -> AutomationPolicy:
             "automation.api_preflight.timeout_seconds must be a positive number"
         )
 
+    docker_service = _parse_compose_service(value.get("docker_service"))
+    if docker_service.enabled and not enabled:
+        raise AutomationConfigError(
+            "automation.docker_service.enabled requires automation.enabled=true"
+        )
+
     max_duration = value.get("max_total_duration_seconds")
     if max_duration is not None and not _positive_number(max_duration):
         raise AutomationConfigError(
@@ -130,26 +200,295 @@ def parse_automation(value: Any) -> AutomationPolicy:
         )
     return AutomationPolicy(
         enabled=enabled,
+        resume=resume,
         budget=budget,
         api_preflight=ApiPreflightPolicy(
             enabled=preflight_enabled,
             timeout_seconds=float(timeout_seconds),
         ),
+        docker_service=docker_service,
         max_total_duration_seconds=float(max_duration) if max_duration is not None else None,
     )
 
 
+
+def _disabled_compose_service() -> ComposeServicePolicy:
+    """Return the compatibility-preserving disabled Compose service policy."""
+    return ComposeServicePolicy(
+        enabled=False,
+        profile_name=None,
+        engine=None,
+        compose_files=(),
+        env_file=None,
+        project_name=None,
+        start_timeout_seconds=120.0,
+        ready_timeout_seconds=600.0,
+        poll_interval_seconds=2.0,
+        probe_timeout_seconds=5.0,
+        benchmark_container=BenchmarkContainerPolicy(
+            enabled=False,
+            service=None,
+            api_base=None,
+            timeout_seconds=3600.0,
+        ),
+        environment=(),
+        profiles=(),
+    )
+
+
+def _parse_compose_service(value: Any) -> ComposeServicePolicy:
+    """Parse one optional local Docker Compose service lifecycle policy."""
+    if value is None:
+        return _disabled_compose_service()
+    if not isinstance(value, dict):
+        raise AutomationConfigError("automation.docker_service must be an object")
+    allowed = {
+        "enabled", "profile_name", "engine", "compose_files", "env_file",
+        "project_name", "base_environment", "environment", "profiles",
+        "benchmark_container", "start_timeout_seconds", "ready_timeout_seconds", "poll_interval_seconds",
+        "probe_timeout_seconds",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise AutomationConfigError(
+            "automation.docker_service has unknown fields: " + ", ".join(unknown)
+        )
+    enabled = value.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise AutomationConfigError("automation.docker_service.enabled must be true or false")
+    if not enabled:
+        return _disabled_compose_service()
+
+    benchmark_container = _parse_benchmark_container(
+        value.get("benchmark_container")
+    )
+    if "base_environment" in value and "environment" in value:
+        raise AutomationConfigError(
+            "automation.docker_service cannot combine base_environment with environment"
+        )
+    base_environment = _parse_environment(
+        value.get("base_environment", value.get("environment", {})),
+        "automation.docker_service.base_environment",
+    )
+    profiles = _parse_compose_profiles(value.get("profiles"))
+    if profiles and ("profile_name" in value or "project_name" in value):
+        raise AutomationConfigError(
+            "automation.docker_service.profiles cannot be combined with "
+            "profile_name or project_name"
+        )
+    profile_name = value.get("profile_name")
+    if not profiles and (not isinstance(profile_name, str) or not profile_name.strip()):
+        raise AutomationConfigError(
+            "automation.docker_service.profile_name must be a non-empty string"
+        )
+    engine = value.get("engine")
+    if engine not in {"vllm", "sglang"}:
+        raise AutomationConfigError(
+            "automation.docker_service.engine must be vllm or sglang"
+        )
+    compose_files_value = value.get("compose_files")
+    if (
+        not isinstance(compose_files_value, list)
+        or not compose_files_value
+        or any(
+            not isinstance(item, str)
+            or not item.strip()
+            or item.startswith(("/", "\\\\"))
+            for item in compose_files_value
+        )
+    ):
+        raise AutomationConfigError(
+            "automation.docker_service.compose_files must be a non-empty array "
+            "of relative paths"
+        )
+    env_file = value.get("env_file")
+    if env_file is not None and (
+        not isinstance(env_file, str)
+        or not env_file.strip()
+        or env_file.startswith(("/", "\\\\"))
+    ):
+        raise AutomationConfigError(
+            "automation.docker_service.env_file must be a relative path when set"
+        )
+    project_name = value.get("project_name")
+    if not profiles and (
+        not isinstance(project_name, str)
+        or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project_name)
+    ):
+        raise AutomationConfigError(
+            "automation.docker_service.project_name must use lowercase letters, "
+            "numbers, underscores, or hyphens"
+        )
+
+    start_timeout = value.get("start_timeout_seconds", 120.0)
+    ready_timeout = value.get("ready_timeout_seconds", 600.0)
+    poll_interval = value.get("poll_interval_seconds", 2.0)
+    probe_timeout = value.get("probe_timeout_seconds", 5.0)
+    for field, number in [
+        ("start_timeout_seconds", start_timeout),
+        ("ready_timeout_seconds", ready_timeout),
+        ("poll_interval_seconds", poll_interval),
+        ("probe_timeout_seconds", probe_timeout),
+    ]:
+        if not _positive_number(number):
+            raise AutomationConfigError(
+                f"automation.docker_service.{field} must be a positive number"
+            )
+    if poll_interval > ready_timeout:
+        raise AutomationConfigError(
+            "automation.docker_service.poll_interval_seconds must not exceed "
+            "ready_timeout_seconds"
+        )
+    return ComposeServicePolicy(
+        enabled=True,
+        profile_name=profile_name.strip() if isinstance(profile_name, str) else None,
+        engine=engine,
+        compose_files=tuple(item.strip() for item in compose_files_value),
+        env_file=env_file.strip() if isinstance(env_file, str) else None,
+        project_name=project_name if isinstance(project_name, str) else None,
+        start_timeout_seconds=float(start_timeout),
+        ready_timeout_seconds=float(ready_timeout),
+        poll_interval_seconds=float(poll_interval),
+        probe_timeout_seconds=float(probe_timeout),
+        benchmark_container=benchmark_container,
+        environment=base_environment,
+        profiles=profiles,
+    )
+
+
+
+def _parse_benchmark_container(value: Any) -> BenchmarkContainerPolicy:
+    """Parse the fixed-command optional benchmark client container policy."""
+    if value is None:
+        return BenchmarkContainerPolicy(False, None, None, 3600.0)
+    if not isinstance(value, dict):
+        raise AutomationConfigError("automation.docker_service.benchmark_container must be an object")
+    allowed = {"enabled", "service", "api_base", "timeout_seconds"}
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise AutomationConfigError(
+            "automation.docker_service.benchmark_container has unknown fields: "
+            + ", ".join(unknown)
+        )
+    enabled = value.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise AutomationConfigError(
+            "automation.docker_service.benchmark_container.enabled must be true or false"
+        )
+    timeout = value.get("timeout_seconds", 3600.0)
+    if not _positive_number(timeout):
+        raise AutomationConfigError(
+            "automation.docker_service.benchmark_container.timeout_seconds "
+            "must be a positive number"
+        )
+    if not enabled:
+        return BenchmarkContainerPolicy(False, None, None, float(timeout))
+    service = value.get("service")
+    if not isinstance(service, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", service):
+        raise AutomationConfigError(
+            "automation.docker_service.benchmark_container.service must use lowercase "
+            "letters, numbers, underscores, or hyphens"
+        )
+    api_base = value.get("api_base")
+    if not isinstance(api_base, str) or not api_base.strip():
+        raise AutomationConfigError(
+            "automation.docker_service.benchmark_container.api_base must be a non-empty URL"
+        )
+    parsed = urlsplit(api_base)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or "@" in parsed.netloc
+    ):
+        raise AutomationConfigError(
+            "automation.docker_service.benchmark_container.api_base must be an HTTP(S) "
+            "URL without credentials, query, or fragment"
+        )
+    return BenchmarkContainerPolicy(True, service, api_base.rstrip("/"), float(timeout))
+
+
+def _parse_environment(value: Any, location: str) -> tuple[tuple[str, str], ...]:
+    """Validate non-secret Compose substitution values without interpreting flags."""
+    if not isinstance(value, dict):
+        raise AutomationConfigError(f"{location} must be an object")
+    environment = []
+    for key, item in value.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            raise AutomationConfigError(f"{location} keys must be environment variable names")
+        if not isinstance(item, str):
+            raise AutomationConfigError(f"{location}.{key} must be a string")
+        environment.append((key, item))
+    return tuple(environment)
+
+
+def _parse_compose_profiles(value: Any) -> tuple[ComposeServiceProfile, ...]:
+    """Parse serial service profiles with unique project names and parameters."""
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not value:
+        raise AutomationConfigError("automation.docker_service.profiles must be a non-empty array")
+    profiles = []
+    names = set()
+    projects = set()
+    for index, item in enumerate(value):
+        location = f"automation.docker_service.profiles[{index}]"
+        if not isinstance(item, dict):
+            raise AutomationConfigError(f"{location} must be an object")
+        unknown = sorted(set(item) - {"name", "enabled", "project_name", "environment"})
+        if unknown:
+            raise AutomationConfigError(f"{location} has unknown fields: {', '.join(unknown)}")
+        enabled = item.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise AutomationConfigError(f"{location}.enabled must be true or false")
+        name = item.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+            raise AutomationConfigError(
+                f"{location}.name must use lowercase letters, numbers, underscores, or hyphens"
+            )
+        project_name = item.get("project_name")
+        if (
+            not isinstance(project_name, str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project_name)
+        ):
+            raise AutomationConfigError(
+                f"{location}.project_name must use lowercase letters, numbers, underscores, or hyphens"
+            )
+        environment = _parse_environment(item.get("environment", {}), f"{location}.environment")
+        if name in names:
+            raise AutomationConfigError(f"duplicate docker service profile name: {name}")
+        if project_name in projects:
+            raise AutomationConfigError(f"duplicate docker service project_name: {project_name}")
+        names.add(name)
+        projects.add(project_name)
+        profiles.append(ComposeServiceProfile(name, enabled, project_name, environment))
+    return tuple(profiles)
+
+
 def validate_immutable_report_target(policy: AutomationPolicy, target: str | None) -> None:
-    """Require an immutable timestamp template for explicit automation reports.
+    """Validate report naming for isolated or resumable automation runs.
 
     Args:
         policy: Validated automation policy.
         target: CLI-overridden or configured report target before replacement.
 
     Raises:
-        AutomationConfigError: If an enabled policy uses an overwrite-prone target.
+        AutomationConfigError: If an enabled policy has an unsafe report target.
     """
-    if policy.enabled and target is not None and "{timestamp}" not in target:
+    if not policy.enabled:
+        return
+    if policy.resume:
+        if target is None or not target.strip():
+            raise AutomationConfigError(
+                "automation.resume=true requires an explicit stable report.path or --report"
+            )
+        if "{timestamp}" in target:
+            raise AutomationConfigError(
+                "automation.resume=true requires a stable report path without {timestamp}"
+            )
+        return
+    if target is not None and "{timestamp}" not in target:
         raise AutomationConfigError(
             "automation requires report.path or --report to contain {timestamp}"
         )
@@ -266,13 +605,64 @@ def preflight_api_targets(
     return records
 
 
+def wait_for_api_targets(
+    prepared: list[tuple[Any, Any, str, str]],
+    *,
+    probe_timeout_seconds: float,
+    ready_timeout_seconds: float,
+    poll_interval_seconds: float,
+    request_get: Callable[..., Any],
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[list[dict[str, Any]], int]:
+    """Wait for every enabled API target to pass an OpenAI models probe.
+
+    Args:
+        prepared: Normalized suite execution entries.
+        probe_timeout_seconds: Per-attempt HTTP timeout.
+        ready_timeout_seconds: Maximum wall-clock readiness wait.
+        poll_interval_seconds: Delay between unsuccessful probes.
+        request_get: HTTP GET callable compatible with ``requests.get``.
+        clock: Monotonic clock used to bound readiness waits.
+        sleep: Delay function used between attempts.
+
+    Returns:
+        The final preflight-shaped records and number of probe attempts.
+    """
+    probe_policy = AutomationPolicy(
+        enabled=True,
+        resume=False,
+        budget=None,
+        api_preflight=ApiPreflightPolicy(
+            enabled=True,
+            timeout_seconds=probe_timeout_seconds,
+        ),
+        docker_service=_disabled_compose_service(),
+        max_total_duration_seconds=None,
+    )
+    started_at = clock()
+    attempts = 0
+    while True:
+        attempts += 1
+        records = preflight_api_targets(prepared, probe_policy, request_get)
+        if not any(record["outcome"] == "failed" for record in records):
+            return records, attempts
+        remaining = ready_timeout_seconds - (clock() - started_at)
+        if remaining <= 0:
+            for record in records:
+                if record["outcome"] == "failed":
+                    record["message"] = "service readiness timed out"
+            return records, attempts
+        sleep(min(poll_interval_seconds, remaining))
+
+
 def build_run_governance(
     policy: AutomationPolicy,
     estimate: BudgetEstimate | None,
     plan_fingerprint: str,
     report_target: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Build run and provenance objects without secrets or expanded config data.
+    """Build run and provenance objects with redacted Compose deployment parameters.
 
     Args:
         policy: Validated automation policy.
@@ -294,6 +684,22 @@ def build_run_governance(
                 "decision": "pending" if policy.enabled else "not_enabled",
             },
             "preflight": [],
+            "docker_service": {
+                "enabled": policy.docker_service.enabled,
+                "state": "pending" if policy.docker_service.enabled else "not_enabled",
+                "profile_name": policy.docker_service.profile_name,
+                "engine": policy.docker_service.engine,
+                "project_name": policy.docker_service.project_name,
+                "environment": reportable_compose_environment(
+                    policy.docker_service.environment
+                ),
+                "started_at": None,
+                "ready_at": None,
+                "stopped_at": None,
+                "readiness_attempts": 0,
+                "readiness": [],
+                "error": None,
+            },
             "deadline": {
                 "max_total_duration_seconds": policy.max_total_duration_seconds,
                 "started_at": None,

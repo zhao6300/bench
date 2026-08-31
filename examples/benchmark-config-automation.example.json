@@ -1,46 +1,117 @@
 {
   "version": 1,
-  "name": "single-host-automation-example",
-  "description": "无人值守 API 套件示例：启用前先替换目标参数，并确认预算与最长运行时长。",
+  "name": "single-host-engine-and-model-selectable-automation-example",
+  "description": "单一自动化入口：设置 BENCHMARK_ENGINE 与 BENCHMARK_MODEL_PROFILE 后选择对应的引擎和模型 Compose 模板；包含 smoke 与 32K/64K/128K/240K 并发矩阵，所有昂贵用例默认禁用。",
+  "metadata": {
+    "purpose": "engine-and-model-selectable-automation",
+    "engine_selector": "BENCHMARK_ENGINE",
+    "model_profile_selector": "BENCHMARK_MODEL_PROFILE",
+    "supported_engines": ["vllm", "sglang"],
+    "supported_model_profiles": [
+      "qwen38-27b-fp8",
+      "deepseek-v4-flash-0731"
+    ],
+    "shared_prefix_target": "70%",
+    "requests_per_case": "2 × concurrency"
+  },
+  "continue_on_error": true,
+  "failure_policy": "stop-current-matrix",
+  "matrix_failure_confirm_rounds": 2,
   "defaults": {
     "mode": "api",
-    "api_base": "http://localhost:8000/v1",
+    "api_base": "http://localhost:${BENCHMARK_HOST_PORT}/v1",
     "api_transport": "requests",
-    "model": "your-served-model",
-    "tokenizer": "/path/to/model-or-tokenizer",
-    "max_failure_rate": 0.0,
-    "min_goodput_pct": 90.0,
-    "slo": {
-      "ttft_seconds": 5.0,
-      "tpot_seconds": 0.1
-    },
+    "api_timeout_seconds": 600,
+    "model": "${BENCHMARK_MODEL_ID}",
+    "tokenizer": "${BENCHMARK_TOKENIZER}",
+    "dataset": "random",
+    "random_range_ratio": "0.0",
+    "ignore_eos": true,
+    "max_failure_rate": 1.0,
+    "min_goodput_pct": 0.0,
     "warmup": {
-      "enabled": true,
-      "rounds": 1
+      "enabled": false
     }
   },
   "automation": {
     "enabled": true,
-    "budget": {
-      "max_total_requests": 20,
-      "max_estimated_output_tokens": 4096
-    },
+    "resume": false,
     "api_preflight": {
       "enabled": true,
-      "timeout_seconds": 5
+      "timeout_seconds": 10
     },
-    "max_total_duration_seconds": 300
+    "max_total_duration_seconds": 86400,
+    "docker_service": {
+      "enabled": true,
+      "engine": "${BENCHMARK_ENGINE}",
+      "compose_files": [
+        "deploy/${BENCHMARK_ENGINE}/${BENCHMARK_MODEL_PROFILE}/compose-profiles.example.yml"
+      ],
+      "base_environment": {
+        "ENGINE_IMAGE": "${BENCHMARK_ENGINE_IMAGE}",
+        "BENCHMARK_IMAGE": "${BENCHMARK_IMAGE}",
+        "MODEL_ID": "${BENCHMARK_MODEL_ID}",
+        "TOKENIZER_ID": "${BENCHMARK_TOKENIZER}",
+        "SERVED_MODEL_NAME": "${BENCHMARK_MODEL_ID}",
+        "HOST_PORT": "${BENCHMARK_HOST_PORT}"
+      },
+      "profiles": [
+        {
+          "name": "tp1-dp1",
+          "enabled": false,
+          "project_name": "benchmark-${BENCHMARK_ENGINE}-${BENCHMARK_MODEL_PROFILE}-tp1-dp1",
+          "environment": {
+            "GPU_DEVICES": "0",
+            "TP_SIZE": "1",
+            "DP_SIZE": "1",
+            "EP_SIZE": "1"
+          }
+        },
+        {
+          "name": "tp4-dp1",
+          "enabled": false,
+          "project_name": "benchmark-${BENCHMARK_ENGINE}-${BENCHMARK_MODEL_PROFILE}-tp4-dp1",
+          "environment": {
+            "GPU_DEVICES": "0,1,2,3",
+            "TP_SIZE": "4",
+            "DP_SIZE": "1",
+            "EP_SIZE": "4"
+          }
+        },
+        {
+          "name": "tp2-dp2",
+          "enabled": false,
+          "project_name": "benchmark-${BENCHMARK_ENGINE}-${BENCHMARK_MODEL_PROFILE}-tp2-dp2",
+          "environment": {
+            "GPU_DEVICES": "0,1,2,3",
+            "TP_SIZE": "2",
+            "DP_SIZE": "2",
+            "EP_SIZE": "2"
+          }
+        }
+      ],
+      "benchmark_container": {
+        "enabled": false,
+        "service": "benchmark",
+        "api_base": "http://inference:8000/v1",
+        "timeout_seconds": 86400
+      },
+      "start_timeout_seconds": 120,
+      "ready_timeout_seconds": 600,
+      "poll_interval_seconds": 2,
+      "probe_timeout_seconds": 10
+    }
   },
   "report": {
-    "path": "reports/automation-{timestamp}.json",
+    "path": "reports/automation-${BENCHMARK_ENGINE}-${BENCHMARK_MODEL_PROFILE}-{timestamp}.json",
     "include_request_details": false,
     "indent": 2
   },
   "cases": [
     {
       "name": "api-smoke",
-      "description": "默认禁用；复制为本地配置并确认成本后再启用。",
-      "enabled": false,
+      "description": "默认启用；先确认所选引擎、镜像、模型和 GPU 参数。",
+      "enabled": true,
       "tags": ["smoke", "automation"],
       "scenario": "single",
       "params": {
@@ -52,6 +123,158 @@
           "concurrency": 1,
           "count": 2
         }
+      }
+    },
+    {
+      "name": "input-32k-output-2k",
+      "description": "默认禁用；32K 输入、2K 输出，约 70% 共享前缀。",
+      "enabled": false,
+      "tags": ["decode", "concurrency-matrix", "input-32k", "output-2k", "expensive"],
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 32768,
+          "output": 2048
+        },
+        "random_input_len": 9831,
+        "random_prefix_len": 22937,
+        "random_output_len": 2048
+      },
+      "matrix": {
+        "requests": [
+          {"concurrency": 1, "count": 2},
+          {"concurrency": 4, "count": 8},
+          {"concurrency": 8, "count": 16},
+          {"concurrency": 12, "count": 24},
+          {"concurrency": 16, "count": 32},
+          {"concurrency": 20, "count": 40},
+          {"concurrency": 30, "count": 60},
+          {"concurrency": 40, "count": 80},
+          {"concurrency": 50, "count": 100},
+          {"concurrency": 60, "count": 120},
+          {"concurrency": 70, "count": 140},
+          {"concurrency": 80, "count": 160},
+          {"concurrency": 90, "count": 180},
+          {"concurrency": 100, "count": 200},
+          {"concurrency": 120, "count": 240},
+          {"concurrency": 150, "count": 300},
+          {"concurrency": 180, "count": 360},
+          {"concurrency": 200, "count": 400}
+        ]
+      }
+    },
+    {
+      "name": "input-64k-output-4k",
+      "description": "默认禁用；64K 输入、4K 输出，约 70% 共享前缀。",
+      "enabled": false,
+      "tags": ["decode", "concurrency-matrix", "input-64k", "output-4k", "expensive"],
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 65536,
+          "output": 4096
+        },
+        "random_input_len": 19661,
+        "random_prefix_len": 45875,
+        "random_output_len": 4096
+      },
+      "matrix": {
+        "requests": [
+          {"concurrency": 1, "count": 2},
+          {"concurrency": 4, "count": 8},
+          {"concurrency": 8, "count": 16},
+          {"concurrency": 12, "count": 24},
+          {"concurrency": 16, "count": 32},
+          {"concurrency": 20, "count": 40},
+          {"concurrency": 30, "count": 60},
+          {"concurrency": 40, "count": 80},
+          {"concurrency": 50, "count": 100},
+          {"concurrency": 60, "count": 120},
+          {"concurrency": 70, "count": 140},
+          {"concurrency": 80, "count": 160},
+          {"concurrency": 90, "count": 180},
+          {"concurrency": 100, "count": 200},
+          {"concurrency": 120, "count": 240},
+          {"concurrency": 150, "count": 300},
+          {"concurrency": 180, "count": 360},
+          {"concurrency": 200, "count": 400}
+        ]
+      }
+    },
+    {
+      "name": "input-128k-output-8k",
+      "description": "默认禁用；128K 输入、8K 输出，约 70% 共享前缀。",
+      "enabled": false,
+      "tags": ["decode", "concurrency-matrix", "input-128k", "output-8k", "expensive"],
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 131072,
+          "output": 8192
+        },
+        "random_input_len": 39322,
+        "random_prefix_len": 91750,
+        "random_output_len": 8192
+      },
+      "matrix": {
+        "requests": [
+          {"concurrency": 1, "count": 2},
+          {"concurrency": 4, "count": 8},
+          {"concurrency": 8, "count": 16},
+          {"concurrency": 12, "count": 24},
+          {"concurrency": 16, "count": 32},
+          {"concurrency": 20, "count": 40},
+          {"concurrency": 30, "count": 60},
+          {"concurrency": 40, "count": 80},
+          {"concurrency": 50, "count": 100},
+          {"concurrency": 60, "count": 120},
+          {"concurrency": 70, "count": 140},
+          {"concurrency": 80, "count": 160},
+          {"concurrency": 90, "count": 180},
+          {"concurrency": 100, "count": 200},
+          {"concurrency": 120, "count": 240},
+          {"concurrency": 150, "count": 300},
+          {"concurrency": 180, "count": 360},
+          {"concurrency": 200, "count": 400}
+        ]
+      }
+    },
+    {
+      "name": "input-240k-output-16k",
+      "description": "默认禁用；240K 输入、16K 输出，约 70% 共享前缀。",
+      "enabled": false,
+      "tags": ["decode", "concurrency-matrix", "input-240k", "output-16k", "expensive"],
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 245760,
+          "output": 16384
+        },
+        "random_input_len": 73728,
+        "random_prefix_len": 172032,
+        "random_output_len": 16384
+      },
+      "matrix": {
+        "requests": [
+          {"concurrency": 1, "count": 2},
+          {"concurrency": 4, "count": 8},
+          {"concurrency": 8, "count": 16},
+          {"concurrency": 12, "count": 24},
+          {"concurrency": 16, "count": 32},
+          {"concurrency": 20, "count": 40},
+          {"concurrency": 30, "count": 60},
+          {"concurrency": 40, "count": 80},
+          {"concurrency": 50, "count": 100},
+          {"concurrency": 60, "count": 120},
+          {"concurrency": 70, "count": 140},
+          {"concurrency": 80, "count": 160},
+          {"concurrency": 90, "count": 180},
+          {"concurrency": 100, "count": 200},
+          {"concurrency": 120, "count": 240},
+          {"concurrency": 150, "count": 300},
+          {"concurrency": 180, "count": 360},
+          {"concurrency": 200, "count": 400}
+        ]
       }
     }
   ]

@@ -1,0 +1,27 @@
+services:
+  inference:
+    image: ${ENGINE_IMAGE}
+    entrypoint:
+      - python3
+      - -m
+      - sglang.launch_server
+    command:
+      - --model-path
+      - ${MODEL_ID}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --tp-size
+      - ${TP_SIZE}
+      - --dp
+      - ${DP_SIZE}
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${GPU_DEVICES}
+    ports:
+      - "${HOST_PORT}:8000"
+
+  benchmark:
+    image: ${BENCHMARK_IMAGE}
+    entrypoint:
+      - llm-benchmark

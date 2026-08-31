@@ -23,6 +23,10 @@ htmlcov/
 .env
 .env.*
 *.local.json
+*.local.yml
+*.local.yaml
+*.local.env
+.benchmark-container-*.json
 
 # Benchmark output, checkpoints, and profiler artefacts
 benchmark-report*.json

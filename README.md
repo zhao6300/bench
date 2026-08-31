@@ -111,13 +111,114 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 
 默认 `api_transport` 为 `requests`，以保持既有行为。高并发 API 基准可在命令行使用 `--api-transport aiohttp`，或在本地 JSON 的 `defaults` / case 参数中设置 `"api_transport": "aiohttp"`。`--api-timeout-seconds`（JSON：`api_timeout_seconds`）控制每条正式 chat-completions 流式请求的超时，默认 `600` 秒，两个 transport 都适用；`requests` 使用连接/读取超时语义，`aiohttp` 使用单请求总时长。该参数不影响预热、服务诊断、Prometheus 指标采集或 automation `/models` preflight，它们仍使用各自的 `requests` 超时。无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
 
+### 单机 Docker Compose 推理服务
+
+`automation.docker_service` 可在单机上受管启动一个 vLLM 或 SGLang Compose project，等待其 OpenAI `/v1/models` 接口就绪后再运行 suite，并在正常完成、测试失败或服务就绪失败后停止**本次创建的** project。该功能默认关闭；`--validate-config` 与 `--list-cases` 只校验 bundle 文件，绝不调用 Docker 或 HTTP。
+
+`automation.budget` 是可选保护机制：省略或设为 `null` 时不限制请求数或输出 token，工具不会因预算拒绝 suite。若要在启动前阻止超出预估成本的运行，再显式设置 `max_total_requests` 与 `max_estimated_output_tokens`；该检查仅基于保守估算，不能替代人工确认真实 API、GPU 和运行时成本。
+
+默认每次 automation 都要求带 `{timestamp}` 的独立报告，并从头执行，避免不同服务生命周期误用旧结果。若需要在 `Ctrl-C`、客户端容器中断或单个 profile 失败后恢复，请显式设置 `"automation.resume": true`，同时使用一个**不含** `{timestamp}` 的稳定本地 `report.path`；`--no-resume` 可强制从头重跑。恢复会保留无请求级失败的 `passed` case，重跑 `pending`、`interrupted`、`failed` 和已跳过的启用 case。Compose 模式要求本地报告锁，因此不可用 S3 checkpoint。不要在同一稳定路径上并发运行多个 suite。
+
+```json
+{
+  "automation": {
+    "enabled": true,
+    "resume": true
+  },
+  "report": {
+    "path": "reports/vllm-resume.json"
+  }
+}
+```
+
+推理引擎参数不进入 benchmark schema。共享 Compose bundle 可通过 `base_environment` 传入基础替换变量，再由 `profiles[].environment` 覆盖或补充 TP、DP、EP、KV cache、attention backend 等任意引擎变量；这些值作为 `docker compose` 子进程环境注入。实际生效的合并参数会写入单 profile 报告的 `run.automation.docker_service.environment`，以及多 profile 聚合报告的 `profiles[].environment`；profile 变量优先于基础变量。`env_file` 仍可用于既有单 profile 配置，但不再是扩展参数的唯一方式。benchmark 始终以固定、无 shell 的 `docker compose [--env-file ...] -f ... -p ...` argv 拉起服务，因此新增 vLLM/SGLang 参数只需修改 Compose bundle 或环境变量，不需要改 Python。每个与所选引擎模板匹配的拓扑（例如 TP/DP）应使用唯一的 Compose project 和 report；同一主机上的 profile 必须串行运行。
+
+从自动化示例复制本地 suite 后，先准备与 suite 同目录的 Compose bundle 和 `.env` 文件（它们不应提交）：
+
+```json
+{
+  "automation": {
+    "enabled": true,
+    "api_preflight": {
+      "enabled": true,
+      "timeout_seconds": 5
+    },
+    "docker_service": {
+      "enabled": true,
+      "profile_name": "tp4-dp1",
+      "engine": "vllm",
+      "compose_files": [
+        "deploy/vllm.compose.yml",
+        "deploy/tp4-dp1.override.yml"
+      ],
+      "env_file": "deploy/tp4-dp1.local.env",
+      "project_name": "benchmark-tp4-dp1",
+      "start_timeout_seconds": 120,
+      "ready_timeout_seconds": 600,
+      "poll_interval_seconds": 2,
+      "probe_timeout_seconds": 5
+    }
+  }
+}
+```
+
+需要自动启动推理服务并运行 suite 时，使用 [`benchmark-config-automation.example.json`](examples/benchmark-config-automation.example.json) 作为统一入口。它用 `BENCHMARK_ENGINE` 与 `BENCHMARK_MODEL_PROFILE` 同时选择 `docker_service.engine` 和 `deploy/<engine>/<model-profile>/compose-profiles.example.yml`。公开示例提供 `qwen38-27b-fp8` 与 `deepseek-v4-flash-0731` 两个模型 profile，各自为 vLLM 和 SGLang 保留静态、可审阅的启动参数：Qwen 使用 TP/DP、Qwen3 reasoning parser；DeepSeek 使用 DeepSeek tokenizer 模式或 reasoning parser，并启用 MoE EP。`BENCHMARK_ENGINE_IMAGE`、`BENCHMARK_MODEL_ID`、`BENCHMARK_TOKENIZER`、`BENCHMARK_IMAGE` 与 `BENCHMARK_HOST_PORT` 是共享输入；模板内部对应 `ENGINE_IMAGE`、`MODEL_ID`、`TOKENIZER_ID`、`SERVED_MODEL_NAME` 等变量。若模型、镜像或引擎版本不匹配现有 profile，应复制最接近的目录，以新的受控名称建立静态模板；不要将任意 shell 参数字符串拼接到环境变量中。
+
+示例内置 `tp1-dp1`、`tp4-dp1`、`tp2-dp2` 三个默认禁用的串行 profile，各自在 `profiles[].environment` 中设置 `GPU_DEVICES`、`TP_SIZE`、`DP_SIZE` 和 `EP_SIZE`。Qwen 模板只使用 TP/DP；DeepSeek 模板额外使用 EP。复制为本地文件后应按实际 GPU 拓扑、模型上下文上限和显存修改并启用所需 profile。每个启用的 profile 都独立执行 `up → 就绪检查 → suite → down`，并产生独立报告和包含合并部署参数的汇总项。模板的 `MAX_MODEL_LEN`、`GPU_MEMORY_UTILIZATION`（vLLM）及 `MEM_FRACTION_STATIC`（SGLang）均有安全的示例默认值，也可通过本地环境变量覆盖。示例还内置一个默认启用的低成本 smoke 及 32K/2K、64K/4K、128K/8K、240K/16K 并发矩阵，所有昂贵矩阵用例默认禁用。配置变量在加载时展开，即使只运行 `--validate-config` 也必须设置全部 `BENCHMARK_*` 变量。
+
+```zsh
+export BENCHMARK_ENGINE=vllm # 或 sglang
+export BENCHMARK_MODEL_PROFILE=qwen38-27b-fp8 # 或 deepseek-v4-flash-0731
+export BENCHMARK_ENGINE_IMAGE='reviewed-engine-image'
+export BENCHMARK_IMAGE='reviewed-benchmark-image'
+export BENCHMARK_MODEL_ID='model-id'
+export BENCHMARK_TOKENIZER='model-or-tokenizer-id'
+export BENCHMARK_HOST_PORT=8000
+
+.venv/bin/python benchmark/benchmark.py \
+  --config examples/benchmark-config-automation.example.json --validate-config
+```
+
+需要比较同一引擎的多个拓扑时，分别参考 [vLLM profile 示例](examples/benchmark-config-compose-profiles-vllm.example.json) 与 [SGLang profile 示例](examples/benchmark-config-compose-profiles-sglang.example.json)。两者均使用上述中立的镜像、模型、GPU、TP、DP 变量接口，并复用一个 `compose_files` bundle；profile 环境变量优先于 base 环境变量。模板位于 [`examples/deploy/vllm/`](examples/deploy/vllm/) 和 [`examples/deploy/sglang/`](examples/deploy/sglang/)。所有启用的 profile 会按声明顺序依次执行 `up → /v1/models 就绪检查 → suite → down`；每个 profile 得到带 profile 后缀的独立报告，另有包含各 profile 合并部署参数的 `-profiles-summary` 聚合报告。`--fail-fast` 会在第一个失败 profile 后将余下启用 profile 标记为 `not_run`；默认会继续下一个 profile。`automation.max_total_duration_seconds` 作用于每个 profile 的 suite，而非所有 profile 的共享总时长。默认聚合报告与 profile 报告必须是带 `{timestamp}` 的本地路径，避免多个服务生命周期争用同一输出；启用 `automation.resume: true` 后，固定根路径会自动生成 `<根名>-<profile>.json` 和 `<根名>-profiles-summary.json`，已完成 profile 不会重新启动 Docker，只有中断、失败或未完成 profile 重跑。
+
+`compose_files` 和 `env_file` 必须是相对 suite 文件所在目录的常规本地文件，且不得逃逸出该目录树；每个 `project_name` 只能使用小写字母、数字、`_` 和 `-`，并且不得与另一个 profile 重复。启动前工具会执行 `docker compose config -q` 并拒绝接管已有 project；启动命令固定包含 `--no-build --pull never`，不会自动构建、拉取镜像或删除 volumes。报告不记录 Compose 或 `.env` 文件原文，但会记录前述合并后的部署环境参数；名称包含 `ACCESS_KEY`、`API_KEY`、`PASSWORD`、`SECRET`、`SESSION_TOKEN`、`TOKEN` 或 S3 endpoint 的值固定写为 `<redacted>`。不要将其他敏感值放入 `base_environment` 或 profile 环境变量。Docker daemon 对宿主机拥有高权限，只可使用已审阅的本地 Compose 文件。
+
+#### 可选：在 benchmark 容器中执行
+
+默认在宿主机运行 `llm-benchmark`。若需要隔离 Python、tokenizer 和网络命名空间，可在 `docker_service.benchmark_container` 显式开启测试容器：
+
+```json
+{
+  "benchmark_container": {
+    "enabled": true,
+    "service": "benchmark",
+    "api_base": "http://inference:8000/v1",
+    "timeout_seconds": 3600
+  }
+}
+```
+
+启用后，每个 profile 按 `up → 宿主机 /v1/models 就绪 → docker compose run --rm --no-deps benchmark → down` 执行。`service` 必须是 Compose 中以 `llm-benchmark` 作为 entrypoint 的 service；工具固定挂载一个只读的 profile 专用临时配置到 `/benchmark-input/suite.json`，并把本地报告目录挂载到 `/benchmark-output`。默认它固定传入 `--config`、`--report`、`--no-resume` 和 `--progress off`，不会接受任意命令或 shell 字符串；启用 `automation.resume: true` 时才移除 `--no-resume`，保留容器在中断前写入的 case checkpoint。Compose service 的镜像必须预先构建或拉取，执行时使用 `--no-tty`、`--pull never`。
+
+`benchmark_container.api_base` 是**测试容器内部**访问推理服务的地址。两个公开模板统一使用 `http://inference:8000/v1`；suite 的 `defaults.api_base` 仍供宿主机执行 `/v1/models` readiness，通常是已发布端口（例如 `http://localhost:8000/v1`）。开启容器模式时，工具会在临时容器配置中用前者覆盖 `defaults.api_base`，以避免使用宿主机的 loopback 地址。容器退出码和状态会写入独立 profile 报告；若容器未写报告、失败或被中断，工具仍会清理推理服务。
+
+### 宿主机硬件清单
+
+每份 suite 报告在 `environment.host_inventory` 下保存一次尽力采集的宿主机清单；多 profile 的独立报告和 `-profiles-summary` 聚合报告均包含该字段。字段包括 CPU（架构、型号、逻辑/物理核心和可用时的频率）、内存与 swap、根文件系统容量、Linux 静态块设备、网卡名称/MTU/状态/速率/驱动，以及加速器型号、驱动和显存。采集失败不会中断测试，而会在 `collection_errors` 或对应 `accelerators.probes` 中以安全的错误类型或状态记录。
+
+加速器采用可扩展 collector 注册表：默认尝试 NVIDIA `nvidia-smi`、华为 `npu-smi info`，以及沐曦候选工具 `mx-smi -L` 和 `mthreads-gmi -L`。缺少厂商命令时相应 probe 为 `unavailable`，无需安装额外 Python 依赖。后续厂商可实现 `AcceleratorCollector.collect(command_runner)` 并返回 `AcceleratorProbeResult` 后注册到 `DEFAULT_ACCELERATOR_COLLECTORS`；返回结构无效的扩展也会被隔离为非致命采集错误。
+
+为减少不必要的暴露，清单不记录 GPU UUID、序列号、进程或原始命令输出，也不记录网卡 MAC/IP、磁盘挂载来源、Compose 环境变量或密钥。benchmark 容器模式下，最终报告会以父进程采集的宿主机清单覆盖容器视角，避免容器 `/proc`、磁盘和网络命名空间造成误导。
+
 ### 2. 选择与目标匹配的现有配置
 
 | 目标 | 配置文件 | 内容 |
 | --- | --- | --- |
 | 通用 API 回归套件 | [`benchmark-config.example.json`](examples/benchmark-config.example.json) | 冒烟、缓存、Decode 矩阵、混合负载与禁用的昂贵用例。 |
 | standard-v1 标准评测 | [`benchmark-config-standard-v1.json`](examples/benchmark-config-standard-v1.json) | 六个固定 workload 的版本化性能协议；报告包含可比较的 `standard_summary`。 |
-| 单机无人值守编排 | [`benchmark-config-automation.example.json`](examples/benchmark-config-automation.example.json) | 带 API preflight、请求/输出 token 预算、协作式期限和唯一报告命名的默认禁用模板。 |
+| 单机无人值守编排 | [`benchmark-config-automation.example.json`](examples/benchmark-config-automation.example.json) | 通过 `BENCHMARK_ENGINE` 与 `BENCHMARK_MODEL_PROFILE` 选择专用模型模板；内置 smoke 和 32K/64K/128K/240K 并发矩阵，昂贵用例默认禁用。 |
+| 单机 Compose vLLM 多拓扑编排 | [`benchmark-config-compose-profiles-vllm.example.json`](examples/benchmark-config-compose-profiles-vllm.example.json) | 使用 vLLM 专用启动命令，以通用 `GPU_DEVICES`、`TP_SIZE`、`DP_SIZE` 覆盖拓扑参数；所有昂贵 profile 默认禁用。 |
+| 单机 Compose SGLang 多拓扑编排 | [`benchmark-config-compose-profiles-sglang.example.json`](examples/benchmark-config-compose-profiles-sglang.example.json) | 使用 SGLang 专用启动命令，以通用 `GPU_DEVICES`、`TP_SIZE`、`DP_SIZE` 覆盖拓扑参数；所有昂贵 profile 默认禁用。 |
 | 128K Prefill / Decode 峰值吞吐 | [`benchmark-config-throughput-sweep-128k-2k.json`](examples/benchmark-config-throughput-sweep-128k-2k.json) | 随机 128K 输入 / 2K 输出的吞吐扫描。 |
 | 128K / 2K、70% 缓存命中的 SLO 容量 | [`benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json`](examples/benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json) | 随机共享前缀、线性精扫和候选确认。 |
 | 128K 并发阶梯 | [`benchmark-config-concurrency-staircase-128k.json`](examples/benchmark-config-concurrency-staircase-128k.json) | 固定 128K 请求形状的多档并发测试。 |
@@ -252,7 +353,7 @@ cp examples/benchmark-config-mixed-workload.json \
 }
 ```
 
-启用 automation 时，两个 budget 上限和带 `{timestamp}` 的 `report.path`（或 `--report` 覆盖值）都是必填约束。预算只计算启用的 `api` case：包含正式请求、预热请求和其请求输出上限；扫描及容量搜索按保守上界估算。超限时工具会在发送 benchmark 或 preflight 流量前写出 `run.state: "rejected"` 的报告并返回状态码 `2`。automation 报告不恢复旧 checkpoint，以避免意外向已存在报告继续写入。
+`automation.budget` 可省略或设为 `null`，此时不会限制请求数或预估输出 token；若显式启用预算，则 `max_total_requests` 与 `max_estimated_output_tokens` 必须同时设置。带 `{timestamp}` 的 `report.path`（或 `--report` 覆盖值）仍是默认的独立报告路径。预算只计算启用的 `api` case：包含正式请求、预热请求和其请求输出上限；扫描及容量搜索按保守上界估算。超限时工具会在发送 benchmark 或 preflight 流量前写出 `run.state: "rejected"` 的报告并返回状态码 `2`。默认 automation 不恢复旧 checkpoint；需要恢复时应按前述要求显式设置 `automation.resume: true` 与稳定的本地报告路径。
 
 在预算通过后，工具会使用与正式请求相同的 bearer header 对每个 API 目标执行 `GET {api_base}/models`。该请求必须返回 2xx 和包含 `data` 数组的 JSON；目标模型没有列在数组中只记录 `model_listed: false`，不会阻止运行。preflight 失败会写出 `run.state: "preflight_failed"` 并返回 `2`，不会发送 benchmark 请求。离线 case 不执行 preflight。
 

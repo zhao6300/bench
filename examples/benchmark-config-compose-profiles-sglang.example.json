@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "name": "single-host-sglang-compose-profiles-example",
+  "description": "同一 SGLang Compose bundle 的 TP/DP 参数组合示例；所有 profile 默认禁用，复制为本地文件并确认资源与成本后再启用。",
+  "defaults": {
+    "mode": "api",
+    "api_base": "http://localhost:8000/v1",
+    "model": "your-served-model",
+    "tokenizer": "your-model-or-tokenizer",
+    "max_failure_rate": 0.0,
+    "min_goodput_pct": 90.0
+  },
+  "automation": {
+    "enabled": true,
+    "resume": false,
+    "api_preflight": {
+      "enabled": true,
+      "timeout_seconds": 5
+    },
+    "max_total_duration_seconds": 300,
+    "docker_service": {
+      "enabled": true,
+      "engine": "sglang",
+      "compose_files": [
+        "deploy/sglang/compose-profiles.example.yml"
+      ],
+      "base_environment": {
+        "ENGINE_IMAGE": "replace-with-reviewed-sglang-image",
+        "BENCHMARK_IMAGE": "replace-with-reviewed-benchmark-image",
+        "MODEL_ID": "replace-with-model-id",
+        "HOST_PORT": "8000"
+      },
+      "profiles": [
+        {
+          "name": "tp1-dp1",
+          "enabled": false,
+          "project_name": "benchmark-sglang-tp1-dp1",
+          "environment": {
+            "GPU_DEVICES": "0",
+            "TP_SIZE": "1",
+            "DP_SIZE": "1"
+          }
+        },
+        {
+          "name": "tp4-dp1",
+          "enabled": false,
+          "project_name": "benchmark-sglang-tp4-dp1",
+          "environment": {
+            "GPU_DEVICES": "0,1,2,3",
+            "TP_SIZE": "4",
+            "DP_SIZE": "1"
+          }
+        },
+        {
+          "name": "tp2-dp2",
+          "enabled": false,
+          "project_name": "benchmark-sglang-tp2-dp2",
+          "environment": {
+            "GPU_DEVICES": "0,1,2,3",
+            "TP_SIZE": "2",
+            "DP_SIZE": "2"
+          }
+        }
+      ],
+      "benchmark_container": {
+        "enabled": false,
+        "service": "benchmark",
+        "api_base": "http://inference:8000/v1",
+        "timeout_seconds": 3600
+      },
+      "start_timeout_seconds": 120,
+      "ready_timeout_seconds": 600,
+      "poll_interval_seconds": 2,
+      "probe_timeout_seconds": 5
+    }
+  },
+  "report": {
+    "path": "reports/compose-profiles-sglang-{timestamp}.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "api-smoke",
+      "description": "默认禁用；启用 profile 后先以低成本 smoke 验证服务。",
+      "enabled": false,
+      "tags": ["smoke", "automation", "sglang"],
+      "scenario": "single",
+      "params": {
+        "tokens": {
+          "input": 128,
+          "output": 32
+        },
+        "requests": {
+          "concurrency": 1,
+          "count": 2
+        }
+      }
+    }
+  ]
+}
