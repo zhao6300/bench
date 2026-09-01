@@ -19,13 +19,13 @@
   "defaults": {
     "mode": "api",
     "api_base": "http://localhost:8000/v1",
-    "api_timeout_seconds": 600,
+    "api_timeout_seconds": 1200,
     "model": "your-served-model",
     "tokenizer": "/path/to/model-or-tokenizer",
     "dataset": "random",
     "random_range_ratio": "0.0",
     "ignore_eos": true,
-    "max_failure_rate": 1.0,
+    "max_failure_rate": 0.5,
     "min_goodput_pct": 0.0,
     "warmup": {
       "enabled": false
