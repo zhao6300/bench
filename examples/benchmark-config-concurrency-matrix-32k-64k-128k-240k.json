@@ -18,17 +18,19 @@
   "matrix_failure_confirm_rounds": 2,
   "defaults": {
     "mode": "api",
-    "api_base": "http://localhost:8000/v1",
-    "api_timeout_seconds": 1200,
-    "model": "your-served-model",
-    "tokenizer": "/path/to/model-or-tokenizer",
+    "api_base": "http://172.17.0.1:8000/v1",
+    "api_timeout_seconds": 600,
+    "model": "glm5.3-flash",
+    "tokenizer": "/models/local-inference-lab-GLM-5.3-Flash-NVFP4/",
     "dataset": "random",
     "random_range_ratio": "0.0",
     "ignore_eos": true,
-    "max_failure_rate": 0.5,
+    "max_failure_rate": 0.3,
     "min_goodput_pct": 0.0,
     "warmup": {
-      "enabled": false
+      "enabled": true,
+      "rounds": 1,
+      "requests_per_round": 4
     }
   },
   "report": {

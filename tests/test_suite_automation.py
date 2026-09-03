@@ -1503,3 +1503,74 @@ def test_automation_example_selects_engine_and_model_compose_template(
 
     arguments = build_parser().parse_args(["--config", str(config_path), "--validate-config"])
     assert benchmark_module.run_configured_suite(str(config_path), arguments) == 0
+
+
+def test_config_changed_resume_requires_explicit_allow_flag(monkeypatch, tmp_path) -> None:
+    """Reject a changed execution plan unless the operator explicitly permits it."""
+    config = _automation_config(cases=[{"name": "first"}])
+    config["report"] = {"path": "reports/config-change-resume.json"}
+    automation = config["automation"]
+    assert isinstance(automation, dict)
+    automation["resume"] = True
+    config_path = tmp_path / "suite.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    arguments = build_parser().parse_args(["--config", str(config_path)])
+    monkeypatch.setattr(
+        benchmark_module, "execute_benchmark", lambda *_args: _successful_result()
+    )
+
+    assert benchmark_module.run_configured_suite(str(config_path), arguments) == 0
+
+    cases = config["cases"]
+    assert isinstance(cases, list)
+    cases.append({"name": "new", "params": {"num_prompts": 2}})
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(BenchmarkConfigError, match="does not match the selected execution plan"):
+        benchmark_module.run_configured_suite(str(config_path), arguments)
+
+
+def test_config_changed_resume_reuses_only_unchanged_successful_cases(
+    monkeypatch, tmp_path
+) -> None:
+    """Reuse unchanged passes but rerun failed and new cases after a plan change."""
+    executed: list[int] = []
+    config = _automation_config(cases=[
+        {"name": "unchanged", "params": {"num_prompts": 1}},
+        {"name": "retry", "params": {"num_prompts": 1}},
+    ])
+    config["report"] = {"path": "reports/config-change-resume.json"}
+    automation = config["automation"]
+    assert isinstance(automation, dict)
+    automation["resume"] = True
+    config_path = tmp_path / "suite.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    initial_arguments = build_parser().parse_args(["--config", str(config_path)])
+    monkeypatch.setattr(
+        benchmark_module,
+        "execute_benchmark",
+        lambda args, _scenario: (executed.append(args.num_prompts) or _successful_result()),
+    )
+
+    assert benchmark_module.run_configured_suite(str(config_path), initial_arguments) == 0
+    report_path = tmp_path / "reports" / "config-change-resume.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["cases"][1]["status"] = "failed"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    cases = config["cases"]
+    assert isinstance(cases, list)
+    cases.append({"name": "new", "params": {"num_prompts": 2}})
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    resumed_arguments = build_parser().parse_args([
+        "--config", str(config_path), "--resume-allow-config-changes",
+    ])
+
+    assert benchmark_module.run_configured_suite(str(config_path), resumed_arguments) == 0
+
+    resumed_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert executed == [1, 1, 1, 2]
+    assert [record["status"] for record in resumed_report["cases"]] == [
+        "passed", "passed", "passed",
+    ]
+    assert resumed_report["suite"]["resume_config_change"]["enabled"] is True

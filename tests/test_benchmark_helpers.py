@@ -360,3 +360,80 @@ def test_pd_ratio_rejects_single_token_business_output() -> None:
             },
             {},
         )
+
+
+def test_single_api_shared_prefix_warmup_uses_configured_requests_per_round(
+    monkeypatch,
+) -> None:
+    """Send every configured shared-prefix warmup request before the measured round."""
+    import types
+
+    posts: list[dict[str, object]] = []
+    tokenizer = SimpleNamespace(
+        encode=lambda value: list(range(len(value))),
+        decode=lambda _token_ids: "shared-prefix",
+    )
+    transformers = types.ModuleType("transformers")
+    transformers.AutoTokenizer = SimpleNamespace(
+        from_pretrained=lambda *_args, **_kwargs: tokenizer
+    )
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setattr(
+        benchmark_module,
+        "build_request_batch",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            prompts=["shared-prefix-unique"],
+            prompt_lens=[21],
+            output_lens=[8],
+        ),
+    )
+    monkeypatch.setattr(
+        benchmark_module,
+        "summarize_dataset_batch",
+        lambda *_args: {
+            "dataset": "random",
+            "shared_prefix_tokens": 13,
+            "prompt_tokens": {"min": 21, "max": 21, "avg": 21.0, "total": 21},
+            "requested_output_tokens": {"min": 8, "max": 8, "avg": 8.0, "total": 8},
+            "shared_prefix_ratio": 13 / 21,
+            "unique_prompt_tokens": {"min": 8, "max": 8, "avg": 8.0, "total": 8},
+        },
+    )
+    monkeypatch.setattr(benchmark_module, "print_workload_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(benchmark_module, "print_benchmark_metrics", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(benchmark_module, "nsys_start", lambda: None)
+    monkeypatch.setattr(benchmark_module, "nsys_stop", lambda: None)
+    monkeypatch.setattr(
+        benchmark_module,
+        "run_api_benchmark_round",
+        lambda *_args, **_kwargs: {"successful": 1},
+    )
+
+    def post(*_args: object, **kwargs: object) -> SimpleNamespace:
+        posts.append(kwargs["json"])
+        return SimpleNamespace(raise_for_status=lambda: None)
+
+    monkeypatch.setattr(benchmark_module, "requests", SimpleNamespace(post=post))
+    args = SimpleNamespace(
+        num_prompts=1,
+        concurrency=1,
+        tokenizer="test-tokenizer",
+        model="test-model",
+        random_shared_prefix=False,
+        dataset="random",
+        api_base="http://localhost:8000/v1",
+        api_key=None,
+        no_warmup=False,
+        warmup_rounds=1,
+        warmup_requests_per_round=4,
+        ignore_eos=True,
+        slo_ttft=5.0,
+        slo_tpot=0.1,
+        api_transport="requests",
+        api_timeout_seconds=60.0,
+        _progress_reporter=None,
+    )
+
+    benchmark_module.run_api_benchmark(args)
+
+    assert [payload["max_tokens"] for payload in posts] == [10, 1, 1, 1, 1]

@@ -117,7 +117,7 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 
 `automation.budget` 是可选保护机制：省略或设为 `null` 时不限制请求数或输出 token，工具不会因预算拒绝 suite。若要在启动前阻止超出预估成本的运行，再显式设置 `max_total_requests` 与 `max_estimated_output_tokens`；该检查仅基于保守估算，不能替代人工确认真实 API、GPU 和运行时成本。
 
-默认每次 automation 都要求带 `{timestamp}` 的独立报告，并从头执行，避免不同服务生命周期误用旧结果。若需要在 `Ctrl-C`、客户端容器中断或单个 profile 失败后恢复，请显式设置 `"automation.resume": true`，同时使用一个**不含** `{timestamp}` 的稳定本地 `report.path`；`--no-resume` 可强制从头重跑。恢复会保留无请求级失败的 `passed` case，重跑 `pending`、`interrupted`、`failed` 和已跳过的启用 case。Compose 模式要求本地报告锁，因此不可用 S3 checkpoint。不要在同一稳定路径上并发运行多个 suite。
+默认每次 automation 都要求带 `{timestamp}` 的独立报告，并从头执行，避免不同服务生命周期误用旧结果。若需要在 `Ctrl-C`、客户端容器中断或单个 profile 失败后恢复，请显式设置 `"automation.resume": true`，同时使用一个**不含** `{timestamp}` 的稳定本地 `report.path`；`--no-resume` 可强制从头重跑。默认恢复要求所选执行计划完全一致；若确认变更只应重跑受影响用例，可额外传入 `--resume-allow-config-changes`。该开关只复用 `case_key` 未变化且无请求级失败的 `passed` case，失败、中断、跳过、新增和参数已变的 case 都会重跑，报告会记录前后执行计划指纹。Compose 模式要求本地报告锁，因此不可用 S3 checkpoint。不要在同一稳定路径上并发运行多个 suite。
 
 ```json
 {
@@ -248,7 +248,7 @@ llm-benchmark \
   --config examples/benchmark-config-throughput-sweep-128k-2k.local.json
 ```
 
-配置模式支持 `--tag`、`--case 'pattern-*'`、`--report PATH_OR_S3_URI`、`--no-resume` 和 `--fail-fast`。相对本地报告路径以配置文件所在目录为基准；固定本地路径默认会恢复此前成功且无请求级失败的用例。
+配置模式支持 `--tag`、`--case 'pattern-*'`、`--report PATH_OR_S3_URI`、`--no-resume`、`--resume-allow-config-changes` 和 `--fail-fast`。相对本地报告路径以配置文件所在目录为基准；固定本地路径默认会恢复此前成功且无请求级失败的用例。执行计划变更时默认拒绝恢复；确认只需重跑变更项时，使用 `--resume-allow-config-changes`，它会保留未变的成功用例并重跑失败、跳过、中断、新增或参数已变的用例。
 
 ### 3. 吞吐与 SLO 容量扫描策略
 
@@ -262,7 +262,7 @@ llm-benchmark \
 
 `prefill-sweep` 与 `decode-sweep` 按**实际请求的输出上限**选择指标：全部为 1 token 时测 Prefill，全部大于 1 token 时测 Decode；同一轮混合两种输出长度会报错。因此 Prefill 配置应显式设置 `random_output_len: 1`，Decode 配置的 `random_output_len`（或实际生成的输出长度）必须始终大于 1。吞吐扫描的 5% 平台停止条件是快速定位峰值的启发式，而非逐并发穷举；当前实现不提供关闭该早停条件的选项，应结合 `history` 判断是否已充分覆盖目标并发范围。
 
-每个正式并发档位默认发送 `max(2 × concurrency, 4)` 个请求，可通过 `sweep.requests_per_round`（CLI：`--sweep-requests-per-round`）固定覆盖。`warmup.rounds` 和 `warmup.requests_per_round` 仅控制正式扫描前的预热，不计入报告结果；预热失败会输出警告，但正式扫描仍会继续。
+每个正式并发档位默认发送 `max(2 × concurrency, 4)` 个请求，可通过 `sweep.requests_per_round`（CLI：`--sweep-requests-per-round`）固定覆盖。`warmup.rounds` 和 `warmup.requests_per_round` 不计入报告结果：对 `single` 随机共享前缀场景，它们控制每轮 `max_tokens: 1` 的前缀填充请求数量；对 sweep/SLO，它们控制正式扫描前的 workload 预热。基础服务预热始终只发送一个短请求；预热失败会输出警告，但正式扫描仍会继续。
 
 SLO 容量扫描的单轮只有同时满足以下条件才通过：请求总数有效、`goodput_pct` 不低于要求值，且 `failure_rate` 不高于 `max_failure_rate`。Goodput 以每个请求的 TTFT、对多 token 输出的 TPOT 和输出 token 可验证性判断。`min_goodput_pct: 0` 在普通场景表示不启用 suite Goodput 质量门禁；但在 `slo-capacity-sweep` 中表示严格要求 **100%** 请求达到 SLO，只有设置正数才会放宽容量边界。
 

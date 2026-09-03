@@ -225,8 +225,8 @@ def test_managed_compose_service_runs_fixed_benchmark_container_command(tmp_path
     )
 
 
-def test_benchmark_container_resume_omits_no_resume_flag(tmp_path: Path) -> None:
-    """Allow a trusted fixed report checkpoint to be resumed inside the client container."""
+def test_benchmark_container_resume_forwards_config_change_flag(tmp_path: Path) -> None:
+    """Forward checkpoint resume and plan-change permission into the client container."""
     from benchmark.compose_service import BenchmarkContainerPolicy
 
     _write_bundle(tmp_path)
@@ -264,8 +264,10 @@ def test_benchmark_container_resume_omits_no_resume_flag(tmp_path: Path) -> None
         tag_filters=[],
         fail_fast=False,
         resume=True,
+        resume_allow_config_changes=True,
     ) == 0
     service.stop()
 
     assert "--no-resume" not in commands[3]
+    assert "--resume-allow-config-changes" in commands[3]
     assert commands[3][commands[3].index("--report") + 1] == "/benchmark-output/report.json"

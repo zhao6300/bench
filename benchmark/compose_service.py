@@ -227,6 +227,7 @@ class ManagedComposeService:
         tag_filters: list[str],
         fail_fast: bool,
         resume: bool = False,
+        resume_allow_config_changes: bool = False,
     ) -> int:
         """Run the configured benchmark client service with fixed safe arguments.
 
@@ -239,6 +240,8 @@ class ManagedComposeService:
             tag_filters: Optional tag filters forwarded as individual CLI values.
             fail_fast: Whether to stop the suite after a failed case.
             resume: Whether the child suite may load its existing checkpoint.
+            resume_allow_config_changes: Whether the child may reuse unchanged
+                passed cases after its execution plan changes.
 
         Returns:
             The benchmark container process exit code.
@@ -278,6 +281,8 @@ class ManagedComposeService:
         ]
         if not resume:
             arguments.append("--no-resume")
+        if resume_allow_config_changes:
+            arguments.append("--resume-allow-config-changes")
         arguments.extend([
             "--progress",
             "off",

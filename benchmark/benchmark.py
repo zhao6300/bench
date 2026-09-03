@@ -2094,10 +2094,23 @@ def run_api_benchmark(args):
 
         if shared_len > 0:
             warmup_rounds = args.warmup_rounds
-            _emit_progress_event(
-                args, "stage_started", "共享前缀预热", f"{warmup_rounds} 轮"
+            configured_request_count = getattr(args, "warmup_requests_per_round", None)
+            warmup_requests_per_round = (
+                configured_request_count
+                if configured_request_count is not None else 1
             )
-            print(f"      发送 {warmup_rounds} 轮共享前缀预热请求 (预热 {shared_len} tokens 共享前缀至 Cache) ...")
+            total_warmup_requests = warmup_rounds * warmup_requests_per_round
+            _emit_progress_event(
+                args,
+                "stage_started",
+                "共享前缀预热",
+                f"{warmup_rounds} 轮，每轮请求={warmup_requests_per_round}",
+            )
+            print(
+                f"      发送 {warmup_rounds} 轮共享前缀预热请求 "
+                f"(每轮 {warmup_requests_per_round} 个请求，共 {total_warmup_requests} 个；"
+                f"预热 {shared_len} tokens 共享前缀至 Cache) ..."
+            )
             shared_prompt_text = tokenizer.decode(tokenizer.encode(prompts[0])[:shared_len])
             sp_payload = {
                 "model": args.model,
@@ -2106,22 +2119,43 @@ def run_api_benchmark(args):
                 "temperature": 0,
                 "stream": False,
             }
-            for r in range(warmup_rounds):
-                try:
-                    sp_t0 = time.perf_counter()
-                    sp_resp = requests.post(url, json=sp_payload, headers=headers, timeout=600)
-                    sp_resp.raise_for_status()
-                    sp_elapsed = time.perf_counter() - sp_t0
-                    print(f"      第 {r+1}/{warmup_rounds} 轮共享前缀预热完成，耗时: {sp_elapsed:.3f} 秒")
-                    _emit_progress_event(
-                        args, "event", f"共享前缀预热 {r + 1}/{warmup_rounds} 完成"
-                    )
-                except Exception as e:
-                    print(f"      第 {r+1}/{warmup_rounds} 轮共享前缀预热警告 (仍继续测试): {e}")
-                    _emit_progress_event(
-                        args, "event", f"共享前缀预热 {r + 1}/{warmup_rounds} 警告: {e}"
-                    )
-            print(f"      Prefix KV Cache 预热完毕 ({warmup_rounds} 轮)")
+            for round_index in range(1, warmup_rounds + 1):
+                successful_requests = 0
+                round_started_at = time.perf_counter()
+                for request_index in range(1, warmup_requests_per_round + 1):
+                    try:
+                        sp_resp = requests.post(
+                            url, json=sp_payload, headers=headers, timeout=600
+                        )
+                        sp_resp.raise_for_status()
+                        successful_requests += 1
+                    except Exception as exc:
+                        print(
+                            f"      第 {round_index}/{warmup_rounds} 轮第 "
+                            f"{request_index}/{warmup_requests_per_round} 个共享前缀预热请求"
+                            f"警告 (仍继续测试): {exc}"
+                        )
+                        _emit_progress_event(
+                            args,
+                            "event",
+                            f"共享前缀预热 {round_index}/{warmup_rounds} 请求 "
+                            f"{request_index}/{warmup_requests_per_round} 警告: {exc}",
+                        )
+                elapsed = time.perf_counter() - round_started_at
+                print(
+                    f"      第 {round_index}/{warmup_rounds} 轮共享前缀预热完成: 成功 "
+                    f"{successful_requests}/{warmup_requests_per_round}，耗时: {elapsed:.3f} 秒"
+                )
+                _emit_progress_event(
+                    args,
+                    "event",
+                    f"共享前缀预热 {round_index}/{warmup_rounds} 完成: 成功 "
+                    f"{successful_requests}/{warmup_requests_per_round}",
+                )
+            print(
+                f"      Prefix KV Cache 预热完毕 ({warmup_rounds} 轮，每轮 "
+                f"{warmup_requests_per_round} 个请求)"
+            )
             _emit_progress_event(args, "stage_finished", "共享前缀预热")
     else:
         print("[3/4] 跳过预热请求 (已传入 --no-warmup) ...")
@@ -4569,8 +4603,14 @@ def _skip_pending_records(records: list[Dict[str, Any]], reason: str) -> None:
         })
 
 
-def _load_resume_report(storage, suite_name: str, plan_fingerprint: str) -> Dict[str, Any] | None:
-    """Load a compatible suite checkpoint from the selected report backend."""
+def _load_resume_report(
+    storage,
+    suite_name: str,
+    plan_fingerprint: str,
+    *,
+    allow_config_changes: bool = False,
+) -> Dict[str, Any] | None:
+    """Load a suite checkpoint, optionally accepting a changed execution plan."""
     try:
         payload = storage.read_text()
     except ReportStorageError as exc:
@@ -4594,10 +4634,12 @@ def _load_resume_report(storage, suite_name: str, plan_fingerprint: str) -> Dict
             f"report {storage.location.display_name!r} belongs to a different suite; "
             "use --no-resume to replace it"
         )
-    if suite.get("execution_plan_sha256") != plan_fingerprint:
+    plan_changed = suite.get("execution_plan_sha256") != plan_fingerprint
+    if plan_changed and not allow_config_changes:
         raise BenchmarkConfigError(
             f"report {storage.location.display_name!r} does not match the selected execution plan; "
-            "use --no-resume to start fresh"
+            "use --no-resume to start fresh or --resume-allow-config-changes to reuse "
+            "unchanged passed cases"
         )
     if not isinstance(report.get("cases"), list):
         raise BenchmarkConfigError(
@@ -4814,10 +4856,24 @@ def _run_configured_suite_single(
 
     try:
         report = None
+        resumed_with_config_changes = False
+        previous_plan_fingerprint = None
         if not cli_args.no_resume and (not automation.enabled or automation.resume):
             report = _load_resume_report(
-                report_storage, config.get("name", "benchmark-suite"), plan_fingerprint
+                report_storage,
+                config.get("name", "benchmark-suite"),
+                plan_fingerprint,
+                allow_config_changes=getattr(
+                    cli_args, "resume_allow_config_changes", False
+                ),
             )
+            if report is not None:
+                previous_plan_fingerprint = report["suite"].get(
+                    "execution_plan_sha256"
+                )
+                resumed_with_config_changes = (
+                    previous_plan_fingerprint != plan_fingerprint
+                )
         resumed = report is not None
         if report is None:
             report = _new_report(config.get("name", "benchmark-suite"), config_path)
@@ -4837,6 +4893,14 @@ def _run_configured_suite_single(
     if resumed:
         report["suite"].setdefault("first_started_at", report["suite"].get("started_at"))
         report["suite"]["resumed_at"] = now
+    if resumed_with_config_changes:
+        _print_runtime_message(
+            cli_args,
+            "WARNING: execution plan changed; only unchanged passed cases without "
+            "request failures will be reused. Failed, interrupted, skipped, new, "
+            "and changed cases will run again.",
+            file=sys.stderr,
+        )
     report["suite"].update({
         "name": config.get("name", "benchmark-suite"),
         "config_file": os.path.abspath(config_path),
@@ -4850,6 +4914,12 @@ def _run_configured_suite_single(
         "run_state": "running",
         "updated_at": _now_iso(),
     })
+    if resumed_with_config_changes:
+        report["suite"]["resume_config_change"] = {
+            "enabled": True,
+            "previous_execution_plan_sha256": previous_plan_fingerprint,
+            "current_execution_plan_sha256": plan_fingerprint,
+        }
     report["environment"] = {
         "python": platform.python_version(),
         "platform": platform.platform(),
@@ -5429,6 +5499,9 @@ def _run_benchmark_container_suite(
                 parse_automation(config.get("automation")).resume
                 and not cli_args.no_resume
             ),
+            resume_allow_config_changes=getattr(
+                cli_args, "resume_allow_config_changes", False
+            ),
         )
     except KeyboardInterrupt:
         interrupted = True
@@ -5877,6 +5950,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="配置模式下忽略同路径的历史报告并从头运行；默认会恢复，并只跳过没有请求级失败的已通过用例"
     )
     parser.add_argument(
+        "--resume-allow-config-changes", action="store_true",
+        help="配置模式下允许恢复执行计划已变更的稳定报告；仅复用参数未变且无请求级失败的已通过用例，失败、跳过、中断和已变更用例会重跑"
+    )
+    parser.add_argument(
         "--progress", choices=["auto", "plain", "rich", "off"], default="off",
         help="实时进度显示：默认关闭；auto 在交互终端使用 Rich、其他终端使用 plain；"
              "plain 为行式输出，rich 为 Rich 面板，off 关闭实时进度（默认：off）"
@@ -5996,14 +6073,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--warmup-rounds", type=int, default=1, dest="warmup_rounds",
-        help="预热轮数。sweep/SLO 使用当前正式 workload 在扫描前预热指定轮数；"
+        help="预热轮数。single 的共享前缀预热及 sweep/SLO 的正式 workload 预热都会执行指定轮数；"
              "默认每轮仅 1 条请求，可通过 --warmup-requests-per-round 覆盖（默认: 1）"
     )
     parser.add_argument(
         "--warmup-requests-per-round", type=int, default=None,
         dest="warmup_requests_per_round",
-        help="[sweep/SLO] 每轮正式 workload 预热发送的请求数；默认 1，"
-             "不会沿用正式扫描的 max(2×并发, 4) 请求数规则"
+        help="每轮预热请求数。single 的共享前缀预热发送 max_tokens=1 的前缀填充请求；"
+             "sweep/SLO 预热发送正式 workload；默认 1，不沿用正式扫描的 max(2×并发, 4) 规则"
     )
     parser.add_argument(
         "--ignore-eos", action="store_true", default=True,
@@ -6094,8 +6171,14 @@ def main():
         except BenchmarkConfigError as exc:
             print(f"ERROR: invalid benchmark configuration: {exc}", file=sys.stderr)
             return 2
-    if args.list_cases or args.validate_config or args.case_filters or args.tag_filters or args.fail_fast or args.no_resume:
-        parser.error("--list-cases/--validate-config/--case/--tag/--fail-fast/--no-resume require --config")
+    if (
+        args.list_cases or args.validate_config or args.case_filters or args.tag_filters
+        or args.fail_fast or args.no_resume or args.resume_allow_config_changes
+    ):
+        parser.error(
+            "--list-cases/--validate-config/--case/--tag/--fail-fast/--no-resume/"
+            "--resume-allow-config-changes require --config"
+        )
 
     apply_preset(args)
     apply_final_defaults(args)
