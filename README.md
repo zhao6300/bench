@@ -117,7 +117,7 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 
 `automation.budget` 是可选保护机制：省略或设为 `null` 时不限制请求数或输出 token，工具不会因预算拒绝 suite。若要在启动前阻止超出预估成本的运行，再显式设置 `max_total_requests` 与 `max_estimated_output_tokens`；该检查仅基于保守估算，不能替代人工确认真实 API、GPU 和运行时成本。
 
-默认每次 automation 都要求带 `{timestamp}` 的独立报告，并从头执行，避免不同服务生命周期误用旧结果。若需要在 `Ctrl-C`、客户端容器中断或单个 profile 失败后恢复，请显式设置 `"automation.resume": true`，同时使用一个**不含** `{timestamp}` 的稳定本地 `report.path`；`--no-resume` 可强制从头重跑。默认恢复要求所选执行计划完全一致；若确认变更只应重跑受影响用例，可额外传入 `--resume-allow-config-changes`。该开关只复用 `case_key` 未变化且无请求级失败的 `passed` case，失败、中断、跳过、新增和参数已变的 case 都会重跑，报告会记录前后执行计划指纹。Compose 模式要求本地报告锁，因此不可用 S3 checkpoint。不要在同一稳定路径上并发运行多个 suite。
+默认每次 automation 都要求带 `{timestamp}` 的独立报告，并从头执行，避免不同服务生命周期误用旧结果。若需要在 `Ctrl-C`、客户端容器中断或单个 profile 失败后恢复，请显式设置 `"automation.resume": true`，同时使用一个**不含** `{timestamp}` 的稳定本地 `report.path`；`--no-resume` 可强制从头重跑。默认恢复要求所选执行计划完全一致；若确认当前配置只应用于后续未完成用例，可额外传入 `--resume-allow-config-changes`。该开关按展开 case 的名称、场景、重复序号、矩阵值和启用状态保留无请求级失败的 `passed` case，即使其预热、模型或其他参数已变；失败、中断、跳过和新增 case 都会重跑，报告会记录前后执行计划指纹。因此必须由操作者确认被保留结果仍可用于当前比较。Compose 模式要求本地报告锁，因此不可用 S3 checkpoint。不要在同一稳定路径上并发运行多个 suite。
 
 ```json
 {
@@ -248,7 +248,7 @@ llm-benchmark \
   --config examples/benchmark-config-throughput-sweep-128k-2k.local.json
 ```
 
-配置模式支持 `--tag`、`--case 'pattern-*'`、`--report PATH_OR_S3_URI`、`--no-resume`、`--resume-allow-config-changes` 和 `--fail-fast`。相对本地报告路径以配置文件所在目录为基准；固定本地路径默认会恢复此前成功且无请求级失败的用例。执行计划变更时默认拒绝恢复；确认只需重跑变更项时，使用 `--resume-allow-config-changes`，它会保留未变的成功用例并重跑失败、跳过、中断、新增或参数已变的用例。
+配置模式支持 `--tag`、`--case 'pattern-*'`、`--report PATH_OR_S3_URI`、`--no-resume`、`--resume-allow-config-changes` 和 `--fail-fast`。相对本地报告路径以配置文件所在目录为基准；固定本地路径默认会恢复此前成功且无请求级失败的用例。执行计划变更时默认拒绝恢复；确认当前配置只应用于后续未完成用例时，使用 `--resume-allow-config-changes`。它会按展开 case 身份保留无请求级失败的已通过用例，即使参数已变，并重跑失败、跳过、中断和新增用例。
 
 ### 3. 吞吐与 SLO 容量扫描策略
 

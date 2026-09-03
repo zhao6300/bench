@@ -1530,10 +1530,10 @@ def test_config_changed_resume_requires_explicit_allow_flag(monkeypatch, tmp_pat
         benchmark_module.run_configured_suite(str(config_path), arguments)
 
 
-def test_config_changed_resume_reuses_only_unchanged_successful_cases(
+def test_config_changed_resume_reuses_passed_cases_and_retries_incomplete_cases(
     monkeypatch, tmp_path
 ) -> None:
-    """Reuse unchanged passes but rerun failed and new cases after a plan change."""
+    """Reuse passed cases despite parameter changes and retry incomplete work."""
     executed: list[int] = []
     config = _automation_config(cases=[
         {"name": "unchanged", "params": {"num_prompts": 1}},
@@ -1560,6 +1560,7 @@ def test_config_changed_resume_reuses_only_unchanged_successful_cases(
 
     cases = config["cases"]
     assert isinstance(cases, list)
+    cases[0]["params"] = {"num_prompts": 3}
     cases.append({"name": "new", "params": {"num_prompts": 2}})
     config_path.write_text(json.dumps(config), encoding="utf-8")
     resumed_arguments = build_parser().parse_args([
@@ -1574,3 +1575,7 @@ def test_config_changed_resume_reuses_only_unchanged_successful_cases(
         "passed", "passed", "passed",
     ]
     assert resumed_report["suite"]["resume_config_change"]["enabled"] is True
+    assert resumed_report["cases"][0]["case_key"] != report["cases"][0]["case_key"]
+
+    assert benchmark_module.run_configured_suite(str(config_path), initial_arguments) == 0
+    assert executed == [1, 1, 1, 2]

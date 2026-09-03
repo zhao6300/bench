@@ -4553,6 +4553,32 @@ def _checkpoint_case_key(case: Dict[str, Any], args, scenario: str) -> str:
     })
 
 
+def _checkpoint_resume_key(case: Dict[str, Any], scenario: str) -> str:
+    """Identify an expanded case across explicitly allowed config changes."""
+    return _checkpoint_hash({
+        "base_name": case["base_name"],
+        "standard_workload": case.get("standard_workload"),
+        "name": case["name"],
+        "scenario": scenario,
+        "repeat_index": case["repeat_index"],
+        "matrix": case["matrix"],
+        "enabled": case["enabled"],
+    })
+
+
+def _checkpoint_record_resume_key(record: Dict[str, Any]) -> str:
+    """Identify a recorded expanded case across allowed config changes."""
+    return _checkpoint_hash({
+        "base_name": record.get("base_name"),
+        "standard_workload": record.get("standard_workload"),
+        "name": record.get("name"),
+        "scenario": record.get("scenario"),
+        "repeat_index": record.get("repeat_index"),
+        "matrix": record.get("matrix"),
+        "enabled": record.get("enabled", True),
+    })
+
+
 def _checkpoint_plan_fingerprint(prepared) -> str:
     """Fingerprint the selected, fully resolved suite execution plan."""
     return _checkpoint_hash([
@@ -4574,6 +4600,7 @@ def _new_case_record(case: Dict[str, Any], args, scenario: str, case_key: str) -
         "scenario": scenario,
         "repeat_index": case["repeat_index"],
         "matrix": case["matrix"],
+        "enabled": case["enabled"],
         "status": "pending",
         "attempt": 0,
         "started_at": None,
@@ -4933,16 +4960,29 @@ def _run_configured_suite_single(
         for record in report.get("cases", [])
         if isinstance(record, dict) and isinstance(record.get("case_key"), str)
     }
+    previous_records_by_resume_key = {
+        _checkpoint_record_resume_key(record): record
+        for record in report.get("cases", [])
+        if isinstance(record, dict)
+    }
     records = []
     retry_request_failure_count = 0
     for case, args, scenario, case_key in prepared:
         previous = previous_records.get(case_key)
+        if previous is None and resumed_with_config_changes:
+            previous = previous_records_by_resume_key.get(
+                _checkpoint_resume_key(case, scenario)
+            )
         if (
             previous
             and previous.get("status") == "passed"
             and not _case_has_request_failures(previous)
         ):
             record = previous
+            if resumed_with_config_changes:
+                record["case_key"] = case_key
+                record["id"] = case["id"]
+                record["enabled"] = case["enabled"]
         else:
             if previous and previous.get("status") == "passed":
                 retry_request_failure_count += 1
@@ -5951,7 +5991,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--resume-allow-config-changes", action="store_true",
-        help="配置模式下允许恢复执行计划已变更的稳定报告；仅复用参数未变且无请求级失败的已通过用例，失败、跳过、中断和已变更用例会重跑"
+        help="配置模式下允许恢复执行计划已变更的稳定报告；按展开 case 身份保留无请求级失败的已通过用例，失败、跳过、中断和新增用例会重跑"
     )
     parser.add_argument(
         "--progress", choices=["auto", "plain", "rich", "off"], default="off",
