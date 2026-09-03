@@ -28,6 +28,11 @@ htmlcov/
 *.local.env
 .benchmark-container-*.json
 
+# Node.js web dashboard
+node_modules/
+web/node_modules/
+web/runs/
+
 # Benchmark output, checkpoints, and profiler artefacts
 benchmark-report*.json
 *-report-*.json

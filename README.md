@@ -82,6 +82,47 @@ llm-benchmark --progress off --config examples/benchmark-config.example.json
 
 项目使用 Rich 管理实时请求计数和状态表，因此不需要额外引入 `tqdm`；两者同时使用会产生重复进度条并干扰重定向日志。
 
+## Web 管理面板
+
+想在本机浏览器里查看运行状态、提交新压测、浏览本地报告时，可启动 `web/` 目录下的 Node.js 管理面板。面板**完全可选**：不启动就没有任何额外开销，基准过程不受影响；启动后在浏览器打开默认地址即可。
+
+面板前端采用 Google Material Design 3 风格的轻量原生 SPA，无需 React/Vue；panel 使用 Node.js 内置 `http` 模块，零 npm 依赖，`node web/server.js` 就能跑起来。
+
+启动方式（默认 `http://127.0.0.1:3000`，仅监听回环地址）：
+
+```zsh
+cd web
+npm start
+# 或在仓库根目录执行
+node web/server.js
+```
+
+前端会自动连接同一 panel 的 SSE 通道，展示 4 个页签：
+
+1. **dashboard**：查看当前活跃运行、KPI（任务总数/运行中/通过/失败）、最近生命周期事件。
+2. **runs**：列出、打开、终止（`DELETE /api/runs/:id`）当前会话的所有压测任务；点击「详情」可查看子进程日志、生命周期事件和最终报告摘要。
+3. **reports**：浏览仓库根目录和 `web/runs/` 内的 JSON 基准报告，支持单份报告的用例表格。
+4. **submit**：从内置示例一键加载配置 `examples/*.json`，或粘贴自定义 JSON；前端校验通过后通过 `POST /api/runs` 提交。
+
+启动后从面板新建压测时，panel 会通过 `child_process.spawn` 以子进程形式运行 `.venv/bin/python benchmark/benchmark.py`，并附带参数：
+
+```zsh
+--config web/runs/<id>-config.json
+--report web/runs/<id>-report.json
+--web-port 3000
+--progress off
+```
+
+环境变量 `LLM_BENCHMARK_WEB_TOKEN` 会被覆写为 `<run_id>`，panel 靠这个 token 把从 Python 推来的 lifecycle 事件精确路由到对应的 run。上报均为 best-effort，失败不会影响 benchmark 测量结果。
+
+如果你更习惯「自己运行 benchmark、panel 只看进度」，也可以不通过面板启动，只使用原 CLI 并开启推送：
+
+```zsh
+llm-benchmark --web-port 3000 --config examples/benchmark-config.example.json
+```
+
+面板 API 与数据结构见 [`web/SPEC.md`](web/SPEC.md)。
+
 ## 从 examples 开始
 
 ### 1. 创建本地可运行配置

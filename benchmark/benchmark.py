@@ -259,6 +259,11 @@ try:
         send_requests_chat_request,
     )
     from .progress import ProgressDependencyError, create_progress_reporter
+    from .web_management import (
+        WebPushConfigError,
+        WebPushProgressReporter,
+        resolve_web_target,
+    )
     from .host_inventory import collect_host_inventory
     from .standard_protocol import (
         StandardProtocolError,
@@ -303,6 +308,11 @@ except ImportError:
         send_requests_chat_request,
     )
     from progress import ProgressDependencyError, create_progress_reporter
+    from web_management import (
+        WebPushConfigError,
+        WebPushProgressReporter,
+        resolve_web_target,
+    )
     from host_inventory import collect_host_inventory
     from standard_protocol import (
         StandardProtocolError,
@@ -410,6 +420,28 @@ def _show_final_progress_results(reporter, report, report_location: str | None) 
     callback = getattr(reporter, "show_final_results", None)
     if callable(callback):
         callback(report, report_location)
+
+
+def _create_progress_reporter(args) -> Any:
+    """Build the base progress reporter, optionally wrapping it with web pushes.
+
+    Args:
+        args: CLI namespace exposing ``progress``, ``web_host`` and ``web_port``.
+
+    Returns:
+        A progress reporter that streams to the terminal and, when configured, to the
+        local Node.js web dashboard.
+
+    Raises:
+        WebPushConfigError: If the web dashboard target is invalid.
+    """
+    base_reporter = create_progress_reporter(args.progress)
+    web_target = resolve_web_target(
+        getattr(args, "web_host", None), getattr(args, "web_port", None)
+    )
+    if web_target is None:
+        return base_reporter
+    return WebPushProgressReporter(base_reporter, web_target)
 
 
 def nsys_start():
@@ -4763,8 +4795,10 @@ def _run_configured_suite_single(
         return 0
 
     try:
-        progress_reporter = create_progress_reporter(cli_args.progress)
+        progress_reporter = _create_progress_reporter(cli_args)
     except ProgressDependencyError as exc:
+        raise BenchmarkConfigError(str(exc)) from exc
+    except WebPushConfigError as exc:
         raise BenchmarkConfigError(str(exc)) from exc
     cli_args._progress_reporter = progress_reporter
     for _, args, _, _ in prepared:
@@ -5882,6 +5916,16 @@ def build_parser() -> argparse.ArgumentParser:
              "plain 为行式输出，rich 为 Rich 面板，off 关闭实时进度（默认：off）"
     )
     parser.add_argument(
+        "--web-host", default=None,
+        help="Web 运行监控面板推送地址主机名；默认仅使用本机环回地址 127.0.0.1，"
+             "不应配置为对外暴露的地址"
+    )
+    parser.add_argument(
+        "--web-port", type=int, default=None,
+        help="Web 运行监控面板监听端口号（需为 1-65535 的整数）；提供后启用向本地 "
+             "node 服务推送生命周期事件（默认：关闭，不推送）"
+    )
+    parser.add_argument(
         "--preset", choices=get_preset_names(), default=None,
         help="预设测试用例。选择后自动设置最优参数，仍可用其他选项覆盖"
     )
@@ -6159,7 +6203,7 @@ def main():
         return 2
 
     try:
-        progress_reporter = create_progress_reporter(args.progress)
+        progress_reporter = _create_progress_reporter(args)
     except ProgressDependencyError as exc:
         record["error"] = {"type": type(exc).__name__, "message": str(exc)}
         record["finished_at"] = _now_iso()
@@ -6168,6 +6212,15 @@ def main():
             _update_report_summary(report, started_perf)
             _write_json_report(report_storage, report)
         print(f"ERROR: cannot enable progress display: {exc}", file=sys.stderr)
+        return 2
+    except WebPushConfigError as exc:
+        record["error"] = {"type": type(exc).__name__, "message": str(exc)}
+        record["finished_at"] = _now_iso()
+        record["duration_seconds"] = time.perf_counter() - started_perf
+        if report is not None:
+            _update_report_summary(report, started_perf)
+            _write_json_report(report_storage, report)
+        print(f"ERROR: invalid web dashboard configuration: {exc}", file=sys.stderr)
         return 2
     args._progress_reporter = progress_reporter
 

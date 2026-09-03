@@ -1,0 +1,12 @@
+{
+  "name": "llm-benchmark-dashboard",
+  "version": "0.1.0",
+  "description": "Node.js management & monitoring dashboard for llm-inference-benchmark (zero external npm dependencies).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test server.test.js"
+  },
+  "license": "MIT",
+  "private": true
+}
