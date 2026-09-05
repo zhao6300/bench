@@ -151,12 +151,12 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 }
 ```
 
-- `target_rps`：目标请求准入速率。省略或设为 `null` 时保持原有尽快提交行为。`fixed` 调度下其倒数是固定间隔；`poisson` 调度下其倒数是**期望**间隔，短时相邻请求间隔可更小或更大。
-- `rate_schedule`：`fixed`（默认）使用固定间隔；`poisson` 使用指数分布的泊松到达过程。后者复用已有 `seed` 作为随机种子，便于复现实验。
-- `rate_overload_policy`：当目标到达时并发槽位已满，`no-catch-up`（默认）等待可用槽位后以真实准入时刻重新计算间隔，不补发积压请求；`catch-up` 保留逻辑 deadline，允许受 `rate_burst` 约束的有限连续过期到达；`drop` 不发送该请求，将其记录为客户端失败。
+- `target_rps`：目标**平均计划到达速率** `λ`，单位 req/s。省略或设为 `null` 时保持原有尽快提交行为；它只定义速率大小，不定义请求何时到达，也不保证实际 HTTP 准入率或完成 QPS。
+- `rate_schedule`：根据 `target_rps` 生成计划到达时间。`fixed`（默认）使用恒定的 `1 / target_rps` 秒计划间隔；`poisson` 使用参数为 `target_rps` 的指数分布，间隔均值同为 `1 / target_rps` 秒，但单次间隔可更小或更大。`poisson` 复用已有 `seed`，便于复现实验。
+- `rate_overload_policy`：计划到达时并发槽位已满的处理方式。`no-catch-up`（默认）等待可用槽位后，以真实准入时刻重新安排后续到达，不补发积压请求；`catch-up` 保留逻辑 deadline，允许受 `rate_burst` 约束的有限连续过期到达；`drop` 不发送该次计划到达，将其记录为客户端失败。
 - `rate_burst`：仅用于 `catch-up`，限制连续处理的过期到达数，必须为正整数。默认 `1` 保持无补发 burst 的兼容行为；其他策略不会使用该值形成 burst。
 
-报告会在 `metrics.pacing` 中写入上述策略、目标速率、`target_interval_seconds`（fixed 的固定间隔或 poisson 的期望间隔）、实际准入速率、相邻准入间隔、速率/并发等待时间和 `dropped_requests`。实际准入速率只统计已发往 HTTP 的请求；`drop` 请求会写入失败记录，因此同时计入总请求数、失败数和失败率。TTFT 仍从实际 HTTP 请求开始计时，不包含客户端节流等待。该开关控制客户端的到达率，不保证完成 QPS；特别是 `catch-up` 允许有限短时补发，无法将 `target_rps` 解释为瞬时硬上限。无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
+报告会在 `metrics.pacing` 中写入上述策略、目标平均速率、`target_interval_seconds`（`fixed` 的计划间隔或 `poisson` 的期望间隔）、`target_interval_semantics`、实际准入速率、相邻准入间隔、速率/并发等待时间和 `dropped_requests`。实际准入速率只统计已发往 HTTP 的请求；`drop` 请求会写入失败记录，因此同时计入总请求数、失败数和失败率。TTFT 仍从实际 HTTP 请求开始计时，不包含客户端节流等待。`catch-up` 允许有限短时补发，因此即使使用 `fixed`，实际相邻准入间隔也不一定恒为 `1 / target_rps`。无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
 
 ### 单机 Docker Compose 推理服务
 
