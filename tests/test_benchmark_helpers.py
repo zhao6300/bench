@@ -440,8 +440,8 @@ def test_single_api_shared_prefix_warmup_uses_configured_requests_per_round(
     assert [payload["max_tokens"] for payload in posts] == [10, 1, 1, 1, 1]
 
 
-def test_target_rps_requests_scheduler_avoids_catch_up_bursts(monkeypatch, capsys) -> None:
-    """在 requests 并发槽位阻塞后，下一请求仍按新的固定间隔准入。"""
+def test_target_rps_requests_scheduler_keeps_planned_arrivals_open_loop(monkeypatch, capsys) -> None:
+    """requests 的计划到达不受满并发影响，HTTP 准入在 worker 槽位后排队。"""
     started_at: list[float] = []
 
     def slow_request(req_id: int, *_args: object, **_kwargs: object) -> dict[str, object]:
@@ -495,13 +495,15 @@ def test_target_rps_requests_scheduler_avoids_catch_up_bursts(monkeypatch, capsy
     assert pacing["rate_overload_policy"] == "no-catch-up"
     assert pacing["target_rps"] == 100.0
     assert pacing["target_interval_seconds"] == 0.01
-    assert pacing["target_interval_semantics"] == "fixed_interval"
+    assert pacing["target_interval_semantics"] == "planned_interval"
+    assert pacing["planned_requests"] == 3
+    assert pacing["planned_duration_seconds"] == pytest.approx(0.03)
     assert pacing["admitted_requests"] == 3
     assert pacing["actual_admission_rps"] is not None
     assert pacing["actual_admission_rps"] <= 40.0
     assert pacing["admission_interval_seconds"]["min"] >= 0.025
-    assert pacing["rate_wait_seconds"] >= 0.01
-    assert pacing["concurrency_wait_seconds"] >= 0.03
+    assert pacing["rate_wait_seconds"] == 0.0
+    assert pacing["concurrency_wait_seconds"] >= 0.05
 
 
 def test_drop_policy_records_failed_requests_without_http_dispatch(
@@ -586,8 +588,11 @@ def test_api_probe_warmup_disables_rate_control(monkeypatch) -> None:
         api_timeout_seconds=600.0,
         target_rps=2.0,
         rate_schedule="poisson",
+        rate_burstiness=0.5,
+        rate_ramp_up_strategy="none",
+        rate_ramp_up_start_rps=None,
+        rate_ramp_up_end_rps=None,
         rate_overload_policy="drop",
-        rate_burst=3,
     )
     session = benchmark_module.ApiBenchmarkSession(
         args,
@@ -621,6 +626,9 @@ def test_api_probe_warmup_disables_rate_control(monkeypatch) -> None:
 
     assert observed["target_rps"] is None
     assert observed["rate_schedule"] == "fixed"
+    assert observed["rate_burstiness"] is None
+    assert observed["rate_ramp_up_strategy"] == "none"
+    assert observed["rate_ramp_up_start_rps"] is None
+    assert observed["rate_ramp_up_end_rps"] is None
     assert observed["rate_overload_policy"] == "no-catch-up"
-    assert observed["rate_burst"] == 1
     assert observed["rate_seed"] is None

@@ -4,69 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 import time
 from collections.abc import Callable
 from typing import Any
 
 try:
     from .logging_utils import exception_type, get_logger, safe_endpoint
+    from .request_schedule import build_arrival_plan
     from .streaming import aiter_sse_data, iter_sse_data
 except ImportError:
     from logging_utils import exception_type, get_logger, safe_endpoint
+    from request_schedule import build_arrival_plan
     from streaming import aiter_sse_data, iter_sse_data
 
 
 LOGGER = get_logger("api")
-
-
-def _advance_rate_deadline(
-    next_due_at: float,
-    admitted_at: float,
-    interval: float,
-    rate_overload_policy: str,
-    rate_burst: int,
-    catch_up_count: int,
-    deadline_was_due: bool,
-    concurrency_wait_seconds: float,
-) -> tuple[float, int]:
-    """根据过载策略计算下一次请求准入时间。
-
-    Args:
-        next_due_at: 当前逻辑调度 deadline。
-        admitted_at: 本次请求的真实准入时间。
-        interval: 本次到达间隔。
-        rate_overload_policy: 并发已满时的过载策略。
-        rate_burst: catch-up 连续处理的过期到达上限。
-        catch_up_count: 当前连续处理的过期到达数。
-        deadline_was_due: 本次开始等待前 deadline 是否已到。
-        concurrency_wait_seconds: 本次因并发槽位产生的等待时间。
-
-    Returns:
-        下一 deadline 和更新后的连续过期到达数。
-
-    Raises:
-        ValueError: 当过载策略不是已支持的值时抛出。
-    """
-    if rate_overload_policy == "no-catch-up":
-        return admitted_at + interval, 0
-    if rate_overload_policy == "drop":
-        return next_due_at + interval, 0
-    if rate_overload_policy != "catch-up":
-        raise ValueError(
-            f"unsupported rate_overload_policy: {rate_overload_policy!r}"
-        )
-
-    is_overdue_admission = concurrency_wait_seconds > 0 or (
-        catch_up_count > 0 and deadline_was_due
-    )
-    if not is_overdue_admission:
-        return next_due_at + interval, 0
-
-    catch_up_count += 1
-    if catch_up_count >= rate_burst:
-        return admitted_at + interval, 0
-    return next_due_at + interval, catch_up_count
 
 
 def build_chat_payload(
@@ -459,9 +411,13 @@ def run_aiohttp_chat_requests(
     timeout_seconds: float = 600.0,
     target_rps: float | None = None,
     rate_schedule: str = "fixed",
+    rate_burstiness: float | None = None,
+    rate_ramp_up_strategy: str = "none",
+    rate_ramp_up_start_rps: float | None = None,
+    rate_ramp_up_end_rps: float | None = None,
     rate_overload_policy: str = "no-catch-up",
-    rate_burst: int = 1,
     rate_seed: int | None = None,
+    arrival_due_times: list[float] | None = None,
     on_admitted: Callable[[int, float, float, float], None] | None = None,
     on_dropped: Callable[[int], None] | None = None,
 ) -> None:
@@ -479,11 +435,15 @@ def run_aiohttp_chat_requests(
         on_complete: 每条完成记录的回调。
         timeout_seconds: 每条流式 HTTP 请求的总超时。
         target_rps: 可选的目标请求准入速率。
-        rate_schedule: fixed 为固定间隔，poisson 为泊松到达过程。
-        rate_overload_policy: 并发已满时的处理策略。
-        rate_burst: catch-up 连续处理的过期到达数上限。
-        rate_seed: 泊松到达过程使用的可复现随机种子。
-        on_admitted: 记录真实准入时间和等待时间的回调。
+        rate_schedule: 到达间隔分布，可为 fixed、poisson 或 gamma。
+        rate_burstiness: gamma 调度的 shape 参数；无穷大表示固定间隔。
+        rate_ramp_up_strategy: 按请求序号插值的速率爬升策略。
+        rate_ramp_up_start_rps: ramp 的起始请求速率。
+        rate_ramp_up_end_rps: ramp 的结束请求速率。
+        rate_overload_policy: 已计划到达而并发满时的处理策略。
+        rate_seed: 随机到达过程使用的可复现随机种子。
+        arrival_due_times: 由调用方预生成的相对到达时间。
+        on_admitted: 记录真实 HTTP 准入时间和排队等待的回调。
         on_dropped: 请求在 HTTP 发送前被丢弃时的回调。
 
     Raises:
@@ -496,6 +456,8 @@ def run_aiohttp_chat_requests(
         len(prompts),
         concurrency,
     )
+
+    scheduled_due_times = arrival_due_times
 
     async def run() -> None:
         timeout = aiohttp.ClientTimeout(total=timeout_seconds)
@@ -514,115 +476,61 @@ def run_aiohttp_chat_requests(
                     ignore_eos,
                 )
 
-            if target_rps is None:
-                semaphore = asyncio.Semaphore(concurrency)
+            if scheduled_due_times is None:
+                arrival_plan = build_arrival_plan(
+                    len(prompts),
+                    target_rps=target_rps,
+                    rate_schedule=rate_schedule,
+                    rate_burstiness=rate_burstiness,
+                    rate_seed=rate_seed,
+                    rate_ramp_up_strategy=rate_ramp_up_strategy,
+                    rate_ramp_up_start_rps=rate_ramp_up_start_rps,
+                    rate_ramp_up_end_rps=rate_ramp_up_end_rps,
+                )
+                due_times = arrival_plan.due_times_seconds
+                arrival_mode = arrival_plan.schedule
+            else:
+                if len(scheduled_due_times) != len(prompts):
+                    raise ValueError("arrival_due_times must match prompts length")
+                due_times = scheduled_due_times
+                arrival_mode = "unbounded" if target_rps is None else rate_schedule
 
-                async def send_with_limit(req_id: int, prompt: str) -> RequestResult:
-                    async with semaphore:
-                        return await send_one(req_id, prompt)
+            semaphore = asyncio.Semaphore(concurrency)
 
-                tasks = []
-                for req_id, prompt in enumerate(prompts):
+            async def send_with_limit(
+                req_id: int,
+                prompt: str,
+                arrived_at: float,
+            ) -> RequestResult:
+                async with semaphore:
                     admitted_at = time.perf_counter()
                     if on_admitted is not None:
-                        on_admitted(req_id, admitted_at, 0.0, 0.0)
-                    tasks.append(asyncio.create_task(send_with_limit(req_id, prompt)))
-                for task in asyncio.as_completed(tasks):
-                    on_complete(await task)
-                return
+                        on_admitted(req_id, admitted_at, 0.0, admitted_at - arrived_at)
+                    return await send_one(req_id, prompt)
 
-            rate_random = random.Random(rate_seed)
-
-            def next_interval() -> float:
-                if rate_schedule == "fixed":
-                    return 1.0 / target_rps
-                return rate_random.expovariate(target_rps)
-
-            pending: set[asyncio.Task[RequestResult]] = set()
-            next_due_at = time.perf_counter()
-            catch_up_count = 0
-
-            def emit_completed(tasks: set[asyncio.Task[RequestResult]]) -> None:
-                for task in tasks:
-                    on_complete(task.result())
-
-            def collect_finished() -> None:
-                finished_tasks = {task for task in pending if task.done()}
-                pending.difference_update(finished_tasks)
-                emit_completed(finished_tasks)
-
-            async def wait_until(deadline: float) -> None:
-                while True:
-                    remaining = deadline - time.perf_counter()
-                    if remaining <= 0:
-                        return
-                    if not pending:
-                        await asyncio.sleep(remaining)
-                        return
-                    done, _ = await asyncio.wait(
-                        pending,
-                        timeout=remaining,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    if not done:
-                        return
-                    pending.difference_update(done)
-                    emit_completed(done)
-
+            tasks: list[asyncio.Task[RequestResult]] = []
+            schedule_started_at = time.perf_counter()
             for req_id, prompt in enumerate(prompts):
-                rate_wait_started_at = time.perf_counter()
-                deadline_was_due = next_due_at <= rate_wait_started_at
-                await wait_until(next_due_at)
-                rate_wait_seconds = time.perf_counter() - rate_wait_started_at
-                collect_finished()
+                due_at = schedule_started_at + due_times[req_id]
+                remaining = due_at - time.perf_counter()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                arrived_at = time.perf_counter()
+                active_tasks = sum(not task.done() for task in tasks)
                 if (
-                    rate_overload_policy == "drop"
-                    and len(pending) >= concurrency
+                    arrival_mode != "unbounded"
+                    and rate_overload_policy == "drop"
+                    and active_tasks >= concurrency
                 ):
                     if on_dropped is not None:
                         on_dropped(req_id)
-                    next_due_at += next_interval()
-                    catch_up_count = 0
                     continue
-                concurrency_wait_started_at = time.perf_counter()
-                while len(pending) >= concurrency:
-                    done, _ = await asyncio.wait(
-                        pending,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    pending.difference_update(done)
-                    emit_completed(done)
-                concurrency_wait_seconds = (
-                    time.perf_counter() - concurrency_wait_started_at
-                )
-                admitted_at = time.perf_counter()
-                if on_admitted is not None:
-                    on_admitted(
-                        req_id,
-                        admitted_at,
-                        rate_wait_seconds,
-                        concurrency_wait_seconds,
-                    )
-                pending.add(asyncio.create_task(send_one(req_id, prompt)))
-                interval = next_interval()
-                next_due_at, catch_up_count = _advance_rate_deadline(
-                    next_due_at,
-                    admitted_at,
-                    interval,
-                    rate_overload_policy,
-                    rate_burst,
-                    catch_up_count,
-                    deadline_was_due,
-                    concurrency_wait_seconds,
+                tasks.append(
+                    asyncio.create_task(send_with_limit(req_id, prompt, arrived_at))
                 )
 
-            while pending:
-                done, _ = await asyncio.wait(
-                    pending,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                pending.difference_update(done)
-                emit_completed(done)
+            for task in asyncio.as_completed(tasks):
+                on_complete(await task)
 
     try:
         asyncio.get_running_loop()

@@ -201,8 +201,13 @@ def test_api_transport_parser_and_suite_config_accept_aiohttp() -> None:
     assert parser.parse_args([]).api_timeout_seconds == 600.0
     assert parser.parse_args([]).target_rps is None
     assert parser.parse_args([]).rate_schedule == "fixed"
+    assert parser.parse_args([]).rate_burstiness is None
+    assert parser.parse_args([]).rate_ramp_up_strategy == "none"
+    assert parser.parse_args([]).rate_ramp_up_start_rps is None
+    assert parser.parse_args([]).rate_ramp_up_end_rps is None
     assert parser.parse_args([]).rate_overload_policy == "no-catch-up"
-    assert parser.parse_args([]).rate_burst == 1
+    assert not hasattr(parser.parse_args([]), "rate_burst")
+    assert parser.parse_args(["--rate-burst", "3"])._legacy_rate_burst == 3
     assert parser.parse_args(["--target-rps", "2.5"]).target_rps == 2.5
 
     args, _ = _build_case_args(
@@ -211,8 +216,12 @@ def test_api_transport_parser_and_suite_config_accept_aiohttp() -> None:
             "api_transport": "aiohttp",
             "api_timeout_seconds": 12.5,
             "requests": {
-                "target_rps": 2.5,
-                "rate_schedule": "poisson",
+                "target_rps": None,
+                "rate_schedule": "gamma",
+                "rate_burstiness": 0.5,
+                "rate_ramp_up_strategy": "linear",
+                "rate_ramp_up_start_rps": 1.0,
+                "rate_ramp_up_end_rps": 2.0,
                 "rate_overload_policy": "drop",
                 "rate_burst": 3,
             },
@@ -223,10 +232,14 @@ def test_api_transport_parser_and_suite_config_accept_aiohttp() -> None:
 
     assert args.api_transport == "aiohttp"
     assert args.api_timeout_seconds == 12.5
-    assert args.target_rps == 2.5
-    assert args.rate_schedule == "poisson"
+    assert args.target_rps is None
+    assert args.rate_schedule == "gamma"
+    assert args.rate_burstiness == 0.5
+    assert args.rate_ramp_up_strategy == "linear"
+    assert args.rate_ramp_up_start_rps == 1.0
+    assert args.rate_ramp_up_end_rps == 2.0
     assert args.rate_overload_policy == "drop"
-    assert args.rate_burst == 3
+    assert args._legacy_rate_burst == 3
 
 
 @pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf")])
@@ -241,21 +254,23 @@ def test_suite_config_rejects_invalid_target_rps(value: object) -> None:
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("field", "value", "message"),
     [
-        ("rate_schedule", "unsupported"),
-        ("rate_overload_policy", "unsupported"),
-        ("rate_burst", 0),
-        ("rate_burst", -1),
-        ("rate_burst", True),
+        ("rate_schedule", "unsupported", "rate_schedule"),
+        ("rate_burstiness", 1.0, "rate_burstiness"),
+        ("rate_schedule", "gamma", "rate_burstiness"),
+        ("rate_burstiness", 0, "rate_burstiness"),
+        ("rate_ramp_up_strategy", "unsupported", "rate_ramp_up_strategy"),
+        ("rate_ramp_up_start_rps", 1.0, "rate_ramp_up_start_rps"),
     ],
 )
 def test_suite_config_rejects_invalid_rate_control(
     field: str,
     value: object,
+    message: str,
 ) -> None:
     """拒绝无效的速率调度策略与 burst 上限。"""
-    with pytest.raises(BenchmarkConfigError, match=field):
+    with pytest.raises(BenchmarkConfigError, match=message):
         _build_case_args(
             {"mode": "api", field: value},
             {"name": "invalid-rate-control"},
@@ -278,6 +293,21 @@ def test_suite_config_rejects_invalid_api_transport() -> None:
         _build_case_args(
             {"mode": "api", "api_transport": "unsupported"},
             {"name": "invalid-transport"},
+            {},
+        )
+
+
+def test_suite_config_rejects_ramp_outside_api_mode() -> None:
+    """ramp 是 API 请求发生器能力，offline 模式必须拒绝。"""
+    with pytest.raises(BenchmarkConfigError, match="rate_ramp_up_strategy"):
+        _build_case_args(
+            {
+                "mode": "offline",
+                "rate_ramp_up_strategy": "linear",
+                "rate_ramp_up_start_rps": 1.0,
+                "rate_ramp_up_end_rps": 2.0,
+            },
+            {"name": "offline-ramp"},
             {},
         )
 
@@ -323,9 +353,13 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
         timeout_seconds: float,
         target_rps: float | None,
         rate_schedule: str,
+        rate_burstiness: float | None,
+        rate_ramp_up_strategy: str,
+        rate_ramp_up_start_rps: float | None,
+        rate_ramp_up_end_rps: float | None,
         rate_overload_policy: str,
-        rate_burst: int,
         rate_seed: int | None,
+        arrival_due_times: list[float],
         on_admitted: Any,
         on_dropped: Any,
     ) -> None:
@@ -340,9 +374,13 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
             "timeout_seconds": timeout_seconds,
             "target_rps": target_rps,
             "rate_schedule": rate_schedule,
+            "rate_burstiness": rate_burstiness,
+            "rate_ramp_up_strategy": rate_ramp_up_strategy,
+            "rate_ramp_up_start_rps": rate_ramp_up_start_rps,
+            "rate_ramp_up_end_rps": rate_ramp_up_end_rps,
             "rate_overload_policy": rate_overload_policy,
-            "rate_burst": rate_burst,
             "rate_seed": rate_seed,
+            "arrival_due_times": arrival_due_times,
         })
         for req_id in range(len(prompts)):
             on_complete({
@@ -387,9 +425,13 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
         "timeout_seconds": 12.5,
         "target_rps": None,
         "rate_schedule": "fixed",
+        "rate_burstiness": None,
+        "rate_ramp_up_strategy": "none",
+        "rate_ramp_up_start_rps": None,
+        "rate_ramp_up_end_rps": None,
         "rate_overload_policy": "no-catch-up",
-        "rate_burst": 1,
         "rate_seed": None,
+        "arrival_due_times": [0.0, 0.0],
         "finalized_req_ids": [0, 1],
     }
     assert metrics["successful"] == 2
@@ -527,8 +569,8 @@ def test_debug_transport_log_excludes_url_credentials_and_exception_text(monkeyp
     assert "secret-token" not in debug_output
 
 
-def test_aiohttp_target_rps_resets_interval_after_concurrency_wait(monkeypatch) -> None:
-    """在并发槽位阻塞后，aiohttp 调度器不补发积压请求。"""
+def test_aiohttp_planned_arrivals_queue_behind_concurrency_limit(monkeypatch) -> None:
+    """计划到达时间不因满并发而重排，真实 HTTP 请求在 semaphore 后排队。"""
     started_at: list[float] = []
     admissions: list[tuple[int, float, float, float]] = []
     completed: list[int] = []
@@ -572,6 +614,7 @@ def test_aiohttp_target_rps_resets_interval_after_concurrency_wait(monkeypatch) 
         True,
         lambda result: completed.append(int(result["req_id"])),
         target_rps=100.0,
+        arrival_due_times=[0.0, 0.01, 0.02],
         on_admitted=lambda req_id, timestamp, rate_wait, concurrency_wait: admissions.append(
             (req_id, timestamp, rate_wait, concurrency_wait)
         ),
@@ -582,49 +625,7 @@ def test_aiohttp_target_rps_resets_interval_after_concurrency_wait(monkeypatch) 
     assert len(admissions) == 3
     assert min(intervals) >= 0.025
     assert admissions[1][3] >= 0.015
-    assert admissions[2][3] >= 0.015
-
-
-def test_catch_up_burst_only_counts_real_overdue_admissions() -> None:
-    """catch-up 不应把正常调度的微小 deadline 偏差当作补发。"""
-    next_due_at, catch_up_count = api_transport._advance_rate_deadline(
-        1.0,
-        1.0001,
-        0.1,
-        "catch-up",
-        2,
-        0,
-        True,
-        0.0,
-    )
-    assert next_due_at == pytest.approx(1.1)
-    assert catch_up_count == 0
-
-    next_due_at, catch_up_count = api_transport._advance_rate_deadline(
-        0.2,
-        1.0,
-        0.1,
-        "catch-up",
-        2,
-        0,
-        True,
-        0.05,
-    )
-    assert next_due_at == pytest.approx(0.3)
-    assert catch_up_count == 1
-
-    next_due_at, catch_up_count = api_transport._advance_rate_deadline(
-        next_due_at,
-        1.01,
-        0.1,
-        "catch-up",
-        2,
-        catch_up_count,
-        True,
-        0.0,
-    )
-    assert next_due_at == pytest.approx(1.11)
-    assert catch_up_count == 0
+    assert admissions[2][3] >= 0.03
 
 
 def test_aiohttp_drop_policy_skips_http_dispatch_when_concurrency_is_full(
@@ -655,23 +656,12 @@ def test_aiohttp_drop_policy_skips_http_dispatch_when_concurrency_is_full(
         def ClientSession(**_kwargs: object) -> _FakeClientSession:
             return _FakeClientSession()
 
-    observed_random_calls: list[tuple[int | None, float]] = []
-
-    class _FixedRandom:
-        def __init__(self, seed: int | None) -> None:
-            self.seed = seed
-
-        def expovariate(self, rate: float) -> float:
-            observed_random_calls.append((self.seed, rate))
-            return 0.001
-
     async def slow_send(req_id: int, *_args: object, **_kwargs: object) -> dict[str, object]:
         started.append(req_id)
         await asyncio.sleep(0.05)
         return {"req_id": req_id, "ttft": 0.001}
 
     monkeypatch.setattr(api_transport, "_require_aiohttp", lambda: _FakeAiohttp)
-    monkeypatch.setattr(api_transport.random, "Random", _FixedRandom)
     monkeypatch.setattr(api_transport, "send_aiohttp_chat_request", slow_send)
 
     api_transport.run_aiohttp_chat_requests(
@@ -685,13 +675,11 @@ def test_aiohttp_drop_policy_skips_http_dispatch_when_concurrency_is_full(
         True,
         lambda result: completed.append(int(result["req_id"])),
         target_rps=1000.0,
-        rate_schedule="poisson",
-        rate_seed=73,
         rate_overload_policy="drop",
+        arrival_due_times=[0.0, 0.001, 0.002],
         on_dropped=dropped.append,
     )
 
     assert started == [0]
     assert completed == [0]
     assert dropped == [1, 2]
-    assert observed_random_calls == [(73, 1000.0)] * 3

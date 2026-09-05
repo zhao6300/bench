@@ -254,11 +254,11 @@ try:
         serialize_json_report,
     )
     from .api_transport import (
-        _advance_rate_deadline,
         finalize_stream_results,
         run_aiohttp_chat_requests,
         send_requests_chat_request,
     )
+    from .request_schedule import ArrivalPlan, build_arrival_plan
     from .progress import ProgressDependencyError, create_progress_reporter
     from .host_inventory import collect_host_inventory
     from .standard_protocol import (
@@ -300,11 +300,11 @@ except ImportError:
         serialize_json_report,
     )
     from api_transport import (
-        _advance_rate_deadline,
         finalize_stream_results,
         run_aiohttp_chat_requests,
         send_requests_chat_request,
     )
+    from request_schedule import ArrivalPlan, build_arrival_plan
     from progress import ProgressDependencyError, create_progress_reporter
     from host_inventory import collect_host_inventory
     from standard_protocol import (
@@ -1540,14 +1540,14 @@ def _summarize_pacing(
     admissions: list[dict[str, float]],
     rate_schedule: str,
     rate_overload_policy: str,
-    rate_burst: int,
     dropped_requests: int,
+    arrival_plan: ArrivalPlan,
 ) -> dict[str, Any]:
     """汇总请求准入节流信息，不将客户端等待计入单请求延迟。
 
     Args:
-        target_rps: 配置的目标请求准入速率；None 表示不节流。
-        admissions: 每次真实准入时采集的时间和等待统计。
+        target_rps: 配置的目标平均计划到达速率；None 表示尽快创建请求任务。
+        admissions: 每次真实 HTTP 准入时采集的时间和排队统计。
 
     Returns:
         可写入 round 指标的节流摘要。
@@ -1567,15 +1567,41 @@ def _summarize_pacing(
         else None
     )
     return {
-        "mode": "unbounded" if target_rps is None else rate_schedule,
+        "mode": arrival_plan.schedule,
         "target_rps": target_rps,
         "target_interval_seconds": 1.0 / target_rps if target_rps is not None else None,
         "target_interval_semantics": (
-            "fixed_interval" if rate_schedule == "fixed" else "mean_interval"
+            "planned_interval"
+            if rate_schedule == "fixed" or (
+                rate_schedule == "gamma"
+                and arrival_plan.burstiness is not None
+                and math.isinf(arrival_plan.burstiness)
+            )
+            else "mean_interval"
         ) if target_rps is not None else None,
         "rate_schedule": rate_schedule,
+        "rate_burstiness": (
+            "inf" if arrival_plan.burstiness is not None
+            and math.isinf(arrival_plan.burstiness)
+            else arrival_plan.burstiness
+        ),
+        "rate_ramp_up_strategy": arrival_plan.ramp_up_strategy,
+        "rate_ramp_up_start_rps": (
+            arrival_plan.request_rates[0]
+            if arrival_plan.ramp_up_strategy != "none"
+            and arrival_plan.request_rates else None
+        ),
+        "rate_ramp_up_end_rps": (
+            arrival_plan.request_rates[-1]
+            if arrival_plan.ramp_up_strategy != "none"
+            and arrival_plan.request_rates else None
+        ),
+        "planned_requests": len(arrival_plan.due_times_seconds),
+        "planned_duration_seconds": (
+            arrival_plan.due_times_seconds[-1]
+            if arrival_plan.due_times_seconds else 0.0
+        ),
         "rate_overload_policy": rate_overload_policy,
-        "rate_burst": rate_burst,
         "admitted_requests": len(admissions),
         "dropped_requests": dropped_requests,
         "actual_admission_rps": actual_admission_rps,
@@ -1590,8 +1616,8 @@ def _summarize_pacing(
 def _aggregate_api_round_metrics(
     results, prompt_lens_list, max_tokens_list, concurrency, wall_time,
     server_metrics, slo_ttft, slo_tpot, target_rps=None, admissions=None,
-    rate_schedule="fixed", rate_overload_policy="no-catch-up", rate_burst=1,
-    dropped_requests=0,
+    rate_schedule="fixed", rate_overload_policy="no-catch-up",
+    dropped_requests=0, arrival_plan=None,
 ):
     """Aggregate request records using explicit, consistent result populations."""
     total_requests = len(prompt_lens_list)
@@ -1785,8 +1811,12 @@ def _aggregate_api_round_metrics(
             admissions or [],
             rate_schedule,
             rate_overload_policy,
-            rate_burst,
             dropped_requests,
+            arrival_plan or build_arrival_plan(
+                total_requests,
+                target_rps=target_rps,
+                rate_schedule=rate_schedule,
+            ),
         ),
         "results": results,
     }
@@ -1809,8 +1839,11 @@ def run_api_benchmark_round(
     progress_reporter=None,
     target_rps=None,
     rate_schedule="fixed",
+    rate_burstiness=None,
+    rate_ramp_up_strategy="none",
+    rate_ramp_up_start_rps=None,
+    rate_ramp_up_end_rps=None,
     rate_overload_policy="no-catch-up",
-    rate_burst=1,
     rate_seed=None,
 ):
     """
@@ -1824,16 +1857,25 @@ def run_api_benchmark_round(
     Returns a dict with all computed metrics, or None if all requests failed.
     """
     total_requests = len(prompts)
+    arrival_plan = build_arrival_plan(
+        total_requests,
+        target_rps=target_rps,
+        rate_schedule=rate_schedule,
+        rate_burstiness=rate_burstiness,
+        rate_seed=rate_seed,
+        rate_ramp_up_strategy=rate_ramp_up_strategy,
+        rate_ramp_up_start_rps=rate_ramp_up_start_rps,
+        rate_ramp_up_end_rps=rate_ramp_up_end_rps,
+    )
     LOGGER.debug(
         "API round started transport=%s requests=%d concurrency=%d target_rps=%s "
-        "rate_schedule=%s overload_policy=%s rate_burst=%s model=%s",
+        "rate_schedule=%s overload_policy=%s model=%s",
         api_transport,
         total_requests,
         concurrency,
         target_rps,
         rate_schedule,
         rate_overload_policy,
-        rate_burst,
         model,
     )
     if progress_reporter is not None:
@@ -2005,9 +2047,13 @@ def run_api_benchmark_round(
             timeout_seconds=api_timeout_seconds,
             target_rps=target_rps,
             rate_schedule=rate_schedule,
+            rate_burstiness=rate_burstiness,
+            rate_ramp_up_strategy=rate_ramp_up_strategy,
+            rate_ramp_up_start_rps=rate_ramp_up_start_rps,
+            rate_ramp_up_end_rps=rate_ramp_up_end_rps,
             rate_overload_policy=rate_overload_policy,
-            rate_burst=rate_burst,
             rate_seed=rate_seed,
+            arrival_due_times=arrival_plan.due_times_seconds,
             on_admitted=_record_admission,
             on_dropped=_record_dropped,
         )
@@ -2032,71 +2078,62 @@ def run_api_benchmark_round(
                 future.add_done_callback(_on_complete)
                 return future
 
-            if target_rps is None:
-                for i in range(total_requests):
-                    admitted_at = time.perf_counter()
-                    _record_admission(i, admitted_at, 0.0, 0.0)
-                    futures.append(submit_request(i))
-            else:
-                rate_random = random.Random(rate_seed)
+            pending: set[concurrent.futures.Future] = set()
+            backlog: list[tuple[int, float]] = []
+            next_request_index = 0
 
-                def next_interval() -> float:
-                    if rate_schedule == "fixed":
-                        return 1.0 / target_rps
-                    return rate_random.expovariate(target_rps)
+            while next_request_index < total_requests or backlog or pending:
+                finished_futures = {
+                    future for future in pending if future.done()
+                }
+                pending.difference_update(finished_futures)
+                now = time.perf_counter()
 
-                pending: set[concurrent.futures.Future] = set()
-                next_due_at = time.perf_counter()
-                catch_up_count = 0
-                for i in range(total_requests):
-                    rate_wait_started_at = time.perf_counter()
-                    deadline_was_due = next_due_at <= rate_wait_started_at
-                    remaining = next_due_at - rate_wait_started_at
-                    if remaining > 0:
-                        time.sleep(remaining)
-                    rate_wait_seconds = time.perf_counter() - rate_wait_started_at
-                    finished_futures = {
-                        future for future in pending if future.done()
-                    }
-                    pending.difference_update(finished_futures)
+                while (
+                    next_request_index < total_requests
+                    and wall_t0 + arrival_plan.due_times_seconds[next_request_index] <= now
+                ):
+                    request_index = next_request_index
+                    next_request_index += 1
                     if (
-                        rate_overload_policy == "drop"
+                        arrival_plan.schedule != "unbounded"
+                        and rate_overload_policy == "drop"
                         and len(pending) >= concurrency
                     ):
-                        _record_dropped(i)
-                        next_due_at += next_interval()
-                        catch_up_count = 0
-                        continue
-                    concurrency_wait_started_at = time.perf_counter()
-                    while len(pending) >= concurrency:
-                        completed_futures, _ = concurrent.futures.wait(
-                            pending,
-                            return_when=concurrent.futures.FIRST_COMPLETED,
-                        )
-                        pending.difference_update(completed_futures)
-                    concurrency_wait_seconds = (
-                        time.perf_counter() - concurrency_wait_started_at
-                    )
+                        _record_dropped(request_index)
+                    else:
+                        backlog.append((request_index, now))
+
+                while backlog and len(pending) < concurrency:
+                    request_index, arrived_at = backlog.pop(0)
                     admitted_at = time.perf_counter()
                     _record_admission(
-                        i,
+                        request_index,
                         admitted_at,
-                        rate_wait_seconds,
-                        concurrency_wait_seconds,
+                        0.0,
+                        admitted_at - arrived_at,
                     )
-                    future = submit_request(i)
+                    future = submit_request(request_index)
                     futures.append(future)
                     pending.add(future)
-                    interval = next_interval()
-                    next_due_at, catch_up_count = _advance_rate_deadline(
-                        next_due_at,
-                        admitted_at,
-                        interval,
-                        rate_overload_policy,
-                        rate_burst,
-                        catch_up_count,
-                        deadline_was_due,
-                        concurrency_wait_seconds,
+
+                if next_request_index < total_requests:
+                    next_due_at = (
+                        wall_t0 + arrival_plan.due_times_seconds[next_request_index]
+                    )
+                    timeout = max(0.0, next_due_at - time.perf_counter())
+                    if pending:
+                        concurrent.futures.wait(
+                            pending,
+                            timeout=timeout,
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+                    elif timeout > 0:
+                        time.sleep(timeout)
+                elif pending:
+                    concurrent.futures.wait(
+                        pending,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
                     )
             concurrent.futures.wait(futures)
     else:
@@ -2149,29 +2186,46 @@ def run_api_benchmark_round(
         admissions,
         rate_schedule,
         rate_overload_policy,
-        rate_burst,
         dropped_requests[0],
+        arrival_plan,
     )
 
 
 def _print_pacing_summary(metrics) -> None:
-    """输出启用请求速率控制时的客户端准入摘要。"""
+    """输出开放式到达计划与真实 HTTP 准入摘要。"""
     pacing = metrics.get("pacing", {})
-    if pacing.get("target_rps") is None:
+    target_rps = pacing.get("target_rps")
+    ramp_strategy = pacing.get("rate_ramp_up_strategy")
+    if target_rps is None and ramp_strategy == "none":
         return
     actual_admission_rps = pacing.get("actual_admission_rps")
     actual_admission_text = (
         f"{actual_admission_rps:.2f} req/s"
         if actual_admission_rps is not None else "不可验证"
     )
+    if target_rps is not None:
+        planned_rate_text = f"目标均值 {target_rps:.2f} req/s"
+    else:
+        planned_rate_text = (
+            "ramp "
+            f"{pacing['rate_ramp_up_start_rps']:.2f}→"
+            f"{pacing['rate_ramp_up_end_rps']:.2f} req/s"
+        )
     print(
-        "请求准入速率                : "
-        f"目标 {pacing['target_rps']:.2f} req/s，实际 {actual_admission_text}"
+        "请求到达/HTTP 准入速率       : "
+        f"计划 {planned_rate_text}，实际准入 {actual_admission_text}"
+    )
+    strategy = pacing["rate_schedule"]
+    if pacing.get("rate_burstiness") is not None:
+        strategy += f"(burstiness={pacing['rate_burstiness']})"
+    print(
+        "请求到达策略                : "
+        f"{strategy} / ramp={ramp_strategy} / "
+        f"overload={pacing['rate_overload_policy']}"
     )
     print(
-        "请求准入策略                : "
-        f"{pacing['rate_schedule']} / {pacing['rate_overload_policy']} / "
-        f"burst={pacing['rate_burst']}"
+        "计划请求/计划时长            : "
+        f"{pacing['planned_requests']} / {pacing['planned_duration_seconds']:.3f}s"
     )
     if pacing.get("dropped_requests"):
         print(f"客户端过载丢弃请求          : {pacing['dropped_requests']}")
@@ -2418,8 +2472,11 @@ def run_api_benchmark(args):
         progress_reporter=getattr(args, "_progress_reporter", None),
         target_rps=getattr(args, "target_rps", None),
         rate_schedule=getattr(args, "rate_schedule", "fixed"),
+        rate_burstiness=getattr(args, "rate_burstiness", None),
+        rate_ramp_up_strategy=getattr(args, "rate_ramp_up_strategy", "none"),
+        rate_ramp_up_start_rps=getattr(args, "rate_ramp_up_start_rps", None),
+        rate_ramp_up_end_rps=getattr(args, "rate_ramp_up_end_rps", None),
         rate_overload_policy=getattr(args, "rate_overload_policy", "no-catch-up"),
-        rate_burst=getattr(args, "rate_burst", 1),
         rate_seed=getattr(args, "seed", None),
     )
     nsys_stop()
@@ -2612,8 +2669,11 @@ def run_mixed_benchmark(args):
         progress_reporter=getattr(args, "_progress_reporter", None),
         target_rps=getattr(args, "target_rps", None),
         rate_schedule=getattr(args, "rate_schedule", "fixed"),
+        rate_burstiness=getattr(args, "rate_burstiness", None),
+        rate_ramp_up_strategy=getattr(args, "rate_ramp_up_strategy", "none"),
+        rate_ramp_up_start_rps=getattr(args, "rate_ramp_up_start_rps", None),
+        rate_ramp_up_end_rps=getattr(args, "rate_ramp_up_end_rps", None),
         rate_overload_policy=getattr(args, "rate_overload_policy", "no-catch-up"),
-        rate_burst=getattr(args, "rate_burst", 1),
         rate_seed=getattr(args, "seed", None),
     )
     nsys_stop()
@@ -2768,18 +2828,30 @@ class ApiBenchmarkSession:
         rate_control = {
             "target_rps": getattr(self.args, "target_rps", None),
             "rate_schedule": getattr(self.args, "rate_schedule", "fixed"),
+            "rate_burstiness": getattr(self.args, "rate_burstiness", None),
+            "rate_ramp_up_strategy": getattr(
+                self.args, "rate_ramp_up_strategy", "none"
+            ),
+            "rate_ramp_up_start_rps": getattr(
+                self.args, "rate_ramp_up_start_rps", None
+            ),
+            "rate_ramp_up_end_rps": getattr(
+                self.args, "rate_ramp_up_end_rps", None
+            ),
             "rate_overload_policy": getattr(
                 self.args, "rate_overload_policy", "no-catch-up"
             ),
-            "rate_burst": getattr(self.args, "rate_burst", 1),
             "rate_seed": getattr(self.args, "seed", None),
         }
         if not apply_rate_control:
             rate_control = {
                 "target_rps": None,
                 "rate_schedule": "fixed",
+                "rate_burstiness": None,
+                "rate_ramp_up_strategy": "none",
+                "rate_ramp_up_start_rps": None,
+                "rate_ramp_up_end_rps": None,
                 "rate_overload_policy": "no-catch-up",
-                "rate_burst": 1,
                 "rate_seed": None,
             }
         return run_api_benchmark_round(
@@ -3628,8 +3700,11 @@ def run_pd_ratio_benchmark(args):
         progress_reporter=getattr(args, "_progress_reporter", None),
         target_rps=getattr(args, "target_rps", None),
         rate_schedule=getattr(args, "rate_schedule", "fixed"),
+        rate_burstiness=getattr(args, "rate_burstiness", None),
+        rate_ramp_up_strategy=getattr(args, "rate_ramp_up_strategy", "none"),
+        rate_ramp_up_start_rps=getattr(args, "rate_ramp_up_start_rps", None),
+        rate_ramp_up_end_rps=getattr(args, "rate_ramp_up_end_rps", None),
         rate_overload_policy=getattr(args, "rate_overload_policy", "no-catch-up"),
-        rate_burst=getattr(args, "rate_burst", 1),
         rate_seed=getattr(args, "seed", None),
     )
     if not prefill_metrics["successful"]:
@@ -3674,8 +3749,11 @@ def run_pd_ratio_benchmark(args):
         progress_reporter=getattr(args, "_progress_reporter", None),
         target_rps=getattr(args, "target_rps", None),
         rate_schedule=getattr(args, "rate_schedule", "fixed"),
+        rate_burstiness=getattr(args, "rate_burstiness", None),
+        rate_ramp_up_strategy=getattr(args, "rate_ramp_up_strategy", "none"),
+        rate_ramp_up_start_rps=getattr(args, "rate_ramp_up_start_rps", None),
+        rate_ramp_up_end_rps=getattr(args, "rate_ramp_up_end_rps", None),
         rate_overload_policy=getattr(args, "rate_overload_policy", "no-catch-up"),
-        rate_burst=getattr(args, "rate_burst", 1),
         rate_seed=getattr(args, "seed", None),
     )
     if not decode_metrics["successful"]:
@@ -4355,6 +4433,7 @@ def normalize_case_params(params: Dict[str, Any], location="params") -> Dict[str
         "request_count": "num_prompts",
         "num_requests": "num_prompts",
         "output_len": "max_tokens",
+        "rate_burst": "_legacy_rate_burst",
     }
     nested_maps = {
         "tokens": {
@@ -4363,7 +4442,12 @@ def normalize_case_params(params: Dict[str, Any], location="params") -> Dict[str
         "requests": {
             "concurrency": "concurrency", "count": "num_prompts",
             "target_rps": "target_rps", "rate_schedule": "rate_schedule",
-            "rate_overload_policy": "rate_overload_policy", "rate_burst": "rate_burst",
+            "rate_burstiness": "rate_burstiness",
+            "rate_ramp_up_strategy": "rate_ramp_up_strategy",
+            "rate_ramp_up_start_rps": "rate_ramp_up_start_rps",
+            "rate_ramp_up_end_rps": "rate_ramp_up_end_rps",
+            "rate_overload_policy": "rate_overload_policy",
+            "rate_burst": "_legacy_rate_burst",
         },
         "prefix": {
             "shared": "share_prefix", "ratio": "prefix_ratio",
@@ -4569,20 +4653,27 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
         )
     if args.target_rps is not None and args.mode != "api":
         raise BenchmarkConfigError(f"{location}.target_rps only supports mode=api")
-    if args.rate_schedule not in {"fixed", "poisson"}:
+    if args.rate_ramp_up_strategy != "none" and args.mode != "api":
         raise BenchmarkConfigError(
-            f"{location}.rate_schedule must be fixed or poisson"
+            f"{location}.rate_ramp_up_strategy only supports mode=api"
         )
+    try:
+        build_arrival_plan(
+            1,
+            target_rps=args.target_rps,
+            rate_schedule=args.rate_schedule,
+            rate_burstiness=args.rate_burstiness,
+            rate_seed=args.seed,
+            rate_ramp_up_strategy=args.rate_ramp_up_strategy,
+            rate_ramp_up_start_rps=args.rate_ramp_up_start_rps,
+            rate_ramp_up_end_rps=args.rate_ramp_up_end_rps,
+        )
+    except ValueError as exc:
+        raise BenchmarkConfigError(f"{location}.{exc}") from exc
     if args.rate_overload_policy not in {"no-catch-up", "catch-up", "drop"}:
         raise BenchmarkConfigError(
             f"{location}.rate_overload_policy must be no-catch-up, catch-up, or drop"
         )
-    if (
-        not isinstance(args.rate_burst, int)
-        or isinstance(args.rate_burst, bool)
-        or args.rate_burst < 1
-    ):
-        raise BenchmarkConfigError(f"{location}.rate_burst must be a positive integer")
     if (
         not isinstance(args.api_timeout_seconds, (int, float))
         or isinstance(args.api_timeout_seconds, bool)
@@ -6431,21 +6522,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--target-rps", type=float, default=None,
-        help="[api模式] 正式请求的目标准入速率（req/s）；省略时尽快提交。"
-             "fixed 下为固定间隔；poisson 下为平均速率"
+        help="[api模式] 未启用 ramp 时的目标平均计划到达速率（req/s）；省略时尽快提交"
     )
     parser.add_argument(
-        "--rate-schedule", choices=["fixed", "poisson"], default="fixed",
-        help="[api模式] target_rps 的到达过程：fixed 为固定间隔，poisson 为泊松到达（默认：fixed）"
+        "--rate-schedule", choices=["fixed", "poisson", "gamma"], default="fixed",
+        help="[api模式] 到达间隔：fixed 固定、poisson 指数、gamma 指定 shape（默认：fixed）"
+    )
+    parser.add_argument(
+        "--rate-burstiness", type=float, default=None,
+        help="[api模式] gamma 到达间隔的 shape；仅 --rate-schedule gamma 必填，越小越突发；inf 为固定间隔"
+    )
+    parser.add_argument(
+        "--rate-ramp-up-strategy", choices=["none", "linear", "exponential"],
+        default="none",
+        help="[api模式] 按请求序号爬升到达速率；启用后不可同时设置 --target-rps（默认：none）"
+    )
+    parser.add_argument(
+        "--rate-ramp-up-start-rps", type=float, default=None,
+        help="[api模式] ramp 起始速率（req/s）"
+    )
+    parser.add_argument(
+        "--rate-ramp-up-end-rps", type=float, default=None,
+        help="[api模式] ramp 结束速率（req/s）"
     )
     parser.add_argument(
         "--rate-overload-policy", choices=["no-catch-up", "catch-up", "drop"],
         default="no-catch-up",
-        help="[api模式] target_rps 到达时并发已满的处理：等待并重置、有限补发或丢弃（默认：no-catch-up）"
+        help="[api模式] 已计划到达但并发满时的处理：排队或丢弃；catch-up 保留为兼容别名（默认：no-catch-up）"
     )
     parser.add_argument(
-        "--rate-burst", type=int, default=1,
-        help="[api模式] catch-up 连续处理的过期到达数上限（默认：1；其他策略不形成补发 burst）"
+        "--rate-burst", dest="_legacy_rate_burst", type=int, default=None,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--api-key", default=None,

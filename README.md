@@ -136,7 +136,7 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 
 ### 请求速率调度
 
-四个参数只作用于正式 API round，不影响预热、服务诊断、Prometheus 指标采集或 automation `/models` preflight；`concurrency` 始终是最大在途请求数。可在命令行设置，或在 suite 的 `defaults`、case `params`/`matrix` 使用同名 snake_case 字段；也支持写入 `requests` 对象：
+这组参数只作用于正式 API round，不影响预热、服务诊断、Prometheus 指标采集或 automation `/models` preflight。`concurrency` 始终只限制**真实 HTTP 在途数**，不会改写已生成的到达计划。可在命令行设置，或在 suite 的 `defaults`、case `params`/`matrix` 使用同名 snake_case 字段；也支持写入 `requests` 对象：
 
 ```json
 {
@@ -144,19 +144,24 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
     "concurrency": 8,
     "count": 64,
     "target_rps": 20,
-    "rate_schedule": "poisson",
-    "rate_overload_policy": "drop",
-    "rate_burst": 1
+    "rate_schedule": "gamma",
+    "rate_burstiness": 0.5,
+    "rate_ramp_up_strategy": "none",
+    "rate_ramp_up_start_rps": null,
+    "rate_ramp_up_end_rps": null,
+    "rate_overload_policy": "no-catch-up"
   }
 }
 ```
 
-- `target_rps`：目标**平均计划到达速率** `λ`，单位 req/s。省略或设为 `null` 时保持原有尽快提交行为；它只定义速率大小，不定义请求何时到达，也不保证实际 HTTP 准入率或完成 QPS。
-- `rate_schedule`：根据 `target_rps` 生成计划到达时间。`fixed`（默认）使用恒定的 `1 / target_rps` 秒计划间隔；`poisson` 使用参数为 `target_rps` 的指数分布，间隔均值同为 `1 / target_rps` 秒，但单次间隔可更小或更大。`poisson` 复用已有 `seed`，便于复现实验。
-- `rate_overload_policy`：计划到达时并发槽位已满的处理方式。`no-catch-up`（默认）等待可用槽位后，以真实准入时刻重新安排后续到达，不补发积压请求；`catch-up` 保留逻辑 deadline，允许受 `rate_burst` 约束的有限连续过期到达；`drop` 不发送该次计划到达，将其记录为客户端失败。
-- `rate_burst`：仅用于 `catch-up`，限制连续处理的过期到达数，必须为正整数。默认 `1` 保持无补发 burst 的兼容行为；其他策略不会使用该值形成 burst。
+- `target_rps`：未启用 ramp 时的目标**平均计划到达速率** `λ`，单位 req/s。省略或设为 `null` 时，所有请求在计划时刻 `0` 到达，不会按并发倒数限流。小于 `1` 的正数合法，例如 `0.2` 表示固定计划下每 `5` 秒一个请求；它不保证实际 HTTP 准入率或完成 QPS。
+- `rate_schedule`：生成到达间隔的分布。`fixed`（默认）为严格的 `1 / target_rps`；`poisson` 为指数分布（等价 Gamma shape=1）；`gamma` 配合 `rate_burstiness` 使用 Gamma 分布。随机计划预先采样并累加为绝对到达时刻，未启用 ramp 时会整体归一化，使最后一个请求约落在 `请求数 / target_rps` 秒。
+- `rate_burstiness`：仅 `gamma` 必填，为 Gamma 的 shape；scale 为 `1 / (target_rps × shape)`，故平均间隔仍为 `1 / target_rps`。小于 `1` 更突发，大于 `1` 更均匀，`inf` 退化为固定间隔。
+- `rate_ramp_up_strategy`：`none`（默认）、`linear` 或 `exponential`。启用后必须将 `target_rps` 设为 `null`，并同时设置 `rate_ramp_up_start_rps` 与 `rate_ramp_up_end_rps`；速率按请求序号插值，而非 wall-clock 时间。ramp 下不会进行总时长归一化。
+- `concurrency`：计划到达时会创建/排队请求任务；只有获得线程 worker 或 aiohttp semaphore 后才真正发起 HTTP。服务变慢时，实际 HTTP 准入率可低于计划到达速率，但后续计划到达时间不变。
+- `rate_overload_policy`：`no-catch-up`（默认）和 `catch-up` 均保留计划到达并排队，后者仅作为兼容别名；`drop` 在到达时并发容量已满则不发 HTTP，并记录客户端失败。
 
-报告会在 `metrics.pacing` 中写入上述策略、目标平均速率、`target_interval_seconds`（`fixed` 的计划间隔或 `poisson` 的期望间隔）、`target_interval_semantics`、实际准入速率、相邻准入间隔、速率/并发等待时间和 `dropped_requests`。实际准入速率只统计已发往 HTTP 的请求；`drop` 请求会写入失败记录，因此同时计入总请求数、失败数和失败率。TTFT 仍从实际 HTTP 请求开始计时，不包含客户端节流等待。`catch-up` 允许有限短时补发，因此即使使用 `fixed`，实际相邻准入间隔也不一定恒为 `1 / target_rps`。无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
+报告的 `metrics.pacing` 会写入计划请求数/计划时长、到达分布、Gamma shape、ramp 元数据、实际 HTTP 准入速率、相邻准入间隔、并发排队时间和 `dropped_requests`。实际准入速率只统计已发往 HTTP 的请求；`drop` 请求会写入失败记录，因此同时计入总请求数、失败数和失败率。TTFT 仍从实际 HTTP 请求开始计时，不包含客户端的计划等待或并发排队等待。当前数据集没有 trace timestamp 输入，因此尚未提供 vLLM 的 `self_timed` trace 回放或独立 probe 请求功能；无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
 
 ### 单机 Docker Compose 推理服务
 
