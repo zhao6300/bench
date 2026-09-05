@@ -254,6 +254,7 @@ try:
         serialize_json_report,
     )
     from .api_transport import (
+        _advance_rate_deadline,
         finalize_stream_results,
         run_aiohttp_chat_requests,
         send_requests_chat_request,
@@ -282,6 +283,7 @@ try:
         ManagedComposeService,
         resolve_compose_service,
     )
+    from .logging_utils import configure_logging, get_logger
 except ImportError:
     # Direct execution: python benchmark/benchmark.py ...
     from benchmark_datasets import (
@@ -298,6 +300,7 @@ except ImportError:
         serialize_json_report,
     )
     from api_transport import (
+        _advance_rate_deadline,
         finalize_stream_results,
         run_aiohttp_chat_requests,
         send_requests_chat_request,
@@ -326,6 +329,10 @@ except ImportError:
         ManagedComposeService,
         resolve_compose_service,
     )
+    from logging_utils import configure_logging, get_logger
+
+
+LOGGER = get_logger("benchmark")
 
 
 # ── Nsys Profiling Control ─────────────────────────────────────────────
@@ -1528,9 +1535,63 @@ def _request_meets_slo(result, slo_ttft, slo_tpot):
     return _is_finite_number(tpot) and tpot <= slo_tpot
 
 
+def _summarize_pacing(
+    target_rps: float | None,
+    admissions: list[dict[str, float]],
+    rate_schedule: str,
+    rate_overload_policy: str,
+    rate_burst: int,
+    dropped_requests: int,
+) -> dict[str, Any]:
+    """汇总请求准入节流信息，不将客户端等待计入单请求延迟。
+
+    Args:
+        target_rps: 配置的目标请求准入速率；None 表示不节流。
+        admissions: 每次真实准入时采集的时间和等待统计。
+
+    Returns:
+        可写入 round 指标的节流摘要。
+    """
+    timestamps = [item["timestamp"] for item in admissions]
+    intervals = [
+        later - earlier for earlier, later in zip(timestamps, timestamps[1:])
+    ]
+    interval_summary = {
+        "min": min(intervals) if intervals else None,
+        "avg": sum(intervals) / len(intervals) if intervals else None,
+        "max": max(intervals) if intervals else None,
+    }
+    actual_admission_rps = (
+        (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
+        if len(timestamps) > 1 and timestamps[-1] > timestamps[0]
+        else None
+    )
+    return {
+        "mode": "unbounded" if target_rps is None else rate_schedule,
+        "target_rps": target_rps,
+        "target_interval_seconds": 1.0 / target_rps if target_rps is not None else None,
+        "target_interval_semantics": (
+            "fixed_interval" if rate_schedule == "fixed" else "mean_interval"
+        ) if target_rps is not None else None,
+        "rate_schedule": rate_schedule,
+        "rate_overload_policy": rate_overload_policy,
+        "rate_burst": rate_burst,
+        "admitted_requests": len(admissions),
+        "dropped_requests": dropped_requests,
+        "actual_admission_rps": actual_admission_rps,
+        "admission_interval_seconds": interval_summary,
+        "rate_wait_seconds": sum(item["rate_wait_seconds"] for item in admissions),
+        "concurrency_wait_seconds": sum(
+            item["concurrency_wait_seconds"] for item in admissions
+        ),
+    }
+
+
 def _aggregate_api_round_metrics(
     results, prompt_lens_list, max_tokens_list, concurrency, wall_time,
-    server_metrics, slo_ttft, slo_tpot,
+    server_metrics, slo_ttft, slo_tpot, target_rps=None, admissions=None,
+    rate_schedule="fixed", rate_overload_policy="no-catch-up", rate_burst=1,
+    dropped_requests=0,
 ):
     """Aggregate request records using explicit, consistent result populations."""
     total_requests = len(prompt_lens_list)
@@ -1719,6 +1780,14 @@ def _aggregate_api_round_metrics(
         "earliest_token_request_id": (
             earliest_token_result["req_id"] if earliest_token_result else None
         ),
+        "pacing": _summarize_pacing(
+            target_rps,
+            admissions or [],
+            rate_schedule,
+            rate_overload_policy,
+            rate_burst,
+            dropped_requests,
+        ),
         "results": results,
     }
 
@@ -1738,6 +1807,11 @@ def run_api_benchmark_round(
     api_transport="requests",
     api_timeout_seconds=600.0,
     progress_reporter=None,
+    target_rps=None,
+    rate_schedule="fixed",
+    rate_overload_policy="no-catch-up",
+    rate_burst=1,
+    rate_seed=None,
 ):
     """
     Execute a single benchmark round: send concurrent requests, collect results, compute metrics.
@@ -1750,6 +1824,18 @@ def run_api_benchmark_round(
     Returns a dict with all computed metrics, or None if all requests failed.
     """
     total_requests = len(prompts)
+    LOGGER.debug(
+        "API round started transport=%s requests=%d concurrency=%d target_rps=%s "
+        "rate_schedule=%s overload_policy=%s rate_burst=%s model=%s",
+        api_transport,
+        total_requests,
+        concurrency,
+        target_rps,
+        rate_schedule,
+        rate_overload_policy,
+        rate_burst,
+        model,
+    )
     if progress_reporter is not None:
         progress_reporter.round_started(total_requests, concurrency)
     # Normalize to per-request lists
@@ -1770,6 +1856,8 @@ def run_api_benchmark_round(
     prefix_cache_counter_start = query_gpu_metrics(metrics_api_base, headers=headers)
     wall_t0 = time.perf_counter()
     results = []
+    admissions: list[dict[str, float]] = []
+    dropped_requests = [0]
     completed = [0]  # use list for mutability in closure
     succeeded = [0]
     failed_cnt = [0]
@@ -1842,6 +1930,45 @@ def run_api_benchmark_round(
                 f"  耗时: {elapsed:.1f}s{ttft_str}{fail_str}    ",
                 end="", flush=True,
             )
+        LOGGER.debug(
+            "request completed req_id=%s success=%s ttft=%s total_time=%s output_tokens=%s",
+            r.get("req_id"),
+            not request_failed,
+            r.get("ttft"),
+            r.get("total_time"),
+            r.get("output_tokens"),
+        )
+
+    def _record_admission(
+        _req_id: int,
+        admitted_at: float,
+        rate_wait_seconds: float,
+        concurrency_wait_seconds: float,
+    ) -> None:
+        admissions.append({
+            "timestamp": admitted_at,
+            "rate_wait_seconds": rate_wait_seconds,
+            "concurrency_wait_seconds": concurrency_wait_seconds,
+        })
+
+    def _record_dropped(request_id: int) -> None:
+        """记录因客户端 rate overload policy 丢弃的未发送请求。"""
+        dropped_requests[0] += 1
+        _record_result({
+            "req_id": request_id,
+            "error": "client rate overload dropped before HTTP dispatch",
+            "ttft": None,
+            "tpot": None,
+            "request_start_timestamp": None,
+            "first_token_timestamp": None,
+            "last_token_timestamp": None,
+            "first_token_text": "",
+            "prompt_tokens": None,
+            "output_tokens": None,
+            "output_token_source": "unavailable",
+            "total_time": 0.0,
+            "estimated_itl_samples": [],
+        })
 
     def _on_complete(future):
         try:
@@ -1876,26 +2003,101 @@ def run_api_benchmark_round(
             ignore_eos,
             _record_result,
             timeout_seconds=api_timeout_seconds,
+            target_rps=target_rps,
+            rate_schedule=rate_schedule,
+            rate_overload_policy=rate_overload_policy,
+            rate_burst=rate_burst,
+            rate_seed=rate_seed,
+            on_admitted=_record_admission,
+            on_dropped=_record_dropped,
         )
     elif api_transport == "requests":
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = []
-            for i in range(total_requests):
+
+            def submit_request(request_index: int) -> concurrent.futures.Future:
                 future = executor.submit(
                     send_single_api_request,
-                    i,
-                    prompts[i],
+                    request_index,
+                    prompts[request_index],
                     url,
                     headers,
                     model,
-                    max_tokens_list[i],
+                    max_tokens_list[request_index],
                     tokenizer,
                     ignore_eos,
                     api_timeout_seconds,
                 )
-                future.benchmark_req_id = i
+                future.benchmark_req_id = request_index
                 future.add_done_callback(_on_complete)
-                futures.append(future)
+                return future
+
+            if target_rps is None:
+                for i in range(total_requests):
+                    admitted_at = time.perf_counter()
+                    _record_admission(i, admitted_at, 0.0, 0.0)
+                    futures.append(submit_request(i))
+            else:
+                rate_random = random.Random(rate_seed)
+
+                def next_interval() -> float:
+                    if rate_schedule == "fixed":
+                        return 1.0 / target_rps
+                    return rate_random.expovariate(target_rps)
+
+                pending: set[concurrent.futures.Future] = set()
+                next_due_at = time.perf_counter()
+                catch_up_count = 0
+                for i in range(total_requests):
+                    rate_wait_started_at = time.perf_counter()
+                    deadline_was_due = next_due_at <= rate_wait_started_at
+                    remaining = next_due_at - rate_wait_started_at
+                    if remaining > 0:
+                        time.sleep(remaining)
+                    rate_wait_seconds = time.perf_counter() - rate_wait_started_at
+                    finished_futures = {
+                        future for future in pending if future.done()
+                    }
+                    pending.difference_update(finished_futures)
+                    if (
+                        rate_overload_policy == "drop"
+                        and len(pending) >= concurrency
+                    ):
+                        _record_dropped(i)
+                        next_due_at += next_interval()
+                        catch_up_count = 0
+                        continue
+                    concurrency_wait_started_at = time.perf_counter()
+                    while len(pending) >= concurrency:
+                        completed_futures, _ = concurrent.futures.wait(
+                            pending,
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+                        pending.difference_update(completed_futures)
+                    concurrency_wait_seconds = (
+                        time.perf_counter() - concurrency_wait_started_at
+                    )
+                    admitted_at = time.perf_counter()
+                    _record_admission(
+                        i,
+                        admitted_at,
+                        rate_wait_seconds,
+                        concurrency_wait_seconds,
+                    )
+                    future = submit_request(i)
+                    futures.append(future)
+                    pending.add(future)
+                    interval = next_interval()
+                    next_due_at, catch_up_count = _advance_rate_deadline(
+                        next_due_at,
+                        admitted_at,
+                        interval,
+                        rate_overload_policy,
+                        rate_burst,
+                        catch_up_count,
+                        deadline_was_due,
+                        concurrency_wait_seconds,
+                    )
             concurrent.futures.wait(futures)
     else:
         raise ValueError(f"unsupported api_transport: {api_transport!r}")
@@ -1926,6 +2128,13 @@ def run_api_benchmark_round(
             f"\r  进度: [{total_requests}/{total_requests}]  完成!  总耗时: {wall_time:.3f}s"
             f"  成功: {succeeded[0]}  失败: {failed_cnt[0]}        "
         )
+    LOGGER.debug(
+        "API round finished requests=%d succeeded=%d failed=%d wall_time=%s",
+        total_requests,
+        succeeded[0],
+        failed_cnt[0],
+        wall_time,
+    )
 
     return _aggregate_api_round_metrics(
         results,
@@ -1936,7 +2145,36 @@ def run_api_benchmark_round(
         server_metrics,
         slo_ttft,
         slo_tpot,
+        target_rps,
+        admissions,
+        rate_schedule,
+        rate_overload_policy,
+        rate_burst,
+        dropped_requests[0],
     )
+
+
+def _print_pacing_summary(metrics) -> None:
+    """输出启用请求速率控制时的客户端准入摘要。"""
+    pacing = metrics.get("pacing", {})
+    if pacing.get("target_rps") is None:
+        return
+    actual_admission_rps = pacing.get("actual_admission_rps")
+    actual_admission_text = (
+        f"{actual_admission_rps:.2f} req/s"
+        if actual_admission_rps is not None else "不可验证"
+    )
+    print(
+        "请求准入速率                : "
+        f"目标 {pacing['target_rps']:.2f} req/s，实际 {actual_admission_text}"
+    )
+    print(
+        "请求准入策略                : "
+        f"{pacing['rate_schedule']} / {pacing['rate_overload_policy']} / "
+        f"burst={pacing['rate_burst']}"
+    )
+    if pacing.get("dropped_requests"):
+        print(f"客户端过载丢弃请求          : {pacing['dropped_requests']}")
 
 
 def print_benchmark_metrics(metrics, workload):
@@ -1957,6 +2195,7 @@ def print_benchmark_metrics(metrics, workload):
              f"{_format_token_stats(workload['requested_output_tokens'])} / 不可验证"
     )
     print(f"测试总时间                  : {m['wall_time']:.3f} 秒")
+    _print_pacing_summary(m)
     if not m["successful"]:
         print("\n  所有请求均未收到首个 token；TTFT/TPOT/吞吐量均不可计算。")
         print(f"  失败率                    : {m['failure_rate'] * 100:.1f}%")
@@ -2177,6 +2416,11 @@ def run_api_benchmark(args):
         api_transport=args.api_transport,
         api_timeout_seconds=getattr(args, "api_timeout_seconds", 600.0),
         progress_reporter=getattr(args, "_progress_reporter", None),
+        target_rps=getattr(args, "target_rps", None),
+        rate_schedule=getattr(args, "rate_schedule", "fixed"),
+        rate_overload_policy=getattr(args, "rate_overload_policy", "no-catch-up"),
+        rate_burst=getattr(args, "rate_burst", 1),
+        rate_seed=getattr(args, "seed", None),
     )
     nsys_stop()
     if not metrics["successful"]:
@@ -2366,6 +2610,11 @@ def run_mixed_benchmark(args):
         api_transport=args.api_transport,
         api_timeout_seconds=getattr(args, "api_timeout_seconds", 600.0),
         progress_reporter=getattr(args, "_progress_reporter", None),
+        target_rps=getattr(args, "target_rps", None),
+        rate_schedule=getattr(args, "rate_schedule", "fixed"),
+        rate_overload_policy=getattr(args, "rate_overload_policy", "no-catch-up"),
+        rate_burst=getattr(args, "rate_burst", 1),
+        rate_seed=getattr(args, "seed", None),
     )
     nsys_stop()
 
@@ -2411,6 +2660,7 @@ def run_mixed_benchmark(args):
     else:
         print(f"实际平均生成输出              : {m['avg_generated_tokens']:.1f} tokens")
     print(f"测试总时间                  : {m['wall_time']:.3f} 秒")
+    _print_pacing_summary(m)
 
     # ── TTFT ──
     print(f"\n  ── TTFT (首 Token 延迟) ──")
@@ -2513,7 +2763,25 @@ class ApiBenchmarkSession:
             headers["Authorization"] = f"Bearer {args.api_key}"
         return cls(args, tokenizer, f"{args.api_base}/chat/completions", headers)
 
-    def execute_batch(self, batch, concurrency):
+    def execute_batch(self, batch, concurrency, *, apply_rate_control=True):
+        """执行一批 API 请求，并按调用阶段决定是否应用速率控制。"""
+        rate_control = {
+            "target_rps": getattr(self.args, "target_rps", None),
+            "rate_schedule": getattr(self.args, "rate_schedule", "fixed"),
+            "rate_overload_policy": getattr(
+                self.args, "rate_overload_policy", "no-catch-up"
+            ),
+            "rate_burst": getattr(self.args, "rate_burst", 1),
+            "rate_seed": getattr(self.args, "seed", None),
+        }
+        if not apply_rate_control:
+            rate_control = {
+                "target_rps": None,
+                "rate_schedule": "fixed",
+                "rate_overload_policy": "no-catch-up",
+                "rate_burst": 1,
+                "rate_seed": None,
+            }
         return run_api_benchmark_round(
             batch.prompts,
             batch.prompt_lens,
@@ -2529,6 +2797,7 @@ class ApiBenchmarkSession:
             api_transport=self.args.api_transport,
             api_timeout_seconds=getattr(self.args, "api_timeout_seconds", 600.0),
             progress_reporter=getattr(self.args, "_progress_reporter", None),
+            **rate_control,
         )
 
 
@@ -2574,10 +2843,13 @@ class ApiConcurrencyProbeRunner:
             "workload": summarize_dataset_batch(batch, self.args.dataset),
         }
 
-    def execute(self, prepared_probe):
+    def execute(self, prepared_probe, *, apply_rate_control=True):
+        """执行准备好的探测负载。"""
         batch = prepared_probe["batch"]
         prepared_probe["metrics"] = self.session.execute_batch(
-            batch, prepared_probe["concurrency"]
+            batch,
+            prepared_probe["concurrency"],
+            apply_rate_control=apply_rate_control,
         )
         return prepared_probe
 
@@ -2613,7 +2885,8 @@ class ApiConcurrencyProbeRunner:
         for round_index in range(1, rounds + 1):
             try:
                 execution = self.execute(
-                    self.prepare(concurrency, request_count=request_count)
+                    self.prepare(concurrency, request_count=request_count),
+                    apply_rate_control=False,
                 )
                 metrics = execution["metrics"]
                 successful = metrics.get("successful", "?")
@@ -3353,6 +3626,11 @@ def run_pd_ratio_benchmark(args):
         api_transport=args.api_transport,
         api_timeout_seconds=getattr(args, "api_timeout_seconds", 600.0),
         progress_reporter=getattr(args, "_progress_reporter", None),
+        target_rps=getattr(args, "target_rps", None),
+        rate_schedule=getattr(args, "rate_schedule", "fixed"),
+        rate_overload_policy=getattr(args, "rate_overload_policy", "no-catch-up"),
+        rate_burst=getattr(args, "rate_burst", 1),
+        rate_seed=getattr(args, "seed", None),
     )
     if not prefill_metrics["successful"]:
         print("ERROR: Prefill 测试失败")
@@ -3394,6 +3672,11 @@ def run_pd_ratio_benchmark(args):
         api_transport=args.api_transport,
         api_timeout_seconds=getattr(args, "api_timeout_seconds", 600.0),
         progress_reporter=getattr(args, "_progress_reporter", None),
+        target_rps=getattr(args, "target_rps", None),
+        rate_schedule=getattr(args, "rate_schedule", "fixed"),
+        rate_overload_policy=getattr(args, "rate_overload_policy", "no-catch-up"),
+        rate_burst=getattr(args, "rate_burst", 1),
+        rate_seed=getattr(args, "seed", None),
     )
     if not decode_metrics["successful"]:
         print("ERROR: Decode 测试失败")
@@ -3868,7 +4151,7 @@ SUITE_FAILURE_POLICIES = {"continue", "stop-current-matrix"}
 SUITE_SCENARIOS = {"single", "mixed-workload", "sweep", "slo-capacity-search", "pd-ratio"}
 SUITE_MANAGEMENT_ARGS = {
     "config", "report", "case_filters", "tag_filters", "list_cases",
-    "validate_config", "fail_fast", "no_resume", "progress",
+    "validate_config", "fail_fast", "no_resume", "progress", "debug",
 }
 
 
@@ -3923,11 +4206,13 @@ def load_suite_config(path: str) -> Dict[str, Any]:
     allowed_root = {
         "version", "name", "description", "defaults", "cases", "report",
         "continue_on_error", "failure_policy", "matrix_failure_confirm_rounds",
-        "metadata", "protocol", "automation",
+        "metadata", "protocol", "automation", "debug",
     }
     unknown_root = sorted(set(config) - allowed_root)
     if unknown_root:
         raise BenchmarkConfigError(f"unknown top-level fields: {', '.join(unknown_root)}")
+    if not isinstance(config.get("debug", False), bool):
+        raise BenchmarkConfigError("debug must be true or false")
     if not isinstance(config.get("name", "benchmark-suite"), str):
         raise BenchmarkConfigError("name must be a string")
     if not isinstance(config.get("defaults", {}), dict):
@@ -4077,6 +4362,8 @@ def normalize_case_params(params: Dict[str, Any], location="params") -> Dict[str
         },
         "requests": {
             "concurrency": "concurrency", "count": "num_prompts",
+            "target_rps": "target_rps", "rate_schedule": "rate_schedule",
+            "rate_overload_policy": "rate_overload_policy", "rate_burst": "rate_burst",
         },
         "prefix": {
             "shared": "share_prefix", "ratio": "prefix_ratio",
@@ -4271,6 +4558,31 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
         raise BenchmarkConfigError(
             f"{location}.api_transport must be requests or aiohttp"
         )
+    if args.target_rps is not None and (
+        not isinstance(args.target_rps, (int, float))
+        or isinstance(args.target_rps, bool)
+        or not math.isfinite(args.target_rps)
+        or args.target_rps <= 0
+    ):
+        raise BenchmarkConfigError(
+            f"{location}.target_rps must be a positive finite number when set"
+        )
+    if args.target_rps is not None and args.mode != "api":
+        raise BenchmarkConfigError(f"{location}.target_rps only supports mode=api")
+    if args.rate_schedule not in {"fixed", "poisson"}:
+        raise BenchmarkConfigError(
+            f"{location}.rate_schedule must be fixed or poisson"
+        )
+    if args.rate_overload_policy not in {"no-catch-up", "catch-up", "drop"}:
+        raise BenchmarkConfigError(
+            f"{location}.rate_overload_policy must be no-catch-up, catch-up, or drop"
+        )
+    if (
+        not isinstance(args.rate_burst, int)
+        or isinstance(args.rate_burst, bool)
+        or args.rate_burst < 1
+    ):
+        raise BenchmarkConfigError(f"{location}.rate_burst must be a positive integer")
     if (
         not isinstance(args.api_timeout_seconds, (int, float))
         or isinstance(args.api_timeout_seconds, bool)
@@ -4772,6 +5084,7 @@ def _run_configured_suite_single(
     if config is None:
         config = load_suite_config(config_path)
     expanded = expand_suite_cases(config)
+    LOGGER.debug("expanded suite cases=%d", len(expanded))
 
     selected = [
         case for case in expanded
@@ -4779,6 +5092,12 @@ def _run_configured_suite_single(
     ]
     if not selected:
         raise BenchmarkConfigError("no benchmark cases matched the supplied filters")
+    LOGGER.debug(
+        "selected suite cases=%d case_filters=%d tag_filters=%d",
+        len(selected),
+        len(cli_args.case_filters),
+        len(cli_args.tag_filters),
+    )
 
     # Build every selected namespace during validation so errors fail before traffic starts.
     prepared = []
@@ -4902,6 +5221,12 @@ def _run_configured_suite_single(
                     previous_plan_fingerprint != plan_fingerprint
                 )
         resumed = report is not None
+        LOGGER.debug(
+            "resume decision resumed=%s allow_config_changes=%s plan_changed=%s",
+            resumed,
+            getattr(cli_args, "resume_allow_config_changes", False),
+            resumed_with_config_changes,
+        )
         if report is None:
             report = _new_report(config.get("name", "benchmark-suite"), config_path)
         run_governance, provenance = build_run_governance(
@@ -5687,8 +6012,10 @@ def _read_container_report(report_storage) -> Dict[str, Any] | None:
 
 
 def run_configured_suite(config_path: str, cli_args) -> int:
-    """Run a suite once or serially across its configured service profiles."""
+    """运行单个 suite 或按服务 profile 串行运行。"""
     config = load_suite_config(config_path)
+    configure_logging(bool(getattr(cli_args, "debug", False) or config.get("debug", False)))
+    LOGGER.debug("loading suite config path=%s", config_path)
     automation = parse_automation(config.get("automation"))
     profiles = automation.docker_service.profiles
     if not profiles:
@@ -5999,6 +6326,10 @@ def build_parser() -> argparse.ArgumentParser:
              "plain 为行式输出，rich 为 Rich 面板，off 关闭实时进度（默认：off）"
     )
     parser.add_argument(
+        "--debug", action="store_true",
+        help="启用调试日志；日志写入 stderr，不记录 prompt、请求体或密钥",
+    )
+    parser.add_argument(
         "--preset", choices=get_preset_names(), default=None,
         help="预设测试用例。选择后自动设置最优参数，仍可用其他选项覆盖"
     )
@@ -6097,6 +6428,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-timeout-seconds", type=float, default=600.0,
         help="[api模式] 每条正式 chat-completions 流式请求的超时秒数；"
              "适用于 requests 和 aiohttp，不影响预热或 preflight（默认：600）"
+    )
+    parser.add_argument(
+        "--target-rps", type=float, default=None,
+        help="[api模式] 正式请求的目标准入速率（req/s）；省略时尽快提交。"
+             "fixed 下为固定间隔；poisson 下为平均速率"
+    )
+    parser.add_argument(
+        "--rate-schedule", choices=["fixed", "poisson"], default="fixed",
+        help="[api模式] target_rps 的到达过程：fixed 为固定间隔，poisson 为泊松到达（默认：fixed）"
+    )
+    parser.add_argument(
+        "--rate-overload-policy", choices=["no-catch-up", "catch-up", "drop"],
+        default="no-catch-up",
+        help="[api模式] target_rps 到达时并发已满的处理：等待并重置、有限补发或丢弃（默认：no-catch-up）"
+    )
+    parser.add_argument(
+        "--rate-burst", type=int, default=1,
+        help="[api模式] catch-up 连续处理的过期到达数上限（默认：1；其他策略不形成补发 burst）"
     )
     parser.add_argument(
         "--api-key", default=None,
@@ -6204,6 +6553,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    configure_logging(args.debug)
+    LOGGER.debug("CLI started config=%s progress=%s", bool(args.config), args.progress)
 
     if args.config:
         try:

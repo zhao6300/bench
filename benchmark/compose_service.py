@@ -9,6 +9,14 @@ from pathlib import Path
 import subprocess
 from typing import Any, Callable
 
+try:
+    from .logging_utils import get_logger
+except ImportError:
+    from logging_utils import get_logger
+
+
+LOGGER = get_logger("compose")
+
 
 class ComposeServiceError(RuntimeError):
     """Raised when a managed Docker Compose service cannot be controlled."""
@@ -170,6 +178,7 @@ class ManagedComposeService:
             ComposeServiceError: If Docker Compose validation, ownership checks, or
                 startup cannot complete.
         """
+        LOGGER.debug("compose lifecycle starting project=%s", self._service.project_name)
         self._acquire_lock()
         try:
             self._run("config", "-q", timeout=self._service.policy.start_timeout_seconds)
@@ -205,6 +214,7 @@ class ManagedComposeService:
         Raises:
             ComposeServiceError: If the owned project cannot be stopped.
         """
+        LOGGER.debug("compose lifecycle stopping project=%s", self._service.project_name)
         if self._stopped:
             return
         try:
@@ -308,6 +318,8 @@ class ManagedComposeService:
         """Run a fixed Compose argv and hide potentially sensitive command output."""
         command = [*self._service.command_prefix(), *arguments]
         environment = {**os.environ, **dict(self._service.environment)}
+        operation = arguments[0] if arguments else "unknown"
+        LOGGER.debug("compose command started operation=%s timeout=%s", operation, timeout)
         try:
             result = self._command_runner(
                 command,
@@ -329,6 +341,12 @@ class ManagedComposeService:
             raise ComposeServiceError(
                 f"docker compose {' '.join(arguments)} could not start: {type(exc).__name__}"
             ) from exc
+        LOGGER.debug(
+            "compose command finished operation=%s exit_code=%s allow_failure=%s",
+            operation,
+            result.returncode,
+            allow_failure,
+        )
         if result.returncode != 0 and not allow_failure:
             raise ComposeServiceError(
                 f"docker compose {' '.join(arguments)} failed with exit code "

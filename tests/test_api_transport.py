@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,7 +13,13 @@ import pytest
 from benchmark import api_transport
 from benchmark import benchmark as benchmark_module
 from benchmark.api_transport import finalize_stream_result
-from benchmark.benchmark import BenchmarkConfigError, _build_case_args, build_parser
+from benchmark.benchmark import (
+    BenchmarkConfigError,
+    _build_case_args,
+    build_parser,
+    load_suite_config,
+    run_configured_suite,
+)
 
 
 class _FakeAsyncContent:
@@ -192,15 +199,68 @@ def test_api_transport_parser_and_suite_config_accept_aiohttp() -> None:
     parser = build_parser()
     assert parser.parse_args([]).api_transport == "requests"
     assert parser.parse_args([]).api_timeout_seconds == 600.0
+    assert parser.parse_args([]).target_rps is None
+    assert parser.parse_args([]).rate_schedule == "fixed"
+    assert parser.parse_args([]).rate_overload_policy == "no-catch-up"
+    assert parser.parse_args([]).rate_burst == 1
+    assert parser.parse_args(["--target-rps", "2.5"]).target_rps == 2.5
 
     args, _ = _build_case_args(
-        {"mode": "api", "api_transport": "aiohttp", "api_timeout_seconds": 12.5},
+        {
+            "mode": "api",
+            "api_transport": "aiohttp",
+            "api_timeout_seconds": 12.5,
+            "requests": {
+                "target_rps": 2.5,
+                "rate_schedule": "poisson",
+                "rate_overload_policy": "drop",
+                "rate_burst": 3,
+            },
+        },
         {"name": "async-transport"},
         {},
     )
 
     assert args.api_transport == "aiohttp"
     assert args.api_timeout_seconds == 12.5
+    assert args.target_rps == 2.5
+    assert args.rate_schedule == "poisson"
+    assert args.rate_overload_policy == "drop"
+    assert args.rate_burst == 3
+
+
+@pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf")])
+def test_suite_config_rejects_invalid_target_rps(value: object) -> None:
+    """拒绝会产生无意义或不可调度速率的配置值。"""
+    with pytest.raises(BenchmarkConfigError, match="target_rps"):
+        _build_case_args(
+            {"mode": "api", "target_rps": value},
+            {"name": "invalid-target-rps"},
+            {},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rate_schedule", "unsupported"),
+        ("rate_overload_policy", "unsupported"),
+        ("rate_burst", 0),
+        ("rate_burst", -1),
+        ("rate_burst", True),
+    ],
+)
+def test_suite_config_rejects_invalid_rate_control(
+    field: str,
+    value: object,
+) -> None:
+    """拒绝无效的速率调度策略与 burst 上限。"""
+    with pytest.raises(BenchmarkConfigError, match=field):
+        _build_case_args(
+            {"mode": "api", field: value},
+            {"name": "invalid-rate-control"},
+            {},
+        )
 
 
 @pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf")])
@@ -261,6 +321,13 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
         on_complete: Any,
         *,
         timeout_seconds: float,
+        target_rps: float | None,
+        rate_schedule: str,
+        rate_overload_policy: str,
+        rate_burst: int,
+        rate_seed: int | None,
+        on_admitted: Any,
+        on_dropped: Any,
     ) -> None:
         observed.update({
             "prompts": prompts,
@@ -271,6 +338,11 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
             "concurrency": concurrency,
             "ignore_eos": ignore_eos,
             "timeout_seconds": timeout_seconds,
+            "target_rps": target_rps,
+            "rate_schedule": rate_schedule,
+            "rate_overload_policy": rate_overload_policy,
+            "rate_burst": rate_burst,
+            "rate_seed": rate_seed,
         })
         for req_id in range(len(prompts)):
             on_complete({
@@ -313,6 +385,11 @@ def test_api_round_dispatches_aiohttp_records(monkeypatch) -> None:
         "concurrency": 2,
         "ignore_eos": True,
         "timeout_seconds": 12.5,
+        "target_rps": None,
+        "rate_schedule": "fixed",
+        "rate_overload_policy": "no-catch-up",
+        "rate_burst": 1,
+        "rate_seed": None,
         "finalized_req_ids": [0, 1],
     }
     assert metrics["successful"] == 2
@@ -343,3 +420,278 @@ def test_progress_parser_defaults_to_off_and_is_not_suite_parameter() -> None:
             {"name": "progress-is-cli-only"},
             {},
         )
+
+
+class _FailingResponse:
+    """构造包含敏感文本、但不得写入日志的错误响应。"""
+
+    status_code = 401
+
+    def __enter__(self) -> "_FailingResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        raise RuntimeError("Authorization Bearer secret-token")
+
+
+class _FailingRequestsClient:
+    """返回一个确定性的失败 HTTP 响应。"""
+
+    def post(self, _url: str, **_kwargs: Any) -> _FailingResponse:
+        return _FailingResponse()
+
+
+def test_debug_parser_and_root_config(tmp_path) -> None:
+    """debug 可由 CLI 或 suite 根字段启用，不能作为单个 case 参数。"""
+    parser = build_parser()
+
+    assert parser.parse_args([]).debug is False
+    assert parser.parse_args(["--debug"]).debug is True
+
+    config_path = tmp_path / "debug-suite.json"
+    config_path.write_text(
+        json.dumps({"version": 1, "debug": True, "cases": [{"name": "smoke"}]}),
+        encoding="utf-8",
+    )
+    assert load_suite_config(str(config_path))["debug"] is True
+
+    config_path.write_text(
+        json.dumps({"version": 1, "debug": "yes", "cases": [{"name": "smoke"}]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(BenchmarkConfigError, match="debug must be true or false"):
+        load_suite_config(str(config_path))
+
+    with pytest.raises(BenchmarkConfigError, match="unknown benchmark parameters: debug"):
+        _build_case_args(
+            {"mode": "api", "debug": True},
+            {"name": "debug-is-not-a-case-parameter"},
+            {},
+        )
+
+
+def test_configured_suite_enables_root_debug_logging(tmp_path, capsys) -> None:
+    """suite 根级 debug 应在执行前启用进程日志。"""
+    from benchmark.logging_utils import configure_logging, get_logger
+
+    config_path = tmp_path / "debug-suite.json"
+    config_path.write_text(
+        json.dumps({
+            "version": 1,
+            "debug": True,
+            "defaults": {"mode": "api"},
+            "cases": [{"name": "smoke"}],
+        }),
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args([
+        "--config", str(config_path), "--validate-config",
+    ])
+
+    try:
+        assert run_configured_suite(str(config_path), args) == 0
+        get_logger("test").debug("configured debug enabled")
+    finally:
+        configure_logging(False)
+
+    assert "configured debug enabled" in capsys.readouterr().err
+
+
+def test_debug_transport_log_excludes_url_credentials_and_exception_text(monkeypatch, capsys) -> None:
+    """确认请求元数据可诊断，同时日志不包含密钥或原始 HTTP 错误。"""
+    from benchmark.logging_utils import configure_logging
+
+    configure_logging(True)
+    try:
+        result = api_transport.send_requests_chat_request(
+            7,
+            "private prompt",
+            "https://user:password@example.com/v1/chat/completions?api_key=top-secret",
+            {"Authorization": "Bearer top-secret"},
+            "model",
+            4,
+            _FailingRequestsClient(),
+        )
+    finally:
+        configure_logging(False)
+
+    debug_output = capsys.readouterr().err
+    assert result["error"] == "Authorization Bearer secret-token"
+    assert "req_id=7" in debug_output
+    assert "example.com/v1/chat/completions" in debug_output
+    assert "password" not in debug_output
+    assert "top-secret" not in debug_output
+    assert "secret-token" not in debug_output
+
+
+def test_aiohttp_target_rps_resets_interval_after_concurrency_wait(monkeypatch) -> None:
+    """在并发槽位阻塞后，aiohttp 调度器不补发积压请求。"""
+    started_at: list[float] = []
+    admissions: list[tuple[int, float, float, float]] = []
+    completed: list[int] = []
+
+    class _FakeClientSession:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class _FakeAiohttp:
+        class ClientTimeout:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+        class TCPConnector:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+        @staticmethod
+        def ClientSession(**_kwargs: object) -> _FakeClientSession:
+            return _FakeClientSession()
+
+    async def slow_send(req_id: int, *_args: object, **_kwargs: object) -> dict[str, object]:
+        started_at.append(api_transport.time.perf_counter())
+        await asyncio.sleep(0.03)
+        return {"req_id": req_id, "ttft": 0.001}
+
+    monkeypatch.setattr(api_transport, "_require_aiohttp", lambda: _FakeAiohttp)
+    monkeypatch.setattr(api_transport, "send_aiohttp_chat_request", slow_send)
+
+    api_transport.run_aiohttp_chat_requests(
+        ["first", "second", "third"],
+        "http://localhost/v1/chat/completions",
+        {},
+        "model",
+        [1, 1, 1],
+        1,
+        None,
+        True,
+        lambda result: completed.append(int(result["req_id"])),
+        target_rps=100.0,
+        on_admitted=lambda req_id, timestamp, rate_wait, concurrency_wait: admissions.append(
+            (req_id, timestamp, rate_wait, concurrency_wait)
+        ),
+    )
+
+    intervals = [later - earlier for earlier, later in zip(started_at, started_at[1:])]
+    assert completed == [0, 1, 2]
+    assert len(admissions) == 3
+    assert min(intervals) >= 0.025
+    assert admissions[1][3] >= 0.015
+    assert admissions[2][3] >= 0.015
+
+
+def test_catch_up_burst_only_counts_real_overdue_admissions() -> None:
+    """catch-up 不应把正常调度的微小 deadline 偏差当作补发。"""
+    next_due_at, catch_up_count = api_transport._advance_rate_deadline(
+        1.0,
+        1.0001,
+        0.1,
+        "catch-up",
+        2,
+        0,
+        True,
+        0.0,
+    )
+    assert next_due_at == pytest.approx(1.1)
+    assert catch_up_count == 0
+
+    next_due_at, catch_up_count = api_transport._advance_rate_deadline(
+        0.2,
+        1.0,
+        0.1,
+        "catch-up",
+        2,
+        0,
+        True,
+        0.05,
+    )
+    assert next_due_at == pytest.approx(0.3)
+    assert catch_up_count == 1
+
+    next_due_at, catch_up_count = api_transport._advance_rate_deadline(
+        next_due_at,
+        1.01,
+        0.1,
+        "catch-up",
+        2,
+        catch_up_count,
+        True,
+        0.0,
+    )
+    assert next_due_at == pytest.approx(1.11)
+    assert catch_up_count == 0
+
+
+def test_aiohttp_drop_policy_skips_http_dispatch_when_concurrency_is_full(
+    monkeypatch,
+) -> None:
+    """drop 策略在槽位耗尽时只回调丢弃记录，不创建 HTTP 请求。"""
+    started: list[int] = []
+    completed: list[int] = []
+    dropped: list[int] = []
+
+    class _FakeClientSession:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class _FakeAiohttp:
+        class ClientTimeout:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+        class TCPConnector:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+        @staticmethod
+        def ClientSession(**_kwargs: object) -> _FakeClientSession:
+            return _FakeClientSession()
+
+    observed_random_calls: list[tuple[int | None, float]] = []
+
+    class _FixedRandom:
+        def __init__(self, seed: int | None) -> None:
+            self.seed = seed
+
+        def expovariate(self, rate: float) -> float:
+            observed_random_calls.append((self.seed, rate))
+            return 0.001
+
+    async def slow_send(req_id: int, *_args: object, **_kwargs: object) -> dict[str, object]:
+        started.append(req_id)
+        await asyncio.sleep(0.05)
+        return {"req_id": req_id, "ttft": 0.001}
+
+    monkeypatch.setattr(api_transport, "_require_aiohttp", lambda: _FakeAiohttp)
+    monkeypatch.setattr(api_transport.random, "Random", _FixedRandom)
+    monkeypatch.setattr(api_transport, "send_aiohttp_chat_request", slow_send)
+
+    api_transport.run_aiohttp_chat_requests(
+        ["first", "second", "third"],
+        "http://localhost/v1/chat/completions",
+        {},
+        "model",
+        [1, 1, 1],
+        1,
+        None,
+        True,
+        lambda result: completed.append(int(result["req_id"])),
+        target_rps=1000.0,
+        rate_schedule="poisson",
+        rate_seed=73,
+        rate_overload_policy="drop",
+        on_dropped=dropped.append,
+    )
+
+    assert started == [0]
+    assert completed == [0]
+    assert dropped == [1, 2]
+    assert observed_random_calls == [(73, 1000.0)] * 3

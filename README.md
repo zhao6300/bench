@@ -80,6 +80,29 @@ llm-benchmark --progress rich --config examples/benchmark-config.example.json
 llm-benchmark --progress off --config examples/benchmark-config.example.json
 ```
 
+### 调试日志
+
+`debug` 可作为 suite JSON 的**根字段**配置，默认 `false`；`--debug` 保持可用，且命令行与配置任一为 `true` 即启用。它作用于整次 suite 执行，不属于 `defaults`、case `params` 或 `matrix`，因此不会改变 case 身份、恢复指纹或 JSON 报告 schema。启用后，benchmark 内部生命周期、API round/request 元数据、Compose 阶段和 readiness probe 会以统一格式写入 `stderr`；既有最终指标、进度输出和报告仍保持原有行为。
+
+```json
+{
+  "version": 1,
+  "debug": true
+}
+```
+
+```zsh
+# 保存调试日志；stdout 和 JSON 报告不受影响
+llm-benchmark --debug --config examples/benchmark-config.example.json \
+  2>benchmark-debug.log
+
+# 与实时进度独立，可同时使用
+llm-benchmark --debug --progress plain \
+  --config examples/benchmark-config.example.json
+```
+
+调试日志只记录请求 ID、并发度、token 数量、耗时、状态码和安全的目标 host/path 等元数据，不记录 prompt、完整请求体、SSE 内容、生成文本、Authorization/API key、S3 凭据或捕获的 Compose stdout/stderr。Rich dashboard 运行时会动态捕获当前 `stderr`，因此 debug 日志会进入 dashboard 的最近事件区域；`--validate-config` 和 `--list-cases` 仍不会发送 API 请求、启动 Docker 或执行 GPU benchmark。
+
 项目使用 Rich 管理实时请求计数和状态表，因此不需要额外引入 `tqdm`；两者同时使用会产生重复进度条并干扰重定向日志。
 
 ## 从 examples 开始
@@ -109,7 +132,31 @@ llm-benchmark --config examples/benchmark-config.local.json --tag smoke
 
 不要将密钥写入 JSON 或提交 `*.local.json`。工具默认拒绝将 bearer key 发往非 loopback 的明文 HTTP 服务；仅在受信任内网且明确知悉风险时，才在本地配置启用 `allow_insecure_api_key`。
 
-默认 `api_transport` 为 `requests`，以保持既有行为。高并发 API 基准可在命令行使用 `--api-transport aiohttp`，或在本地 JSON 的 `defaults` / case 参数中设置 `"api_transport": "aiohttp"`。`--api-timeout-seconds`（JSON：`api_timeout_seconds`）控制每条正式 chat-completions 流式请求的超时，默认 `600` 秒，两个 transport 都适用；`requests` 使用连接/读取超时语义，`aiohttp` 使用单请求总时长。该参数不影响预热、服务诊断、Prometheus 指标采集或 automation `/models` preflight，它们仍使用各自的 `requests` 超时。无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
+默认 `api_transport` 为 `requests`，以保持既有行为。高并发 API 基准可在命令行使用 `--api-transport aiohttp`，或在本地 JSON 的 `defaults` / case 参数中设置 `"api_transport": "aiohttp"`。`--api-timeout-seconds`（JSON：`api_timeout_seconds`）控制每条正式 chat-completions 流式请求的超时，默认 `600` 秒，两个 transport 都适用；`requests` 使用连接/读取超时语义，`aiohttp` 使用单请求总时长。
+
+### 请求速率调度
+
+四个参数只作用于正式 API round，不影响预热、服务诊断、Prometheus 指标采集或 automation `/models` preflight；`concurrency` 始终是最大在途请求数。可在命令行设置，或在 suite 的 `defaults`、case `params`/`matrix` 使用同名 snake_case 字段；也支持写入 `requests` 对象：
+
+```json
+{
+  "requests": {
+    "concurrency": 8,
+    "count": 64,
+    "target_rps": 20,
+    "rate_schedule": "poisson",
+    "rate_overload_policy": "drop",
+    "rate_burst": 1
+  }
+}
+```
+
+- `target_rps`：目标请求准入速率。省略或设为 `null` 时保持原有尽快提交行为。`fixed` 调度下其倒数是固定间隔；`poisson` 调度下其倒数是**期望**间隔，短时相邻请求间隔可更小或更大。
+- `rate_schedule`：`fixed`（默认）使用固定间隔；`poisson` 使用指数分布的泊松到达过程。后者复用已有 `seed` 作为随机种子，便于复现实验。
+- `rate_overload_policy`：当目标到达时并发槽位已满，`no-catch-up`（默认）等待可用槽位后以真实准入时刻重新计算间隔，不补发积压请求；`catch-up` 保留逻辑 deadline，允许受 `rate_burst` 约束的有限连续过期到达；`drop` 不发送该请求，将其记录为客户端失败。
+- `rate_burst`：仅用于 `catch-up`，限制连续处理的过期到达数，必须为正整数。默认 `1` 保持无补发 burst 的兼容行为；其他策略不会使用该值形成 burst。
+
+报告会在 `metrics.pacing` 中写入上述策略、目标速率、`target_interval_seconds`（fixed 的固定间隔或 poisson 的期望间隔）、实际准入速率、相邻准入间隔、速率/并发等待时间和 `dropped_requests`。实际准入速率只统计已发往 HTTP 的请求；`drop` 请求会写入失败记录，因此同时计入总请求数、失败数和失败率。TTFT 仍从实际 HTTP 请求开始计时，不包含客户端节流等待。该开关控制客户端的到达率，不保证完成 QPS；特别是 `catch-up` 允许有限短时补发，无法将 `target_rps` 解释为瞬时硬上限。无论 transport 如何选择，payload、SSE 解析、token/延迟指标与 bearer key 的安全限制保持一致。
 
 ### 单机 Docker Compose 推理服务
 

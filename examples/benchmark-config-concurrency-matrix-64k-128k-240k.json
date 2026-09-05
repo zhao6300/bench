@@ -13,9 +13,14 @@
     "requests_per_case": "2 × concurrency"
   },
   "continue_on_error": true,
+  "debug": false,
   "defaults": {
     "mode": "api",
     "api_base": "http://10.20.0.11:8005/v1",
+    "target_rps": null,
+    "rate_schedule": "fixed",
+    "rate_overload_policy": "no-catch-up",
+    "rate_burst": 1,
     "model": "Qwen3.8-27B-FP8",
     "tokenizer": "/models/Qwen3.8-27B-FP8",
     "dataset": "random",

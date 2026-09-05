@@ -4,17 +4,69 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from collections.abc import Callable
 from typing import Any
 
 try:
+    from .logging_utils import exception_type, get_logger, safe_endpoint
     from .streaming import aiter_sse_data, iter_sse_data
 except ImportError:
+    from logging_utils import exception_type, get_logger, safe_endpoint
     from streaming import aiter_sse_data, iter_sse_data
 
 
-RequestResult = dict[str, Any]
+LOGGER = get_logger("api")
+
+
+def _advance_rate_deadline(
+    next_due_at: float,
+    admitted_at: float,
+    interval: float,
+    rate_overload_policy: str,
+    rate_burst: int,
+    catch_up_count: int,
+    deadline_was_due: bool,
+    concurrency_wait_seconds: float,
+) -> tuple[float, int]:
+    """根据过载策略计算下一次请求准入时间。
+
+    Args:
+        next_due_at: 当前逻辑调度 deadline。
+        admitted_at: 本次请求的真实准入时间。
+        interval: 本次到达间隔。
+        rate_overload_policy: 并发已满时的过载策略。
+        rate_burst: catch-up 连续处理的过期到达上限。
+        catch_up_count: 当前连续处理的过期到达数。
+        deadline_was_due: 本次开始等待前 deadline 是否已到。
+        concurrency_wait_seconds: 本次因并发槽位产生的等待时间。
+
+    Returns:
+        下一 deadline 和更新后的连续过期到达数。
+
+    Raises:
+        ValueError: 当过载策略不是已支持的值时抛出。
+    """
+    if rate_overload_policy == "no-catch-up":
+        return admitted_at + interval, 0
+    if rate_overload_policy == "drop":
+        return next_due_at + interval, 0
+    if rate_overload_policy != "catch-up":
+        raise ValueError(
+            f"unsupported rate_overload_policy: {rate_overload_policy!r}"
+        )
+
+    is_overdue_admission = concurrency_wait_seconds > 0 or (
+        catch_up_count > 0 and deadline_was_due
+    )
+    if not is_overdue_admission:
+        return next_due_at + interval, 0
+
+    catch_up_count += 1
+    if catch_up_count >= rate_burst:
+        return admitted_at + interval, 0
+    return next_due_at + interval, catch_up_count
 
 
 def build_chat_payload(
@@ -268,6 +320,13 @@ def send_requests_chat_request(
         A benchmark request record.
     """
     record = _StreamRecordBuilder(req_id)
+    status_code = None
+    LOGGER.debug(
+        "requests request started req_id=%s endpoint=%s max_tokens=%s",
+        req_id,
+        safe_endpoint(url),
+        max_tokens,
+    )
     try:
         with requests_client.post(
             url,
@@ -276,14 +335,29 @@ def send_requests_chat_request(
             stream=True,
             timeout=timeout_seconds,
         ) as response:
+            status_code = getattr(response, "status_code", None)
             response.raise_for_status()
             for data in iter_sse_data(response.iter_content(chunk_size=None)):
                 if data == "[DONE]":
                     break
                 record.consume(data)
     except Exception as exc:
+        LOGGER.debug(
+            "requests request failed req_id=%s status=%s exception=%s",
+            req_id,
+            status_code,
+            exception_type(exc),
+        )
         return _failure_result(req_id, str(exc), record.started_at)
-    return record.finish()
+    result = record.finish()
+    LOGGER.debug(
+        "requests request finished req_id=%s status=%s ttft=%s total_time=%s",
+        req_id,
+        status_code,
+        result.get("ttft"),
+        result.get("total_time"),
+    )
+    return result
 
 
 async def send_aiohttp_chat_request(
@@ -314,20 +388,42 @@ async def send_aiohttp_chat_request(
         A benchmark request record.
     """
     record = _StreamRecordBuilder(req_id)
+    status_code = None
+    LOGGER.debug(
+        "aiohttp request started req_id=%s endpoint=%s max_tokens=%s",
+        req_id,
+        safe_endpoint(url),
+        max_tokens,
+    )
     try:
         async with session.post(
             url,
             json=build_chat_payload(model, prompt, max_tokens, ignore_eos),
             headers=headers,
         ) as response:
+            status_code = getattr(response, "status", None)
             response.raise_for_status()
             async for data in aiter_sse_data(response.content.iter_any()):
                 if data == "[DONE]":
                     break
                 record.consume(data)
     except Exception as exc:
+        LOGGER.debug(
+            "aiohttp request failed req_id=%s status=%s exception=%s",
+            req_id,
+            status_code,
+            exception_type(exc),
+        )
         return _failure_result(req_id, str(exc), record.started_at)
-    return record.finish()
+    result = record.finish()
+    LOGGER.debug(
+        "aiohttp request finished req_id=%s status=%s ttft=%s total_time=%s",
+        req_id,
+        status_code,
+        result.get("ttft"),
+        result.get("total_time"),
+    )
+    return result
 
 
 def _require_aiohttp() -> Any:
@@ -361,52 +457,172 @@ def run_aiohttp_chat_requests(
     on_complete: Callable[[RequestResult], None],
     *,
     timeout_seconds: float = 600.0,
+    target_rps: float | None = None,
+    rate_schedule: str = "fixed",
+    rate_overload_policy: str = "no-catch-up",
+    rate_burst: int = 1,
+    rate_seed: int | None = None,
+    on_admitted: Callable[[int, float, float, float], None] | None = None,
+    on_dropped: Callable[[int], None] | None = None,
 ) -> None:
-    """Run one concurrent chat round through a shared aiohttp session.
+    """通过共享 aiohttp session 运行一轮并发 chat 请求。
 
     Args:
-        prompts: Prompt text for each request.
-        url: The chat completions URL.
-        headers: Prevalidated request headers.
-        model: The server model name.
-        max_tokens: Per-request completion limits.
-        concurrency: Maximum in-flight requests and connector limit.
-        tokenizer: Optional tokenizer for output-token fallback.
-        ignore_eos: Whether the server should ignore EOS.
-        on_complete: Callback invoked once for each completed record.
-        timeout_seconds: Total timeout applied to each streaming HTTP request.
+        prompts: 每条请求的 Prompt 文本。
+        url: chat completions URL。
+        headers: 已校验的请求头。
+        model: 服务端模型名。
+        max_tokens: 每条请求的输出 token 上限。
+        concurrency: 最大在途请求数和连接池上限。
+        tokenizer: 可选的输出 token 回退 tokenizer。
+        ignore_eos: 是否要求服务端忽略 EOS。
+        on_complete: 每条完成记录的回调。
+        timeout_seconds: 每条流式 HTTP 请求的总超时。
+        target_rps: 可选的目标请求准入速率。
+        rate_schedule: fixed 为固定间隔，poisson 为泊松到达过程。
+        rate_overload_policy: 并发已满时的处理策略。
+        rate_burst: catch-up 连续处理的过期到达数上限。
+        rate_seed: 泊松到达过程使用的可复现随机种子。
+        on_admitted: 记录真实准入时间和等待时间的回调。
+        on_dropped: 请求在 HTTP 发送前被丢弃时的回调。
 
     Raises:
-        RuntimeError: If aiohttp is unavailable or an event loop is already running.
+        RuntimeError: aiohttp 不可用或当前已有运行中的事件循环。
     """
     aiohttp = _require_aiohttp()
+    LOGGER.debug(
+        "aiohttp round started endpoint=%s requests=%d concurrency=%d",
+        safe_endpoint(url),
+        len(prompts),
+        concurrency,
+    )
 
     async def run() -> None:
         timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         connector = aiohttp.TCPConnector(limit=concurrency)
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-            semaphore = asyncio.Semaphore(concurrency)
-
             async def send_one(req_id: int, prompt: str) -> RequestResult:
-                async with semaphore:
-                    return await send_aiohttp_chat_request(
-                        req_id,
-                        prompt,
-                        url,
-                        headers,
-                        model,
-                        max_tokens[req_id],
-                        session,
-                        tokenizer,
-                        ignore_eos,
-                    )
+                return await send_aiohttp_chat_request(
+                    req_id,
+                    prompt,
+                    url,
+                    headers,
+                    model,
+                    max_tokens[req_id],
+                    session,
+                    tokenizer,
+                    ignore_eos,
+                )
 
-            tasks = [
-                asyncio.create_task(send_one(req_id, prompt))
-                for req_id, prompt in enumerate(prompts)
-            ]
-            for task in asyncio.as_completed(tasks):
-                on_complete(await task)
+            if target_rps is None:
+                semaphore = asyncio.Semaphore(concurrency)
+
+                async def send_with_limit(req_id: int, prompt: str) -> RequestResult:
+                    async with semaphore:
+                        return await send_one(req_id, prompt)
+
+                tasks = []
+                for req_id, prompt in enumerate(prompts):
+                    admitted_at = time.perf_counter()
+                    if on_admitted is not None:
+                        on_admitted(req_id, admitted_at, 0.0, 0.0)
+                    tasks.append(asyncio.create_task(send_with_limit(req_id, prompt)))
+                for task in asyncio.as_completed(tasks):
+                    on_complete(await task)
+                return
+
+            rate_random = random.Random(rate_seed)
+
+            def next_interval() -> float:
+                if rate_schedule == "fixed":
+                    return 1.0 / target_rps
+                return rate_random.expovariate(target_rps)
+
+            pending: set[asyncio.Task[RequestResult]] = set()
+            next_due_at = time.perf_counter()
+            catch_up_count = 0
+
+            def emit_completed(tasks: set[asyncio.Task[RequestResult]]) -> None:
+                for task in tasks:
+                    on_complete(task.result())
+
+            def collect_finished() -> None:
+                finished_tasks = {task for task in pending if task.done()}
+                pending.difference_update(finished_tasks)
+                emit_completed(finished_tasks)
+
+            async def wait_until(deadline: float) -> None:
+                while True:
+                    remaining = deadline - time.perf_counter()
+                    if remaining <= 0:
+                        return
+                    if not pending:
+                        await asyncio.sleep(remaining)
+                        return
+                    done, _ = await asyncio.wait(
+                        pending,
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        return
+                    pending.difference_update(done)
+                    emit_completed(done)
+
+            for req_id, prompt in enumerate(prompts):
+                rate_wait_started_at = time.perf_counter()
+                deadline_was_due = next_due_at <= rate_wait_started_at
+                await wait_until(next_due_at)
+                rate_wait_seconds = time.perf_counter() - rate_wait_started_at
+                collect_finished()
+                if (
+                    rate_overload_policy == "drop"
+                    and len(pending) >= concurrency
+                ):
+                    if on_dropped is not None:
+                        on_dropped(req_id)
+                    next_due_at += next_interval()
+                    catch_up_count = 0
+                    continue
+                concurrency_wait_started_at = time.perf_counter()
+                while len(pending) >= concurrency:
+                    done, _ = await asyncio.wait(
+                        pending,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    pending.difference_update(done)
+                    emit_completed(done)
+                concurrency_wait_seconds = (
+                    time.perf_counter() - concurrency_wait_started_at
+                )
+                admitted_at = time.perf_counter()
+                if on_admitted is not None:
+                    on_admitted(
+                        req_id,
+                        admitted_at,
+                        rate_wait_seconds,
+                        concurrency_wait_seconds,
+                    )
+                pending.add(asyncio.create_task(send_one(req_id, prompt)))
+                interval = next_interval()
+                next_due_at, catch_up_count = _advance_rate_deadline(
+                    next_due_at,
+                    admitted_at,
+                    interval,
+                    rate_overload_policy,
+                    rate_burst,
+                    catch_up_count,
+                    deadline_was_due,
+                    concurrency_wait_seconds,
+                )
+
+            while pending:
+                done, _ = await asyncio.wait(
+                    pending,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                pending.difference_update(done)
+                emit_completed(done)
 
     try:
         asyncio.get_running_loop()

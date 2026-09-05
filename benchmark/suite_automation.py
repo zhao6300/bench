@@ -17,12 +17,17 @@ try:
         ComposeServicePolicy,
         ComposeServiceProfile,
     )
+    from .logging_utils import exception_type, get_logger, safe_endpoint
 except ImportError:
     from compose_service import (
         BenchmarkContainerPolicy,
         ComposeServicePolicy,
         ComposeServiceProfile,
     )
+    from logging_utils import exception_type, get_logger, safe_endpoint
+
+
+LOGGER = get_logger("automation")
 
 
 class AutomationConfigError(ValueError):
@@ -569,8 +574,10 @@ def preflight_api_targets(
             targets.setdefault((args.api_base.rstrip("/"), args.api_key), args)
 
     records = []
+    LOGGER.debug("API preflight started unique_targets=%d", len(targets))
     for args in targets.values():
         url = f"{args.api_base.rstrip('/')}/models"
+        LOGGER.debug("API preflight probing endpoint=%s model=%s", safe_endpoint(url), args.model)
         headers = {"Content-Type": "application/json"}
         if args.api_key:
             headers["Authorization"] = f"Bearer {args.api_key}"
@@ -595,6 +602,7 @@ def preflight_api_targets(
                     for item in payload["data"]
                 ),
             })
+            LOGGER.debug("API preflight passed endpoint=%s status=%s", safe_endpoint(url), status_code)
         except Exception as exc:
             records.append({
                 "api_base": args.api_base,
@@ -602,6 +610,11 @@ def preflight_api_targets(
                 "error_type": type(exc).__name__,
                 "message": str(exc),
             })
+            LOGGER.debug(
+                "API preflight failed endpoint=%s exception=%s",
+                safe_endpoint(url),
+                exception_type(exc),
+            )
     return records
 
 

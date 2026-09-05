@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -437,3 +438,189 @@ def test_single_api_shared_prefix_warmup_uses_configured_requests_per_round(
     benchmark_module.run_api_benchmark(args)
 
     assert [payload["max_tokens"] for payload in posts] == [10, 1, 1, 1, 1]
+
+
+def test_target_rps_requests_scheduler_avoids_catch_up_bursts(monkeypatch, capsys) -> None:
+    """在 requests 并发槽位阻塞后，下一请求仍按新的固定间隔准入。"""
+    started_at: list[float] = []
+
+    def slow_request(req_id: int, *_args: object, **_kwargs: object) -> dict[str, object]:
+        started = time.perf_counter()
+        started_at.append(started)
+        time.sleep(0.03)
+        return {
+            "req_id": req_id,
+            "error": None,
+            "ttft": 0.001,
+            "tpot": 0.001,
+            "request_start_timestamp": started,
+            "first_token_timestamp": started + 0.001,
+            "last_token_timestamp": started + 0.002,
+            "first_token_text": "ok",
+            "prompt_tokens": 1,
+            "output_tokens": 2,
+            "output_token_source": "server_usage",
+            "total_time": 0.03,
+            "estimated_itl_samples": [0.001],
+        }
+
+    monkeypatch.setattr(benchmark_module, "send_single_api_request", slow_request)
+    monkeypatch.setattr(
+        benchmark_module,
+        "query_gpu_metrics",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        benchmark_module,
+        "finalize_stream_results",
+        lambda *_args, **_kwargs: None,
+    )
+
+    metrics = benchmark_module.run_api_benchmark_round(
+        ["first", "second", "third"],
+        [1, 1, 1],
+        "http://localhost/v1/chat/completions",
+        {},
+        "model",
+        [2, 2, 2],
+        1,
+        target_rps=100.0,
+    )
+
+    intervals = [later - earlier for earlier, later in zip(started_at, started_at[1:])]
+    assert min(intervals) >= 0.025
+    pacing = metrics["pacing"]
+    assert pacing["mode"] == "fixed"
+    assert pacing["rate_schedule"] == "fixed"
+    assert pacing["rate_overload_policy"] == "no-catch-up"
+    assert pacing["target_rps"] == 100.0
+    assert pacing["target_interval_seconds"] == 0.01
+    assert pacing["target_interval_semantics"] == "fixed_interval"
+    assert pacing["admitted_requests"] == 3
+    assert pacing["actual_admission_rps"] is not None
+    assert pacing["actual_admission_rps"] <= 40.0
+    assert pacing["admission_interval_seconds"]["min"] >= 0.025
+    assert pacing["rate_wait_seconds"] >= 0.01
+    assert pacing["concurrency_wait_seconds"] >= 0.03
+
+
+def test_drop_policy_records_failed_requests_without_http_dispatch(
+    monkeypatch,
+) -> None:
+    """requests drop 策略必须保留失败记录，但不能发送被丢弃的请求。"""
+    dispatched: list[int] = []
+
+    def slow_request(req_id: int, *_args: object, **_kwargs: object) -> dict[str, object]:
+        dispatched.append(req_id)
+        started_at = time.perf_counter()
+        time.sleep(0.05)
+        return {
+            "req_id": req_id,
+            "error": None,
+            "ttft": 0.001,
+            "tpot": 0.001,
+            "request_start_timestamp": started_at,
+            "first_token_timestamp": started_at + 0.001,
+            "last_token_timestamp": started_at + 0.002,
+            "first_token_text": "ok",
+            "prompt_tokens": 1,
+            "output_tokens": 2,
+            "output_token_source": "server_usage",
+            "total_time": 0.05,
+            "estimated_itl_samples": [0.001],
+        }
+
+    monkeypatch.setattr(benchmark_module, "send_single_api_request", slow_request)
+    monkeypatch.setattr(
+        benchmark_module,
+        "query_gpu_metrics",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        benchmark_module,
+        "finalize_stream_results",
+        lambda *_args, **_kwargs: None,
+    )
+
+    metrics = benchmark_module.run_api_benchmark_round(
+        ["first", "second", "third"],
+        [1, 1, 1],
+        "http://localhost/v1/chat/completions",
+        {},
+        "model",
+        [2, 2, 2],
+        1,
+        target_rps=1000.0,
+        rate_overload_policy="drop",
+    )
+
+    assert dispatched == [0]
+    assert metrics["total_requests"] == 3
+    assert metrics["successful"] == 1
+    assert metrics["failed"] == 2
+    assert metrics["failure_rate"] == pytest.approx(2 / 3)
+    assert metrics["pacing"]["dropped_requests"] == 2
+    assert [record["req_id"] for record in metrics["results"]] == [0, 1, 2]
+    assert all(
+        record["error"] == "client rate overload dropped before HTTP dispatch"
+        for record in metrics["results"][1:]
+    )
+
+
+def test_api_probe_warmup_disables_rate_control(monkeypatch) -> None:
+    """Sweep/SLO 的预热请求不应继承正式轮次的请求速率策略。"""
+    args = SimpleNamespace(
+        sweep_requests_per_round=None,
+        random_seed=None,
+        seed=31,
+        dataset="text",
+        no_warmup=False,
+        warmup_rounds=1,
+        warmup_requests_per_round=1,
+        concurrency=1,
+        model="model",
+        ignore_eos=True,
+        slo_ttft=5.0,
+        slo_tpot=0.1,
+        api_transport="requests",
+        api_timeout_seconds=600.0,
+        target_rps=2.0,
+        rate_schedule="poisson",
+        rate_overload_policy="drop",
+        rate_burst=3,
+    )
+    session = benchmark_module.ApiBenchmarkSession(
+        args,
+        object(),
+        "http://localhost/v1/chat/completions",
+        {},
+    )
+    runner = benchmark_module.ApiConcurrencyProbeRunner(session)
+    observed: dict[str, object] = {}
+    batch = SimpleNamespace(prompts=["prompt"], prompt_lens=[1], output_lens=[1])
+
+    monkeypatch.setattr(
+        runner,
+        "prepare",
+        lambda _concurrency, *, request_count: {
+            "concurrency": 1,
+            "request_count": request_count,
+            "batch": batch,
+        },
+    )
+    monkeypatch.setattr(
+        benchmark_module,
+        "run_api_benchmark_round",
+        lambda *_args, **kwargs: observed.update(kwargs) or {
+            "successful": 1,
+            "total_requests": 1,
+        },
+    )
+
+    runner.warmup()
+
+    assert observed["target_rps"] is None
+    assert observed["rate_schedule"] == "fixed"
+    assert observed["rate_overload_policy"] == "no-catch-up"
+    assert observed["rate_burst"] == 1
+    assert observed["rate_seed"] is None

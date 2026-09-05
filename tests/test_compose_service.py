@@ -271,3 +271,34 @@ def test_benchmark_container_resume_forwards_config_change_flag(tmp_path: Path) 
     assert "--no-resume" not in commands[3]
     assert "--resume-allow-config-changes" in commands[3]
     assert commands[3][commands[3].index("--report") + 1] == "/benchmark-output/report.json"
+
+
+def test_compose_debug_log_does_not_emit_captured_child_output(tmp_path: Path, capsys) -> None:
+    """确认 debug 模式不输出可能敏感的 Compose stdout 和 stderr。"""
+    from benchmark.logging_utils import configure_logging
+
+    _write_bundle(tmp_path)
+    resolved = resolve_compose_service(_policy(), str(tmp_path / "suite.json"))
+    assert resolved is not None
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        stdout = "" if command[-2:] == ["ps", "-aq"] else "MODEL_SECRET_OUTPUT"
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=stdout,
+            stderr="BEARER secret-token",
+        )
+
+    configure_logging(True)
+    try:
+        service = ManagedComposeService(resolved, command_runner=runner)
+        service.start()
+        service.stop()
+    finally:
+        configure_logging(False)
+
+    debug_output = capsys.readouterr().err
+    assert "compose command started" in debug_output
+    assert "MODEL_SECRET_OUTPUT" not in debug_output
+    assert "secret-token" not in debug_output
