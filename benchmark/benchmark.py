@@ -1158,17 +1158,21 @@ def _record_vllm_prefix_cache_counter(
         counters["sources"][kind].append(metric_name)
 
 
-def _vllm_prefix_cache_counter_delta(start_snapshot, end_snapshot):
-    """Calculate one round's aggregate vLLM prefix-cache hit rate.
+def _vllm_prefix_cache_counter_rate(
+    start_snapshot,
+    end_snapshot,
+    window_seconds: float | None,
+):
+    """计算一个 round 内 vLLM prefix-cache counter 的 rate 和命中率。
 
     Args:
-        start_snapshot: Parsed `/metrics` snapshot before the request round.
-        end_snapshot: Parsed `/metrics` snapshot after the request round.
+        start_snapshot: 请求 round 前解析的 `/metrics` 快照。
+        end_snapshot: 请求 round 后解析的 `/metrics` 快照。
+        window_seconds: 两次 counter 快照之间的实际单调时钟窗口。
 
     Returns:
-        Metadata and, when available, the percent hit rate computed as
-        `sum(delta_hits) / sum(delta_queries)`. Negative counter deltas are
-        treated as exporter resets and excluded.
+        聚合的 counter 增量、每秒速率和命中率。负向 counter 增量会被视为
+        exporter reset 并排除；窗口无效时保留增量但不报告 rate 或命中率。
     """
     start_snapshot = start_snapshot if isinstance(start_snapshot, dict) else {}
     end_snapshot = end_snapshot if isinstance(end_snapshot, dict) else {}
@@ -1196,17 +1200,38 @@ def _vllm_prefix_cache_counter_delta(start_snapshot, end_snapshot):
         hit_delta += series_hit_delta
         query_delta += series_query_delta
 
+    normalized_window = (
+        float(window_seconds)
+        if isinstance(window_seconds, (int, float))
+        and not isinstance(window_seconds, bool)
+        and math.isfinite(window_seconds)
+        and window_seconds > 0
+        else None
+    )
+    hit_rate_per_second = (
+        hit_delta / normalized_window if normalized_window is not None else None
+    )
+    query_rate_per_second = (
+        query_delta / normalized_window if normalized_window is not None else None
+    )
+
     sources = end_counters.get("sources", {})
     hit_sources = sources.get("hits", [])
     query_sources = sources.get("queries", [])
     source = None
     if hit_sources and query_sources:
-        source = f"{','.join(hit_sources)} / {','.join(query_sources)} counter delta"
+        source = f"{','.join(hit_sources)} / {','.join(query_sources)} counter rate"
 
     return {
-        "hit_rate": hit_delta / query_delta * 100 if query_delta > 0 else None,
+        "hit_rate": (
+            hit_rate_per_second / query_rate_per_second * 100
+            if query_rate_per_second and query_rate_per_second > 0 else None
+        ),
+        "window_seconds": normalized_window,
         "hit_delta": hit_delta,
         "query_delta": query_delta,
+        "hit_rate_per_second": hit_rate_per_second,
+        "query_rate_per_second": query_rate_per_second,
         "paired_series_count": len(paired_series),
         "reset_series_count": reset_series_count,
         "zero_query_series_count": zero_query_series_count,
@@ -1214,17 +1239,27 @@ def _vllm_prefix_cache_counter_delta(start_snapshot, end_snapshot):
     }
 
 
-def _add_vllm_prefix_cache_hit_rate(summary, start_snapshot, end_snapshot):
-    """Add a round-boundary vLLM counter rate to server metric summaries.
+def _add_vllm_prefix_cache_hit_rate(
+    summary,
+    start_snapshot,
+    end_snapshot,
+    window_seconds: float | None,
+):
+    """将 round-boundary vLLM counter rate 写入服务器指标汇总。
 
     Args:
-        summary: Mutable summary built from periodic server resource snapshots.
-        start_snapshot: Parsed `/metrics` snapshot before the request round.
-        end_snapshot: Parsed `/metrics` snapshot after the request round.
+        summary: 由周期服务器资源采样构建的可变汇总。
+        start_snapshot: 请求 round 前解析的 `/metrics` 快照。
+        end_snapshot: 请求 round 后解析的 `/metrics` 快照。
+        window_seconds: 两次 counter 快照之间的实际单调时钟窗口。
     """
-    counter_delta = _vllm_prefix_cache_counter_delta(start_snapshot, end_snapshot)
-    summary["vllm_prefix_cache_counter_delta"] = counter_delta
-    hit_rate = counter_delta["hit_rate"]
+    counter_rate = _vllm_prefix_cache_counter_rate(
+        start_snapshot,
+        end_snapshot,
+        window_seconds,
+    )
+    summary["vllm_prefix_cache_counter_rate"] = counter_rate
+    hit_rate = counter_rate["hit_rate"]
     if hit_rate is None or "cache_hit_rate" in summary["metrics"]:
         return
 
@@ -1237,19 +1272,22 @@ def _add_vllm_prefix_cache_hit_rate(summary, start_snapshot, end_snapshot):
         "p90": hit_rate,
         "p95": hit_rate,
         "p99": hit_rate,
-        "aggregation": "round_counter_delta",
-        "hit_delta": counter_delta["hit_delta"],
-        "query_delta": counter_delta["query_delta"],
-        "paired_series_count": counter_delta["paired_series_count"],
-        "reset_series_count": counter_delta["reset_series_count"],
-        "zero_query_series_count": counter_delta["zero_query_series_count"],
+        "aggregation": "round_counter_rate",
+        "window_seconds": counter_rate["window_seconds"],
+        "hit_delta": counter_rate["hit_delta"],
+        "query_delta": counter_rate["query_delta"],
+        "hit_rate_per_second": counter_rate["hit_rate_per_second"],
+        "query_rate_per_second": counter_rate["query_rate_per_second"],
+        "paired_series_count": counter_rate["paired_series_count"],
+        "reset_series_count": counter_rate["reset_series_count"],
+        "zero_query_series_count": counter_rate["zero_query_series_count"],
     }
-    if counter_delta["source"]:
-        stats["max_source"] = counter_delta["source"]
+    if counter_rate["source"]:
+        stats["max_source"] = counter_rate["source"]
     summary["metrics"]["cache_hit_rate"] = stats
     summary["peak_cache_hit_rate"] = hit_rate
-    if counter_delta["source"]:
-        summary["peak_cache_hit_rate_source"] = counter_delta["source"]
+    if counter_rate["source"]:
+        summary["peak_cache_hit_rate_source"] = counter_rate["source"]
 
 
 def query_gpu_metrics(api_base, headers=None):
@@ -1459,13 +1497,19 @@ def _print_server_metrics(metrics):
         stats = metrics.get("metrics", {}).get(key)
         if not stats:
             continue
-        if stats.get("aggregation") == "round_counter_delta":
+        if stats.get("aggregation") == "round_counter_rate":
             print(
-                f"    {labels[key]:<18s} round counter delta : "
+                f"    {labels[key]:<18s} round counter rate  : "
                 f"{_format_server_metric_value(key, stats['avg'])}"
             )
             print(
-                f"    {'':<18s} Δhit / Δquery           : "
+                f"    {'':<18s} rate(hit/query)        : "
+                f"{stats['hit_rate_per_second']:.2f} / "
+                f"{stats['query_rate_per_second']:.2f} tokens/s"
+            )
+            print(
+                f"    {'':<18s} rate 窗口 / Δhit / Δquery : "
+                f"{stats['window_seconds']:.3f}s / "
                 f"{stats['hit_delta']:.0f} / {stats['query_delta']:.0f}"
             )
             if stats.get("max_source"):
@@ -1896,7 +1940,8 @@ def run_api_benchmark_round(
         else url
     )
     prefix_cache_counter_start = query_gpu_metrics(metrics_api_base, headers=headers)
-    wall_t0 = time.perf_counter()
+    prefix_cache_counter_start_at = time.perf_counter()
+    wall_t0 = prefix_cache_counter_start_at
     results = []
     admissions: list[dict[str, float]] = []
     dropped_requests = [0]
@@ -2143,6 +2188,7 @@ def run_api_benchmark_round(
     stop_metrics_sampling.set()
     metrics_sampler.join(timeout=6)
     prefix_cache_counter_end = query_gpu_metrics(metrics_api_base, headers=headers)
+    prefix_cache_counter_end_at = time.perf_counter()
     finalize_stream_results(results, tokenizer)
     with server_metrics_lock:
         runtime_metric_samples = [
@@ -2155,6 +2201,7 @@ def run_api_benchmark_round(
         server_metrics,
         prefix_cache_counter_start,
         prefix_cache_counter_end,
+        prefix_cache_counter_end_at - prefix_cache_counter_start_at,
     )
 
     wall_time = wall_t1 - wall_t0

@@ -14,7 +14,7 @@ from benchmark.benchmark import (
     _peak_server_metrics,
     _request_meets_slo,
     _slo_capacity_round_passes,
-    _vllm_prefix_cache_counter_delta,
+    _vllm_prefix_cache_counter_rate,
     parse_workload_mix,
     query_gpu_metrics,
 )
@@ -103,7 +103,7 @@ def test_slo_capacity_round_evaluation(metrics: dict[str, object], expected: boo
     assert _slo_capacity_round_passes(metrics, max_failure_rate=0.2, min_goodput_pct=90.0) is expected
 
 
-def test_vllm_prefix_cache_counter_delta_aggregates_matched_label_series(
+def test_vllm_prefix_cache_counter_rate_aggregates_matched_label_series(
     monkeypatch,
 ) -> None:
     snapshots = iter([
@@ -127,18 +127,21 @@ def test_vllm_prefix_cache_counter_delta_aggregates_matched_label_series(
     monkeypatch.setattr(benchmark_module, "requests", SimpleNamespace(get=get))
     start = query_gpu_metrics("http://localhost:8000/v1")
     end = query_gpu_metrics("http://localhost:8000/v1")
-    delta = _vllm_prefix_cache_counter_delta(start, end)
+    counter_rate = _vllm_prefix_cache_counter_rate(start, end, 2.0)
     summary = _peak_server_metrics([])
-    _add_vllm_prefix_cache_hit_rate(summary, start, end)
+    _add_vllm_prefix_cache_hit_rate(summary, start, end, 2.0)
 
-    assert delta == {
+    assert counter_rate == {
         "hit_rate": 75.0,
+        "window_seconds": 2.0,
         "hit_delta": 18.0,
         "query_delta": 24.0,
+        "hit_rate_per_second": 9.0,
+        "query_rate_per_second": 12.0,
         "paired_series_count": 2,
         "reset_series_count": 0,
         "zero_query_series_count": 0,
-        "source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter delta",
+        "source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter rate",
     }
     assert summary["metrics"]["cache_hit_rate"] == {
         "sample_count": 1,
@@ -149,17 +152,20 @@ def test_vllm_prefix_cache_counter_delta_aggregates_matched_label_series(
         "p90": 75.0,
         "p95": 75.0,
         "p99": 75.0,
-        "aggregation": "round_counter_delta",
+        "aggregation": "round_counter_rate",
+        "window_seconds": 2.0,
         "hit_delta": 18.0,
         "query_delta": 24.0,
+        "hit_rate_per_second": 9.0,
+        "query_rate_per_second": 12.0,
         "paired_series_count": 2,
         "reset_series_count": 0,
         "zero_query_series_count": 0,
-        "max_source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter delta",
+        "max_source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter rate",
     }
 
 
-def test_vllm_prefix_cache_counter_delta_excludes_resets_and_zero_queries() -> None:
+def test_vllm_prefix_cache_counter_rate_excludes_resets_and_zero_queries() -> None:
     start = {
         "_vllm_prefix_cache_counters": {
             "hits": {"{model_name=\"reset\"}": 10, "{model_name=\"idle\"}": 3},
@@ -175,14 +181,17 @@ def test_vllm_prefix_cache_counter_delta_excludes_resets_and_zero_queries() -> N
         }
     }
 
-    assert _vllm_prefix_cache_counter_delta(start, end) == {
+    assert _vllm_prefix_cache_counter_rate(start, end, 2.0) == {
         "hit_rate": None,
+        "window_seconds": 2.0,
         "hit_delta": 0.0,
         "query_delta": 0.0,
+        "hit_rate_per_second": 0.0,
+        "query_rate_per_second": 0.0,
         "paired_series_count": 2,
         "reset_series_count": 1,
         "zero_query_series_count": 1,
-        "source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter delta",
+        "source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter rate",
     }
 
 
@@ -206,7 +215,7 @@ def test_sglang_cache_hit_rate_gauge_remains_a_periodic_metric(monkeypatch) -> N
     assert snapshot["cache_hit_rate"] == 70.0
     assert snapshot["cache_hit_rate_source"] == "sglang:cache_hit_rate"
     assert summary["metrics"]["cache_hit_rate"]["max"] == 70.0
-    assert "vllm_prefix_cache_counter_delta" not in summary
+    assert "vllm_prefix_cache_counter_rate" not in summary
 
 
 def test_pd_ratio_uses_business_shapes_and_respects_ignore_eos(monkeypatch) -> None:
@@ -632,3 +641,36 @@ def test_api_probe_warmup_disables_rate_control(monkeypatch) -> None:
     assert observed["rate_ramp_up_end_rps"] is None
     assert observed["rate_overload_policy"] == "no-catch-up"
     assert observed["rate_seed"] is None
+
+
+def test_vllm_prefix_cache_counter_rate_rejects_invalid_window() -> None:
+    """无有效观测窗口时保留 delta，但不能报告 rate 或命中率。"""
+    start = {
+        "_vllm_prefix_cache_counters": {
+            "hits": {"": 10},
+            "queries": {"": 20},
+            "sources": {
+                "hits": ["vllm:prefix_cache_hits"],
+                "queries": ["vllm:prefix_cache_queries"],
+            },
+        }
+    }
+    end = {
+        "_vllm_prefix_cache_counters": {
+            "hits": {"": 15},
+            "queries": {"": 30},
+            "sources": {
+                "hits": ["vllm:prefix_cache_hits"],
+                "queries": ["vllm:prefix_cache_queries"],
+            },
+        }
+    }
+
+    counter_rate = _vllm_prefix_cache_counter_rate(start, end, 0.0)
+
+    assert counter_rate["window_seconds"] is None
+    assert counter_rate["hit_delta"] == 5.0
+    assert counter_rate["query_delta"] == 10.0
+    assert counter_rate["hit_rate_per_second"] is None
+    assert counter_rate["query_rate_per_second"] is None
+    assert counter_rate["hit_rate"] is None

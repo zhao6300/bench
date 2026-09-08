@@ -483,7 +483,7 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 - [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json)
 - [`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json)
 
-对 `random` 数据集，`random_input_len`、`random_output_len` 和 `random_prefix_len` 是权威参数，分别表示独有输入、输出上限和共享前缀；它们优先于通用的 `context_len`/`max_tokens`。实际统计以发送前 tokenizer 重编码后的 `DatasetBatch` 为准，报告可能与目标长度有少量差异。`share_prefix` 与 `prefix_ratio` 仅对 `text` 生效。
+对 `random` 数据集，`random_input_len`、`random_output_len` 和 `random_prefix_len` 是权威参数，分别表示独有输入、输出上限和共享前缀；它们优先于通用的 `context_len`/`max_tokens`。工具会在发送前以本地 tokenizer（不添加 special token）反复 decode/re-encode 并补充非 special token，直到最终 prompt 严格达到目标长度；如果 tokenizer 在有限次修复内无法产生该长度，工具会报错而不会静默发送长度不符的请求。API 服务端仍可因 chat template 或不同 tokenizer 而报告不同的 `usage.prompt_tokens`。`share_prefix` 与 `prefix_ratio` 仅对 `text` 生效。
 
 ## 配置说明
 
@@ -521,9 +521,11 @@ S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 
 
 ### 服务端 KV Cache 命中率
 
-API round 会通过与 chat-completions 相同鉴权头访问服务端 `/metrics`；正式流式请求使用 `aiohttp` 时，该 Prometheus 采样仍使用 `requests`。对 SGLang 暴露的 `sglang:cache_hit_rate`，报告保留测试窗口内活跃快照的 min/avg/max 与分位数。对支持 `vllm:prefix_cache_hits` 和 `vllm:prefix_cache_queries` counter 的 vLLM，工具在 round 请求前后保留相同 Prometheus label series 的计数，并计算 `ΣΔhit / ΣΔquery`，结果写入 `result.server_metrics.metrics.cache_hit_rate`，其 `aggregation` 为 `round_counter_delta`。
+API round 会通过与 chat-completions 相同鉴权头访问服务端 `/metrics`；正式流式请求使用 `aiohttp` 时，该 Prometheus 采样仍使用 `requests`。对 SGLang 暴露的 `sglang:cache_hit_rate`，报告保留测试窗口内活跃快照的 min/avg/max 与分位数；该指标是服务端直接导出的 gauge，缺少原始 hit/query counter 时不能正确换算为 rate。
 
-该 vLLM 比率以缓存 token 查询为单位，不是命中请求数。负向 counter delta 会被视为服务重启或 exporter reset 并排除；没有可配对 series 或 `Δquery=0` 时不记录命中率。若目标 vLLM 版本未导出上述 counters，报告只保留 KV Cache 使用率，无法推导实际命中率。示例配置中“70% 缓存命中”只描述共享前缀工作负载目标，实际服务端命中率仍取决于 prefix caching、逐出、调度与并发。
+对支持 `vllm:prefix_cache_hits` 和 `vllm:prefix_cache_queries` counter 的 vLLM，工具使用请求 round 前后相同 Prometheus label series 的 counter 和实际单调时钟窗口，计算 `hit_rate_per_second = ΣΔhit / window_seconds`、`query_rate_per_second = ΣΔquery / window_seconds`，再以 `hit_rate_per_second / query_rate_per_second` 得到命中率百分比。结果写入 `result.server_metrics.metrics.cache_hit_rate`，其 `aggregation` 为 `round_counter_rate`，并包含 `window_seconds`、每秒 hit/query rate 及原始增量，方便审计。
+
+该 vLLM 比率以缓存 token 查询为单位，不是命中请求数。负向 counter delta 会被视为服务重启或 exporter reset 并排除；没有可配对 series、`Δquery=0` 或无有效观测窗口时不记录命中率。若目标 vLLM 版本未导出上述 counters，报告只保留 KV Cache 使用率，无法推导实际命中率。示例配置中“70% 缓存命中”只描述共享前缀工作负载目标，实际服务端命中率仍取决于 prefix caching、逐出、调度与并发。
 
 ## 可选 Nsys Profiling
 

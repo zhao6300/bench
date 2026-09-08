@@ -8,12 +8,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-import logging
 import math
 from typing import Any, Protocol, Sequence
 import uuid
-
-logger = logging.getLogger(__name__)
 
 
 class TokenizerLike(Protocol):
@@ -249,14 +246,15 @@ class RandomDataset(BenchmarkDataset):
 
     Input and output lengths are sampled from integer-uniform ranges around the
     configured means. A prefix is generated once, then each request uses a
-    deterministic allowed-token sequence. The sequence is decoded and encoded
-    again before truncation because a tokenizer can merge neighbouring tokens.
+    deterministic allowed-token sequence. The final decoded prompt is encoded
+    without special tokens and repaired until it exactly matches its target.
     """
 
     DEFAULT_PREFIX_LEN = 0
     DEFAULT_RANGE_RATIO = 0.0
     DEFAULT_INPUT_LEN = 1024
     DEFAULT_OUTPUT_LEN = 128
+    MAX_LENGTH_REPAIR_ATTEMPTS = 64
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -325,9 +323,8 @@ class RandomDataset(BenchmarkDataset):
         )
 
         requests = []
-        token_mismatch_total = 0
         for index in range(num_requests):
-            prompt, total_input_len, token_mismatch = self.generate_token_sequence(
+            prompt, total_input_len = self.generate_token_sequence(
                 tokenizer=tokenizer,
                 prefix_token_ids=prefix_token_ids,
                 prefix_len=prefix_len,
@@ -336,7 +333,6 @@ class RandomDataset(BenchmarkDataset):
                 index=index,
                 allowed_tokens=allowed_tokens,
             )
-            token_mismatch_total += token_mismatch
             requests.append(
                 SampleRequest(
                     prompt=prompt,
@@ -344,14 +340,6 @@ class RandomDataset(BenchmarkDataset):
                     expected_output_len=int(output_lens[index]),
                     request_id=f"{request_id_prefix}{index}",
                 )
-            )
-        if token_mismatch_total:
-            sign = "more" if token_mismatch_total > 0 else "fewer"
-            logger.warning(
-                "Across generated random prompts, tokenization produced %d %s "
-                "tokens than requested after decode/re-encode.",
-                abs(token_mismatch_total),
-                sign,
             )
         return DatasetBatch(requests, shared_prefix_len=len(prefix_token_ids))
 
@@ -364,17 +352,9 @@ class RandomDataset(BenchmarkDataset):
         prefix_tokens = allowed_tokens[
             self._rng.integers(0, len(allowed_tokens), size=prefix_len)
         ].tolist()
-        _, adjusted_tokens, token_mismatch = self._decode_to_target_len(
-            tokenizer, prefix_tokens, prefix_len
+        _, adjusted_tokens = self._decode_to_target_len(
+            tokenizer, prefix_tokens, prefix_len, allowed_tokens
         )
-        if token_mismatch:
-            sign = "more" if token_mismatch > 0 else "fewer"
-            logger.warning(
-                "Random prefix tokenization produced %d %s tokens than requested "
-                "after decode/re-encode.",
-                abs(token_mismatch),
-                sign,
-            )
         self._prefix_cache[prefix_len] = adjusted_tokens
         return adjusted_tokens
 
@@ -388,32 +368,70 @@ class RandomDataset(BenchmarkDataset):
         offset: int,
         index: int,
         allowed_tokens: Any,
-    ) -> tuple[str, int, int]:
+    ) -> tuple[str, int]:
         inner_seq = allowed_tokens[
             (offset + index + self._np.arange(input_len)) % len(allowed_tokens)
         ].tolist()
         target_len = prefix_len + int(input_len)
-        prompt, adjusted_tokens, token_mismatch = self._decode_to_target_len(
-            tokenizer, prefix_token_ids + inner_seq, target_len
+        prompt, adjusted_tokens = self._decode_to_target_len(
+            tokenizer, prefix_token_ids + inner_seq, target_len, allowed_tokens
         )
-        return prompt, len(adjusted_tokens), token_mismatch
+        return prompt, len(adjusted_tokens)
 
     def _decode_to_target_len(
         self,
         tokenizer: TokenizerLike,
         token_sequence: list[int],
         target_token_len: int,
-    ) -> tuple[str, list[int], int]:
-        """Decode then re-encode/truncate a sequence to control prompt length."""
-        prompt = tokenizer.decode(token_sequence)
+        allowed_tokens: Any,
+    ) -> tuple[str, list[int]]:
+        """Return a decoded prompt whose final encoding exactly meets the target.
+
+        Args:
+            tokenizer: Tokenizer used to encode and decode the prompt text.
+            token_sequence: Initial non-special token IDs for the prompt.
+            target_token_len: Required final token count without special tokens.
+            allowed_tokens: Non-special token IDs available for deterministic padding.
+
+        Returns:
+            The submitted prompt text and its final verified token IDs.
+
+        Raises:
+            ValueError: If the tokenizer cannot produce the requested length
+                within the bounded repair attempts.
+        """
+        candidate_tokens = list(token_sequence)
+        padding_offset = len(candidate_tokens)
+        for _ in range(self.MAX_LENGTH_REPAIR_ATTEMPTS):
+            prompt = tokenizer.decode(candidate_tokens)
+            final_tokens = self._encode_without_special_tokens(tokenizer, prompt)
+            token_delta = len(final_tokens) - target_token_len
+            if token_delta == 0:
+                return prompt, final_tokens
+            if token_delta > 0:
+                candidate_tokens = final_tokens[:target_token_len]
+                continue
+
+            padding_len = -token_delta
+            padding_indices = (
+                padding_offset + self._np.arange(padding_len)
+            ) % len(allowed_tokens)
+            candidate_tokens.extend(allowed_tokens[padding_indices].tolist())
+            padding_offset += padding_len
+
+        raise ValueError(
+            "random prompt tokenization could not reach the requested "
+            f"length {target_token_len} after "
+            f"{self.MAX_LENGTH_REPAIR_ATTEMPTS} repair attempts"
+        )
+
+    @staticmethod
+    def _encode_without_special_tokens(tokenizer: TokenizerLike, prompt: str) -> list[int]:
+        """Encode prompt text without adding special tokens when supported."""
         try:
-            adjusted_tokens = tokenizer.encode(prompt, add_special_tokens=False)
+            return tokenizer.encode(prompt, add_special_tokens=False)
         except TypeError:
-            adjusted_tokens = tokenizer.encode(prompt)
-        adjusted_tokens = adjusted_tokens[:target_token_len]
-        # Decode the truncated sequence; this is the exact text submitted later.
-        prompt = tokenizer.decode(adjusted_tokens)
-        return prompt, adjusted_tokens, len(adjusted_tokens) - target_token_len
+            return tokenizer.encode(prompt)
 
 
 def create_dataset(name: str, *, random_seed: int | None = None) -> BenchmarkDataset:

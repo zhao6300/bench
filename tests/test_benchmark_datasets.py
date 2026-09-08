@@ -32,6 +32,21 @@ class FakeTokenizer:
         return 0
 
 
+class TrailingTokenDroppingTokenizer(FakeTokenizer):
+    """Tokenizer that loses the final token whenever decoded text is encoded."""
+
+    def encode(self, text: str, **kwargs: object) -> list[int]:
+        return super().encode(text, **kwargs)[:-1]
+
+
+class EmptyTokenizer(FakeTokenizer):
+    """Tokenizer that cannot encode any text, for repair failure coverage."""
+
+    def encode(self, text: str, **kwargs: object) -> list[int]:
+        del text, kwargs
+        return []
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -113,6 +128,36 @@ def test_random_dataset_preserves_cached_shared_prefix_and_lengths() -> None:
     assert second_batch.shared_prefix_len == 4
     assert tokenizer.encode(first_batch.prompts[0])[:4] == tokenizer.encode(second_batch.prompts[0])[:4]
     assert [request.request_id for request in first_batch.requests] == ["first-0", "first-1"]
+
+
+def test_random_dataset_repairs_non_reversible_tokenizer_lengths() -> None:
+    tokenizer = TrailingTokenDroppingTokenizer()
+    batch = RandomDataset(random_seed=7).sample(
+        tokenizer,
+        num_requests=2,
+        prefix_len=2,
+        input_len=6,
+        output_len=3,
+        range_ratio=0,
+    )
+
+    assert batch.prompt_lens == [8, 8]
+    assert batch.shared_prefix_len == 2
+    assert all(
+        len(tokenizer.encode(request.prompt, add_special_tokens=False)) == request.prompt_len
+        for request in batch.requests
+    )
+
+
+def test_random_dataset_rejects_unrepairable_tokenizer_length() -> None:
+    with pytest.raises(ValueError, match="could not reach the requested length 1"):
+        RandomDataset(random_seed=7).sample(
+            EmptyTokenizer(),
+            num_requests=1,
+            input_len=1,
+            output_len=1,
+            range_ratio=0,
+        )
 
 
 def test_create_dataset_rejects_unknown_name() -> None:
