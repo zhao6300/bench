@@ -7,6 +7,7 @@
 .venv/
 venv/
 __pycache__/
+node_modules/
 *.py[cod]
 *.so
 *.egg-info/
@@ -36,3 +37,4 @@ benchmark-report*.json
 *.nsys-rep
 *.qdrep
 nsys-output/
+pnpm-lock.yaml

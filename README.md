@@ -468,6 +468,37 @@ llm-benchmark --config examples/benchmark-config.s3.local.json
 
 S3 URI 必须同时包含 bucket 和 object key，且不接受 query、fragment 或 URI 内嵌凭据。S3 路径支持读取同一对象来恢复 checkpoint，但没有分布式锁：同一个 `s3://bucket/key` 在任意时刻只能由一个 benchmark 进程写入。包含 `{timestamp}` 的 S3 路径会生成唯一命名的对象 key，正常情况下不会恢复旧 checkpoint；S3 `put_object` 仍允许具有相同 key 的写入覆盖，因此它不是严格 create-only 保证。
 
+#### 本地报告查看器
+
+`web/ui/` 使用 React + Vite 提供本地报告页面，Python 静态服务只负责读取 `web/runs/`。若要开发或重新构建前端：
+
+```zsh
+cd web/ui
+pnpm install
+pnpm build
+cd ../..
+```
+
+使用下面的一键脚本安装缺失的前端依赖，自动检测前端是否需要重建，然后启动同一个本地服务：
+
+```zsh
+web/start-web.sh
+```
+
+如需修改端口，可运行：
+
+```zsh
+web/start-web.sh --host 127.0.0.1 --port 8080
+```
+
+执行如下命令后会自动列出固定到 `web/runs` 的 JSON 报告文件：
+
+```zsh
+uv run --no-project .venv/bin/python -m benchmark.web.serve
+```
+
+浏览器打开 `http://127.0.0.1:8000/`。页面提供报告概览、状态过滤、用例排序、延迟/吞吐趋势和单个用例详情。把新的 JSON 报告复制进 `web/runs/` 即可刷新列表；该页面只读取本地文件，不会发送推理请求。默认只绑定 loopback，不要把该未鉴权服务暴露到局域网。
+
 ## 数据集与长度语义
 
 `text`（默认）使用中文填充文本。`context_len` 控制目标输入长度，`max_tokens` 控制输出上限；开启 `share_prefix` 后可用 `prefix_ratio` 设置共享部分。
