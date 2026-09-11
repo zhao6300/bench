@@ -6,6 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ui_root="$repo_root/web/ui"
 python="$repo_root/.venv/bin/python"
 host="127.0.0.1"
+allow_non_loopback=false
 port="8000"
 
 usage() {
@@ -13,8 +14,10 @@ usage() {
 Usage: web/start-web.sh [--host HOST] [--port PORT]
 
 Arguments:
-  --host HOST     Bind host. Defaults to 127.0.0.1; only loopback is allowed.
+  --host HOST     Bind host. Defaults to 127.0.0.1; non-loopback requires --allow-non-loopback.
   --port PORT     Bind port. Defaults to 8000.
+  --allow-non-loopback
+                  Bind a non-loopback host; the server has no authentication.
   -h, --help      Show this help.
 
 说明：若 dist/index.html 已存在且前端源码或配置没有更新，则跳过构建。
@@ -32,6 +35,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "--port 需要一个值" >&2; exit 2; }
       port="$2"
       shift 2
+      ;;
+    --allow-non-loopback)
+      allow_non_loopback=true
+      shift
       ;;
     -h|--help)
       usage
@@ -78,4 +85,8 @@ fi
 
 echo "启动报告服务: http://$host:$port/"
 cd "$repo_root"
-exec "$python" -m web.serve --host "$host" --port "$port" --print-address
+server_args=(--host "$host" --port "$port" --print-address)
+if [[ "$allow_non_loopback" == true ]]; then
+  server_args+=(--allow-non-loopback)
+fi
+exec "$python" -m web.serve "${server_args[@]}"

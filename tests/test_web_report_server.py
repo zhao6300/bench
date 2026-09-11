@@ -45,6 +45,43 @@ def test_static_content_type_accepts_supported_files(path: str, expected: str) -
 
 
 @pytest.mark.parametrize(
+    ("host", "allow_non_loopback", "raises"),
+    [
+        ("127.0.0.1", False, False),
+        ("0.0.0.0", False, True),
+        ("192.168.1.10", False, True),
+        ("0.0.0.0", True, False),
+        ("192.168.1.10", True, False),
+    ],
+)
+def test_parse_args_requires_explicit_non_loopback_permission(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    allow_non_loopback: bool,
+    raises: bool,
+) -> None:
+    """Require an explicit launch flag before binding outside loopback."""
+    argv = [
+        "report-server",
+        "--host",
+        host,
+        "--allow-non-loopback",
+    ] if allow_non_loopback else [
+        "report-server",
+        "--host",
+        host,
+    ]
+    monkeypatch.setattr("sys.argv", argv)
+    if raises:
+        with pytest.raises(ValueError):
+            report_server.parse_args()
+    else:
+        parsed = report_server.parse_args()
+        assert parsed.host == host
+        assert parsed.allow_non_loopback is allow_non_loopback
+
+
+@pytest.mark.parametrize(
     "path",
     [None, "", "index.html", "http://127.0.0.2/index.html"],
 )

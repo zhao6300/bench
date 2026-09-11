@@ -176,15 +176,20 @@ def parse_args() -> argparse.Namespace:
     """Parse report server command-line arguments.
 
     Returns:
-        The validated host, port, and optional print-address flags.
+        The validated host, port, and optional listener/print flags.
     """
     parser = argparse.ArgumentParser(description="启动基准报告查看器（默认只绑定 loopback）")
-    parser.add_argument("--host", default="127.0.0.1", help="仅允许 loopback 地址，例如 127.0.0.1 或 ::1")
+    parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认仅允许 loopback，例如 127.0.0.1 或 ::1")
     parser.add_argument("--port", type=int, default=8000, help="监听端口，默认 8000")
     parser.add_argument("--print-address", action="store_true", help="启动后打印可打开的 URL")
+    parser.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help="允许绑定非 loopback 地址；该服务未鉴权，仅在受信任网络中启用",
+    )
     parsed = parser.parse_args()
     address = ipaddress.ip_address(parsed.host)
-    if not address.is_loopback:
+    if not parsed.allow_non_loopback and not address.is_loopback:
         raise ValueError("only loopback hosts are allowed")
     return parsed
 
