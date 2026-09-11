@@ -33,7 +33,7 @@ source .venv/bin/activate
 uv pip install -r requirements/common.txt
 uv pip install -r requirements/lint.txt
 uv pip install -e .
-pre-commit install
+bash bootstrap.sh
 ```
 
 ### 构建和安装 wheel
@@ -477,6 +477,12 @@ cd web/ui
 pnpm install
 pnpm build
 cd ../..
+```
+
+在仓库根目录可用下面的一键初始化脚本安装 Python、Web UI 与 pre-commit 依赖：
+
+```zsh
+bash bootstrap.sh
 ```
 
 使用下面的一键脚本安装缺失的前端依赖，自动检测前端是否需要重建，然后启动同一个本地服务：
