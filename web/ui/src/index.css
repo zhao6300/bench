@@ -384,10 +384,44 @@ body {
   border-bottom: 1px solid rgba(0, 0, 0, 0.05);
   font-size: 0.8rem;
   color: var(--fg);
+  vertical-align: middle;
 }
 
 .data-table tr:hover td {
   background: rgba(0, 122, 255, 0.045);
+}
+
+.compare-metric-table td {
+  line-height: 1.35;
+}
+
+.compare-metric-table td:first-child {
+  min-width: 150px;
+}
+
+.compare-metric-table td:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.compare-metric-table tbody tr:nth-child(odd) td {
+  background: #e4edff;
+}
+
+.compare-metric-table tbody tr:nth-child(even) td {
+  background: #dff6ef;
+}
+
+.data-table tbody tr:nth-child(odd) td {
+  background: #e9effa;
+}
+
+.data-table tbody tr:nth-child(even) td {
+  background: #fff;
+}
+
+.data-table tbody tr:hover td {
+  background: #dbe8ff;
 }
 
 .case-cell {
