@@ -702,6 +702,35 @@ body {
 .chart-point.chart-color-green { stroke: var(--green); }
 .chart-point.chart-color-amber { stroke: var(--amber); }
 
+.line-chart {
+  cursor: crosshair;
+}
+
+.chart-cursor {
+  stroke: rgba(0, 65, 125, 0.45);
+  stroke-width: 2;
+}
+
+.chart-hover-point {
+  fill: #fff;
+  stroke-width: 3;
+}
+
+.chart-tooltip rect {
+  fill: rgba(22, 28, 48, 0.94);
+  stroke: rgba(255, 255, 255, 0.24);
+}
+
+.chart-tooltip .tooltip-title,
+.chart-tooltip .tooltip-value {
+  font-size: 12px;
+  fill: #fff;
+}
+
+.chart-tooltip .tooltip-title {
+  font-weight: 650;
+}
+
 @media (max-width: 1080px) {
   .summary-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));

@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import { formatNumber } from "../format";
 
 type ChartSeries = { name: string; color: string; values: (number | null)[] };
@@ -9,6 +10,8 @@ interface LineChartProps {
 }
 
 export function LineChart({ labels, series, unit }: LineChartProps) {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const values = series.flatMap((item) => item.values).filter((value): value is number => value !== null && Number.isFinite(value));
   const seriesPointCount = labels.length;
   if (seriesPointCount === 0 || values.length === 0) {
@@ -25,7 +28,7 @@ export function LineChart({ labels, series, unit }: LineChartProps) {
   const chartHeight = height - paddingTop - paddingBottom;
   const min = Math.min(...values);
   const max = Math.max(...values);
-  const range = max >= min ? max - min : 1;
+  const range = max > min ? max - min : Math.max(Math.abs(max) * 0.12, 1);
   const yScale = (value: number) => paddingTop + chartHeight - ((value - min) / range) * chartHeight;
   const xScale = (index: number) => paddingLeft + (seriesPointCount === 1 ? chartWidth / 2 : (index / (seriesPointCount - 1)) * chartWidth);
   const xValues = Array.from({ length: seriesPointCount }, (_, index) => xScale(index));
@@ -49,8 +52,33 @@ export function LineChart({ labels, series, unit }: LineChartProps) {
   const gridLines = [min, (min + max) / 2, max];
   const axisLabelIndexes = [0, Math.floor((seriesPointCount - 1) / 2), seriesPointCount - 1];
 
+  const readHoverIndex = (clientX: number) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const pointerX = ((clientX - rect.left) / rect.width) * width;
+    let index = 0;
+    let delta = Math.abs(xValues[0] - pointerX);
+    for (let current = 1; current < xValues.length; current += 1) {
+      const currentDelta = Math.abs(xValues[current] - pointerX);
+      if (currentDelta < delta) {
+        index = current;
+        delta = currentDelta;
+      }
+    }
+    if (delta > 96) return null;
+    return index;
+  };
+
   return (
-    <svg className="line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`性能指标曲线${unit ? `（${unit}）` : ""}`}>
+    <svg
+      className="line-chart"
+      ref={svgRef}
+      onPointerMove={(event) => setHoveredIndex(readHoverIndex(event.clientX))}
+      onPointerLeave={() => setHoveredIndex(null)}
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label={`性能指标曲线${unit ? `（${unit}）` : ""}`}
+    >
       <rect x={paddingLeft} y={paddingTop} width={chartWidth} height={chartHeight} className="chart-frame" />
       {gridLines.map((value, index) => (
         <line
@@ -87,6 +115,44 @@ export function LineChart({ labels, series, unit }: LineChartProps) {
             />
           ),
         ),
+      )}
+      {hoveredIndex !== null && (
+        <>
+          <line
+            x1={xValues[hoveredIndex]}
+            x2={xValues[hoveredIndex]}
+            y1={paddingTop}
+            y2={paddingTop + chartHeight}
+            className="chart-cursor"
+          />
+          {series.map((item, seriesIndex) => (
+            <circle
+              key={`hover-${item.name}-${seriesIndex}`}
+              cx={xValues[hoveredIndex]}
+              cy={yScale(item.values[hoveredIndex] ?? min)}
+              r={item.values[hoveredIndex] === null || !Number.isFinite(item.values[hoveredIndex] ?? Number.NaN) ? 0 : 7}
+              className={`chart-hover-point ${item.color}`}
+            />
+          ))}
+        </>
+      )}
+      {hoveredIndex !== null && (
+        <g className="chart-tooltip" transform={`translate(${Math.min(Math.max(xValues[hoveredIndex] - 121, 8), width - 236)},${paddingTop + 4})`}>
+          <rect width="228" height={42 + series.length * 20} rx="10" />
+          <text className="tooltip-title" x="12" y="22">
+            {labels[hoveredIndex]}
+          </text>
+          {series.map((item, seriesIndex) => (
+            <text
+              key={`tooltip-${item.name}-${seriesIndex}`}
+              className="tooltip-value"
+              x="12"
+              y={44 + seriesIndex * 20}
+            >
+              {`${item.name}：${formatNumber(item.values[hoveredIndex] ?? null)}${unit ? ` ${unit}` : ""}`}
+            </text>
+          ))}
+        </g>
       )}
     </svg>
   );

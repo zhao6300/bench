@@ -1,4 +1,4 @@
-import { formatBytes, formatDate, formatDuration } from "./format";
+import { formatBytes, formatDate, formatSeconds } from "./format";
 import type { Case, Report } from "./types";
 
 export type MetricDirection = "higher" | "lower" | "neutral";
@@ -197,13 +197,13 @@ export function getSummaryCards(report: Report): SummaryCard[] {
     },
     {
       label: "TTFT P50",
-      value: averageTTFT === null ? "—" : `${formatDuration(averageTTFT)}s`,
+      value: formatSeconds(averageTTFT),
       detail: "均值",
       tone: "purple",
     },
     {
       label: "TPOT P50",
-      value: averageTPOT === null ? "—" : `${formatDuration(averageTPOT)}s`,
+      value: formatSeconds(averageTPOT),
       detail: "均值",
       tone: "green",
     },
@@ -220,7 +220,7 @@ export function getSummaryCards(report: Report): SummaryCard[] {
       tone: "green",
     },
     {
-      label: "请求数",
+      label: "QPS",
       value: averageQPS === null ? "—" : `${formatNumber(averageQPS, 1)} req/s`,
       detail: counts.pending > 0 ? `${counts.pending} pending` : "均值",
       tone: "amber",

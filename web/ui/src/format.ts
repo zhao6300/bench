@@ -42,6 +42,11 @@ export function formatDuration(seconds: number | null | undefined): string {
   return `${seconds.toFixed(1)} 秒`;
 }
 
+export function formatSeconds(value: number | null | undefined, digits = 3): string {
+  if (!Number.isFinite(value ?? Number.NaN)) return "—";
+  return `${formatNumber(value, digits)} s`;
+}
+
 export function formatBytes(bytes: number | null | undefined): string {
   if (typeof bytes !== "number" || !Number.isFinite(bytes)) return "—";
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
