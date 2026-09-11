@@ -121,6 +121,8 @@ export default function App() {
           labelA={compareAFile}
           labelB={compareBFile}
           items={runs}
+          onChangeA={setCompareAFile}
+          onChangeB={setCompareBFile}
         />
       )}
 

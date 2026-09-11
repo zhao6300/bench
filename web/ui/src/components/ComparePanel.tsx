@@ -1,14 +1,12 @@
-import { useState } from "react";
 import { formatDate, formatDuration, formatNumber } from "../format";
 import {
   caseMetric,
   caseLabel,
   metricComparisonRows,
   metricGroups,
-  metricOptions,
   pairCases,
 } from "../metrics";
-import { LineChart, MetricDeltaBars } from "./charts";
+import { LineChart } from "./charts";
 import StatusBadge from "./StatusBadge";
 import type { Report } from "../types";
 import type { Run } from "../types";
@@ -20,27 +18,35 @@ const comparisonMetrics = [
   { key: "goodput_pct", label: "Goodput", unit: "%", color: "chart-color-amber" },
 ] as const;
 
-export function ComparePanel({ reportA, reportB, labelA, labelB, items }: {
+function formatMetric(value: number | null, unit: string): string {
+  if (value === null) return "—";
+  return [formatNumber(value, 3), unit].filter(Boolean).join(" ");
+}
+
+function formatSignedDelta(value: number | null, unit: string): string {
+  if (value === null) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  return `${sign}${formatNumber(Math.abs(value), 3)}${unit ? ` ${unit}` : ""}`;
+}
+
+function formatSignedPercent(value: number | null): string {
+  if (value === null) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  return `${sign}${formatNumber(Math.abs(value), 1)}%`;
+}
+
+export function ComparePanel({ reportA, reportB, labelA, labelB, items, onChangeA, onChangeB }: {
   reportA: Report | null;
   reportB: Report | null;
   labelA: string;
   labelB: string;
   items?: Run[];
+  onChangeA: (filename: string) => void;
+  onChangeB: (filename: string) => void;
 }) {
-  const [compareReportA, setCompareReportA] = useState(labelA);
-  const [compareReportB, setCompareReportB] = useState(labelB);
   const pairs = pairCases(reportA, reportB);
   const matched = pairs.filter((pair) => pair.matched);
-  const deltaRows = metricComparisonRows(reportA, reportB);
-  const metricDeltaRows = deltaRows.map((row) => ({
-    label: row.option.label,
-    unit: row.option.unit,
-    valueA: row.valueA,
-    valueB: row.valueB,
-    delta: row.delta,
-    deltaPct: row.deltaPct,
-    tone: row.tone,
-  }));
+  const deltaRows = metricComparisonRows(matched);
   const labels = matched.map((pair) => caseLabel(pair.entryA, 0) || caseLabel(pair.entryB, 0));
 
   return (
@@ -75,7 +81,7 @@ export function ComparePanel({ reportA, reportB, labelA, labelB, items }: {
         <div className="compare-picker-grid">
           <label className="compare-picker" htmlFor="compare-report-a">
             <span>基准报告 A</span>
-          <select id="compare-report-a" value={compareReportA} onChange={(event) => setCompareReportA(event.target.value)}>
+          <select id="compare-report-a" value={labelA} onChange={(event) => onChangeA(event.target.value)}>
             {items?.map((run) => (
               <option key={run.filename} value={run.filename}>
                 {run.filename}
@@ -85,7 +91,7 @@ export function ComparePanel({ reportA, reportB, labelA, labelB, items }: {
           </label>
           <label className="compare-picker" htmlFor="compare-report-b">
             <span>对比报告 B</span>
-          <select id="compare-report-b" value={compareReportB} onChange={(event) => setCompareReportB(event.target.value)}>
+          <select id="compare-report-b" value={labelB} onChange={(event) => onChangeB(event.target.value)}>
             {items?.map((run) => (
               <option key={run.filename} value={run.filename}>
                 {run.filename}
@@ -101,7 +107,39 @@ export function ComparePanel({ reportA, reportB, labelA, labelB, items }: {
           <h3>指标差异一览</h3>
           <span>{matched.length} / {pairs.length} 个用例对齐</span>
         </div>
-        <MetricDeltaBars rows={metricDeltaRows} />
+        <div className="table-wrap">
+          <table className="data-table compare-metric-table">
+            <thead>
+              <tr>
+                <th>指标</th>
+                <th>报告 A</th>
+                <th>报告 B</th>
+                <th>变化（B − A）</th>
+                <th>相对变化</th>
+              </tr>
+            </thead>
+            <tbody>
+              {metricGroups.map((group) => (
+                <>
+                  <tr key={group.name} className="metric-group-header">
+                    <th colSpan={5}>{group.name}</th>
+                  </tr>
+                  {deltaRows
+                    .filter((row) => group.options.some((option) => option.key === row.option.key))
+                    .map((row) => (
+                      <tr key={row.option.key}>
+                        <td>{row.option.label}</td>
+                        <td>{formatMetric(row.valueA, row.option.unit)}</td>
+                        <td>{formatMetric(row.valueB, row.option.unit)}</td>
+                        <td>{formatSignedDelta(row.delta, row.option.unit)}</td>
+                        <td>{formatSignedPercent(row.deltaPct)}</td>
+                      </tr>
+                    ))}
+                </>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="chart-grid">
@@ -130,34 +168,7 @@ export function ComparePanel({ reportA, reportB, labelA, labelB, items }: {
       </div>
 
       <div className="panel-grid">
-        <section className="panel metadata-panel">
-          <div className="panel-head">
-            <h3>指标总结</h3>
-            <span>{metricOptions.length} 项</span>
-          </div>
-          <div className="metric-group-list">
-            {metricGroups.map((group) => (
-              <div key={group.name} className="metric-group-block">
-                <h4>{group.name}</h4>
-                <ul>
-            {deltaRows.filter((row) => group.options.some((option) => option.key === row.option.key))
-                    .map((row) => (
-                      <li key={row.option.key}>
-                        <div>{row.option.label}</div>
-                        <div>
-                          {formatNumber(row.valueA)}
-                          {" → "}
-                          {formatNumber(row.valueB)}
-                        </div>
-                      </li>
-                    ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="table-panel">
+        <section className="panel table-panel">
           <div className="panel-head">
             <h3>用例对照</h3>
             <span>{pairs.length} 对</span>
@@ -167,35 +178,28 @@ export function ComparePanel({ reportA, reportB, labelA, labelB, items }: {
               <thead>
                 <tr>
                   <th>用例</th>
-                  <th>状态</th>
-                  <th>TTFT P50</th>
-                  <th>TPOT P50</th>
-                  <th>吞吐量</th>
+                  <th>状态 A</th>
+                  <th>状态 B</th>
+                  <th>TTFT P50 A</th>
+                  <th>TTFT P50 B</th>
+                  <th>TPOT P50 A</th>
+                  <th>TPOT P50 B</th>
+                  <th>吞吐量 A</th>
+                  <th>吞吐量 B</th>
                 </tr>
               </thead>
               <tbody>
                 {pairs.map((pair) => (
                   <tr key={pair.key}>
                     <td>{pair.label}</td>
-                    <td>
-                      <StatusBadge status={pair.statusA} />
-                      <StatusBadge status={pair.statusB} />
-                    </td>
-                    <td>
-                      {formatNumber(caseMetric(pair.entryA, "p50_ttft"))}
-                      {" → "}
-                      {formatNumber(caseMetric(pair.entryB, "p50_ttft"))}
-                    </td>
-                    <td>
-                      {formatNumber(caseMetric(pair.entryA, "p50_tpot"))}
-                      {" → "}
-                      {formatNumber(caseMetric(pair.entryB, "p50_tpot"))}
-                    </td>
-                    <td>
-                      {formatNumber(caseMetric(pair.entryA, "overall_throughput"))}
-                      {" → "}
-                      {formatNumber(caseMetric(pair.entryB, "overall_throughput"))}
-                    </td>
+                    <td><StatusBadge status={pair.statusA} /></td>
+                    <td><StatusBadge status={pair.statusB} /></td>
+                    <td>{formatMetric(caseMetric(pair.entryA, "p50_ttft"), "s")}</td>
+                    <td>{formatMetric(caseMetric(pair.entryB, "p50_ttft"), "s")}</td>
+                    <td>{formatMetric(caseMetric(pair.entryA, "p50_tpot"), "s")}</td>
+                    <td>{formatMetric(caseMetric(pair.entryB, "p50_tpot"), "s")}</td>
+                    <td>{formatMetric(caseMetric(pair.entryA, "overall_throughput"), "tok/s")}</td>
+                    <td>{formatMetric(caseMetric(pair.entryB, "overall_throughput"), "tok/s")}</td>
                   </tr>
                 ))}
               </tbody>

@@ -497,11 +497,24 @@ body {
 }
 
 .metric-delta {
+  display: grid;
+  gap: 12px;
   padding: clamp(16px, 2vw, 20px);
   border: 1px solid rgba(224, 229, 241, 0.8);
   border-radius: var(--radius);
   background: #fff;
   box-shadow: var(--shadow);
+}
+
+.metric-group-header th {
+  position: sticky;
+  top: 42px;
+  z-index: 1;
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-size: 0.74rem;
+  font-weight: 620;
+  text-align: left;
 }
 
 .metric-delta-list {

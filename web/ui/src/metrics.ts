@@ -127,6 +127,10 @@ export function caseKey(caseEntry: Case | undefined): string {
   return caseEntry?.case_key || caseEntry?.id || caseEntry?.name || "";
 }
 
+export function caseMatchKey(caseEntry: Case | undefined, index?: number): string {
+  return caseEntry?.name || caseEntry?.id || caseEntry?.case_key || `case-${index ?? 0}`;
+}
+
 export function caseLabel(caseEntry: Case | undefined, index: number): string {
   const concurrency = caseConcurrency(caseEntry);
   if (concurrency !== null) return `C${concurrency}`;
@@ -264,8 +268,8 @@ export function caseParamNumber(caseEntry: Case | undefined, key: string): numbe
 export function pairCases(reportA: Report | null, reportB: Report | null): CasePair[] {
   const casesA = reportA?.cases ?? [];
   const casesB = reportB?.cases ?? [];
-  const byKeyA = new Map(casesA.map((entry, index) => [caseKey(entry) || `case-${index}`, entry]));
-  const byKeyB = new Map(casesB.map((entry, index) => [caseKey(entry) || `case-${index}`, entry]));
+  const byKeyA = new Map(casesA.map((entry, index) => [caseMatchKey(entry, index), entry]));
+  const byKeyB = new Map(casesB.map((entry, index) => [caseMatchKey(entry, index), entry]));
   const matchedKeys = [...byKeyA.keys()].filter((key) => byKeyB.has(key));
   const onlyAKeys = [...byKeyA.keys()].filter((key) => !byKeyB.has(key));
   const onlyBKeys = [...byKeyB.keys()].filter((key) => !byKeyA.has(key));
@@ -275,7 +279,7 @@ export function pairCases(reportA: Report | null, reportB: Report | null): CaseP
     const entryB = byKeyB.get(key);
     return {
       key,
-      label: caseLabel(entryA, 0),
+      label: entryA?.name ?? entryB?.name ?? caseLabel(entryA ?? entryB, 0),
       entryA,
       entryB,
       statusA: entryA?.status ?? "",
@@ -286,23 +290,38 @@ export function pairCases(reportA: Report | null, reportB: Report | null): CaseP
 
   const onlyA = onlyAKeys.map((key) => {
     const entryA = byKeyA.get(key);
-    return { key, label: caseLabel(entryA, 0), entryA, entryB: undefined, statusA: entryA?.status ?? "", statusB: "", matched: false };
+    return { key, label: entryA?.name ?? caseLabel(entryA, 0), entryA, entryB: undefined, statusA: entryA?.status ?? "", statusB: "", matched: false };
   });
   const onlyB = onlyBKeys.map((key) => {
     const entryB = byKeyB.get(key);
-    return { key, label: caseLabel(undefined, 0), entryA: undefined, entryB, statusA: "", statusB: entryB?.status ?? "", matched: false };
+    return { key, label: entryB?.name ?? caseLabel(entryB, 0), entryA: undefined, entryB, statusA: "", statusB: entryB?.status ?? "", matched: false };
   });
 
-  return [...matched, ...onlyA, ...onlyB].sort((left, right) => caseSortIndex(left.entryA ?? left.entryB) - caseSortIndex(right.entryA ?? right.entryB));
+  return [...matched, ...onlyA, ...onlyB].sort(
+    (left, right) => caseSortIndex(left.entryA ?? left.entryB) - caseSortIndex(right.entryA ?? right.entryB),
+  );
 }
 
-export function metricComparisonRows(reportA: Report | null, reportB: Report | null): MetricDelta[] {
-  const casesA = reportA?.cases ?? [];
-  const casesB = reportB?.cases ?? [];
+function pairedMetricMean(pairs: CasePair[], key: string): [number | null, number | null] {
+  const valuesA: number[] = [];
+  const valuesB: number[] = [];
 
+  for (const pair of pairs) {
+    const valueA = caseMetric(pair.entryA, key);
+    const valueB = caseMetric(pair.entryB, key);
+    if (valueA === null || valueB === null) continue;
+    valuesA.push(valueA);
+    valuesB.push(valueB);
+  }
+
+  if (!valuesA.length) return [null, null];
+  const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+  return [mean(valuesA), mean(valuesB)];
+}
+
+export function metricComparisonRows(pairs: CasePair[]): MetricDelta[] {
   return metricOptions.map((option) => {
-    const valueA = caseMetricMean(casesA, option.key);
-    const valueB = caseMetricMean(casesB, option.key);
+    const [valueA, valueB] = pairedMetricMean(pairs, option.key);
     const delta = valueA !== null && valueB !== null ? valueB - valueA : null;
     const deltaPct = valueA !== null && valueB !== null && valueA !== 0
       ? ((valueB - valueA) / Math.abs(valueA)) * 100
