@@ -1,31 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import "./index.css";
-import { concurrency, finiteMean, formatDate, formatNumber, metric } from "./format";
-import { Report, Run } from "./types";
+import Comparison from "./components/Comparison";
+import { concurrency, formatBytes, formatDate, formatDuration, formatNumber, metric } from "./format";
+import type { Case, Report, ReportPair, Run } from "./types";
 
 type View = "overview" | "compare";
-type MetricDirection = "higher" | "lower";
-type ReportPair = { reportA: Report | null; reportB: Report | null };
-
-type MetricOption = {
-  key: string;
-  label: string;
-  unit: string;
-  direction: MetricDirection;
-};
-
-const metricOptions: MetricOption[] = [
-  { key: "p50_ttft", label: "TTFT P50", unit: "s", direction: "lower" },
-  { key: "p99_ttft", label: "TTFT P99", unit: "s", direction: "lower" },
-  { key: "p50_tpot", label: "TPOT P50", unit: "s", direction: "lower" },
-  { key: "p99_tpot", label: "TPOT P99", unit: "s", direction: "lower" },
-  { key: "overall_throughput", label: "吞吐量", unit: "tok/s", direction: "higher" },
-  { key: "goodput_pct", label: "Goodput", unit: "%", direction: "higher" },
-];
 
 export default function App() {
   const [view, setView] = useState<View>("overview");
-  const [runs, setRuns] = useState([] as Run[]);
+  const [runs, setRuns] = useState<Run[]>([]);
   const [report, setReport] = useState<Report | null>(null);
   const [compareLeft, setCompareLeft] = useState("");
   const [compareRight, setCompareRight] = useState("");
@@ -40,7 +22,7 @@ export default function App() {
     void (async () => {
       try {
         const response = await fetch("/api/runs");
-        const payload = (await response.json()) as Run[];
+        const payload = await response.json() as Run[];
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         if (cancelled) return;
         setRuns(payload);
@@ -116,12 +98,7 @@ export default function App() {
   const summaryCards = useMemo(() => getSummaryCards(report), [report]);
   const detailCards = useMemo(() => getDetailCards(report), [report]);
   const chartPoints = useMemo(() => getChartPoints(report), [report]);
-
-  async function fetchReport(filename: string): Promise<Report> {
-    const response = await fetch(`/runs/${encodeURIComponent(filename)}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return (await response.json()) as Report;
-  }
+  const environmentFacts = useMemo(() => getEnvironmentFacts(report), [report]);
 
   return (
     <div className="app">
@@ -172,51 +149,79 @@ export default function App() {
           </section>
 
           <section className="panel-grid">
-            <section className="panel" aria-label="用例列表">
+            <section className="panel" aria-label="用例结果">
               <div className="panel-head">
-                <h2>用例</h2>
+                <h2>用例结果</h2>
                 <small>{report?.cases?.length ?? 0} 个</small>
               </div>
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>名称</th>
-                      <th>并发</th>
                       <th>状态</th>
-                      <th>TTFT</th>
+                      <th>用例</th>
+                      <th>模型</th>
+                      <th>负载</th>
+                      <th>并发</th>
+                      <th>TTFT P50</th>
+                      <th>TPOT P50</th>
                       <th>吞吐</th>
+                      <th>Goodput</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(report?.cases ?? []).map((entry, index) => (
-                      <tr key={`${entry.id ?? entry.name ?? "case"}-${index}`}>
-                        <td><span className="case-name">{entry.name ?? "未命名"}</span></td>
-                        <td>{concurrency(entry) === null ? "—" : concurrency(entry)}</td>
-                        <td><span className={`status-badge ${getStatus(entry.status)}`}>{entry.status ?? "未知"}</span></td>
-                        <td>{formatNumber(metric(entry, "p50_ttft"))}</td>
-                        <td>{formatNumber(metric(entry, "overall_throughput"))}</td>
-                      </tr>
-                    ))}
+                    {(report?.cases ?? []).map((entry, index) => {
+                      const concurrencyValue = concurrency(entry);
+                      const workload = getWorkload(entry);
+                      return (
+                        <tr key={`${entry.id ?? entry.name ?? "case"}-${index}`}>
+                          <td><span className={`status-badge ${getStatus(entry.status)}`}>{entry.status ?? "未知"}</span></td>
+                          <td><span className="case-name">{entry.name ?? "未命名"}</span></td>
+                          <td>{getStringParam(entry, "model") || "—"}</td>
+                          <td>{workload}</td>
+                          <td>{concurrencyValue === null ? "—" : concurrencyValue}</td>
+                          <td>{formatNumber(metric(entry, "p50_ttft"))} s</td>
+                          <td>{formatNumber(metric(entry, "p50_tpot"))} s</td>
+                          <td>{formatNumber(metric(entry, "overall_throughput"))} tok/s</td>
+                          <td>{formatNumber(metric(entry, "goodput_pct"))}%</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             </section>
 
-            <section className="detail-column" aria-label="关键指标">
+            <section className="detail-column" aria-label="关键信息">
               <section className="mini-grid">
                 {detailCards.map((item) => (
                   <article className="card" key={item.title}>
                     <span>{item.title}</span>
                     <strong>{item.value}</strong>
-                    <small>平均值</small>
+                    <small>均值</small>
                   </article>
                 ))}
               </section>
 
+              <section className="panel environment-panel" aria-label="环境和元数据">
+                <div className="panel-head">
+                  <h2>环境与元数据</h2>
+                  <small>{report?.suite?.run_state ?? "unknown"}</small>
+                </div>
+                <dl className="fact-list">
+                  {environmentFacts.map((fact) => (
+                    <div key={fact.label}>
+                      <dt>{fact.label}</dt>
+                      <dd>{fact.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                {report?.suite?.description ? <p className="description">{report.suite.description}</p> : null}
+              </section>
+
               <section className="panel chart-panel" aria-label="并发趋势">
                 <div className="panel-head">
-                  <h2>并发曲线</h2>
+                  <h2>TTFT 随并发变化</h2>
                   <small>{chartPoints.length} 点</small>
                 </div>
                 <Chart points={chartPoints} unit="s" />
@@ -229,16 +234,14 @@ export default function App() {
           <section className="panel" aria-label="对比设置">
             <div className="panel-head">
               <h2>选择报告</h2>
-              <small>按用例名称自动匹配</small>
+              <small>按用例名称自动匹配，支持部分对齐</small>
             </div>
             <div className="compare-grid">
               <label>
                 <span>基准报告 A</span>
                 <select value={compareLeft} onChange={(event) => setCompareLeft(event.target.value)}>
                   {runs.map((run) => (
-                    <option key={run.filename} value={run.filename}>
-                      {run.filename}
-                    </option>
+                    <option key={run.filename} value={run.filename}>{run.filename}</option>
                   ))}
                 </select>
               </label>
@@ -246,9 +249,7 @@ export default function App() {
                 <span>对比报告 B</span>
                 <select value={compareRight} onChange={(event) => setCompareRight(event.target.value)}>
                   {runs.map((run) => (
-                    <option key={run.filename} value={run.filename}>
-                      {run.filename}
-                    </option>
+                    <option key={run.filename} value={run.filename}>{run.filename}</option>
                   ))}
                 </select>
               </label>
@@ -256,7 +257,8 @@ export default function App() {
           </section>
 
           <Comparison
-            reports={comparisonReports}
+            reportA={comparisonReports.reportA}
+            reportB={comparisonReports.reportB}
             labelA={compareLeft}
             labelB={compareRight}
           />
@@ -269,162 +271,100 @@ export default function App() {
   );
 }
 
-function Comparison({ labelA, labelB, reports }: {
-  labelA: string;
-  labelB: string;
-  reports: { reportA: Report | null; reportB: Report | null };
-}) {
-  const casesA = reports.reportA?.cases ?? [];
-  const casesB = reports.reportB?.cases ?? [];
-  const [choice, setChoice] = useState(metricOptions[0].key);
-  const selectedMetric = metricOptions.find((option) => option.key === choice)!;
-  const rows = metricOptions.map((option) => ({
-    ...option,
-    valueA: finiteMean(casesA.map((entry) => metric(entry, option.key))),
-    valueB: finiteMean(casesB.map((entry) => metric(entry, option.key))),
-  }));
-
-  const casesByNameA = new Map(casesA.filter((entry) => entry.name).map((entry) => [entry.name as string, entry]));
-  const casesByNameB = new Map(casesB.filter((entry) => entry.name).map((entry) => [entry.name as string, entry]));
-  const matchedNames = [...casesByNameA.keys()].filter((name) => casesByNameB.has(name));
-  const matchedCases = matchedNames
-    .map((name) => ({
-      entryA: casesByNameA.get(name)!,
-      entryB: casesByNameB.get(name)!,
-      name,
-      valueA: metric(casesByNameA.get(name), choice),
-      valueB: metric(casesByNameB.get(name), choice),
-    }))
-    .filter((row) => row.valueA !== null && row.valueB !== null);
-
-  return (
-    <section className="panel compare-panel" aria-label="指标对比">
-      <div className="panel-head">
-        <h2>指标对比</h2>
-        <small>按平均值计算</small>
-      </div>
-
-      <div className="compare-grid">
-        <label>
-          <span>对比指标</span>
-          <select value={choice} onChange={(event) => setChoice(event.target.value)}>
-            {metricOptions.map((option) => (
-              <option key={option.key} value={option.key}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="tag">
-          <span>报告 A</span>
-          <strong>{truncateLabel(labelA)}</strong>
-        </div>
-        <div className="tag">
-          <span>报告 B</span>
-          <strong>{truncateLabel(labelB)}</strong>
-        </div>
-      </div>
-
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>指标</th>
-              <th>A</th>
-              <th>B</th>
-              <th>变化</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const delta = row.valueA !== null && row.valueB !== null ? row.valueB - row.valueA : null;
-              return (
-                <tr key={row.key}>
-                  <td>{row.label}</td>
-                  <td>{formatNumber(row.valueA)}</td>
-                  <td>{formatNumber(row.valueB)}</td>
-                  <td className={`change ${getTone(row.direction, delta)}`}>
-                    {formatDelta(delta, row.direction, row.unit)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>用例</th>
-              <th>A</th>
-              <th>B</th>
-              <th>变化</th>
-            </tr>
-          </thead>
-          <tbody>
-            {matchedCases.map((row) => {
-              const delta = row.valueA !== null && row.valueB !== null ? row.valueB - row.valueA : null;
-              return (
-                <tr key={row.name}>
-                  <td><span className="case-name">{row.name}</span></td>
-                  <td>{formatNumber(row.valueA)}</td>
-                  <td>{formatNumber(row.valueB)}</td>
-                  <td className={`change ${getTone(selectedMetric.direction, delta)}`}>
-                    {formatDelta(delta, selectedMetric.direction, selectedMetric.unit)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function getTone(direction: MetricDirection, delta: number | null): "positive" | "negative" | "neutral" {
-  if (delta === null || delta === 0) return "neutral";
-  const improved = direction === "higher" ? delta > 0 : delta < 0;
-  return improved ? "positive" : "negative";
-}
-
-function formatDelta(delta: number | null, direction: MetricDirection, unit: string): string {
-  if (delta === null) return "—";
-  if (delta === 0) return "持平";
-  const improved = direction === "higher" ? delta > 0 : delta < 0;
-  const marker = improved ? "↑" : "↓";
-  return `${marker} ${formatNumber(Math.abs(delta), 1)}${unit ? ` ${unit}` : ""}`;
-}
-
-function truncateLabel(label: string): string {
-  return label.length > 36 ? `${label.slice(-36)}…` : label;
+async function fetchReport(filename: string): Promise<Report> {
+  const response = await fetch(`/runs/${encodeURIComponent(filename)}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return await response.json() as Report;
 }
 
 function getStatus(status: string | undefined): string {
   return status === "passed" || status === "failed" || status === "skipped" ? status : "unknown";
 }
 
+function getStringParam(entry: Case, key: string): string {
+  const value = entry.params?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function getWorkload(entry: Case): string {
+  const inputLen = entry.params?.random_input_len;
+  const outputLen = entry.params?.random_output_len;
+  if (typeof inputLen === "number" && typeof outputLen === "number") {
+    return `${formatNumber(inputLen, 0)} / ${formatNumber(outputLen, 0)} tok`;
+  }
+  return entry.params?.dataset === "text" ? "Text" : "—";
+}
+
+function count(cases: Case[], summary: Report["summary"], status: string): number {
+  const value = summary?.[status];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return cases.filter((entry) => entry.status === status).length;
+}
+
 function getSummaryCards(report: Report | null): { label: string; value: string; detail: string; tone: string }[] {
   const cases = report?.cases ?? [];
   const summary = report?.summary ?? {};
-  const total = Number(summary.total);
-  const passed = Number(summary.passed);
-  const failed = Number(summary.failed);
-  const skipped = Number(summary.skipped);
-  const totalCases = Number.isFinite(total) ? total : cases.length;
-  const passedCases = Number.isFinite(passed) ? passed : cases.filter((entry) => entry.status === "passed").length;
-  const failedCases = Number.isFinite(failed) ? failed : cases.filter((entry) => entry.status === "failed").length;
-  const skippedCases = Number.isFinite(skipped) ? skipped : cases.filter((entry) => entry.status === "skipped").length;
+  const total = typeof summary.total === "number" ? summary.total : cases.length;
+  const passed = count(cases, summary, "passed");
+  const failed = count(cases, summary, "failed");
+  const interrupted = count(cases, summary, "interrupted");
+  const running = count(cases, summary, "running");
+  const pending = count(cases, summary, "pending");
+  const skipped = count(cases, summary, "skipped");
+  const abnormal = failed + interrupted + running + pending;
+  const passRate = total ? (passed * 100) / total : null;
+  const environment = report?.environment;
+  const accelerator = environment?.host_inventory?.accelerators?.devices?.[0]?.name;
 
   return [
-    { label: "基准", value: report?.suite?.name ?? "—", detail: formatDate(report?.suite?.started_at), tone: "reference" },
-    { label: "通过", value: String(passedCases), detail: totalCases ? `${((passedCases / totalCases) * 100).toFixed(1)}%` : "—", tone: "passed" },
-    { label: "失败", value: String(failedCases), detail: `${skippedCases} skipped`, tone: "failed" },
-    { label: "运行耗时", value: report?.suite?.duration_seconds ? `${(report.suite.duration_seconds / 60).toFixed(1)} 分钟` : "—", detail: `${totalCases} 用例`, tone: "elapsed" },
-    { label: "平均 Prompt", value: formatNumber(finiteMean(cases.map((entry) => metric(entry, "total_prompt_tokens"))), 0), detail: "tokens", tone: "prompt" },
-    { label: "平均 Decode", value: formatNumber(finiteMean(cases.map((entry) => metric(entry, "total_generated_tokens"))), 0), detail: "tokens", tone: "completion" },
+    {
+      label: "基准",
+      value: report?.suite?.name ?? "—",
+      detail: `${report?.suite?.run_state ?? "unknown"} · ${formatDate(report?.suite?.started_at)}`,
+      tone: "reference",
+    },
+    {
+      label: "通过",
+      value: `${passed} / ${total}`,
+      detail: `${passRate === null ? "—" : `${passRate.toFixed(1)}%`} · ${skipped} skipped`,
+      tone: "passed",
+    },
+    {
+      label: "异常",
+      value: String(abnormal),
+      detail: `${failed} failed · ${interrupted} interrupted`,
+      tone: "failed",
+    },
+    {
+      label: "用时",
+      value: formatDuration(report?.suite?.duration_seconds),
+      detail: `${skipped} skipped · ${running + pending} active`,
+      tone: "elapsed",
+    },
+    {
+      label: "平均 TTFT",
+      value: `${formatNumber(finiteMean(cases.map((entry) => metric(entry, "p50_ttft"))))} s`,
+      detail: "P50 均值",
+      tone: "prompt",
+    },
+    {
+      label: "平均 TPOT",
+      value: `${formatNumber(finiteMean(cases.map((entry) => metric(entry, "p50_tpot"))))} s`,
+      detail: "P50 均值",
+      tone: "completion",
+    },
+    {
+      label: "吞吐量",
+      value: `${formatNumber(finiteMean(cases.map((entry) => metric(entry, "overall_throughput"))))}`,
+      detail: "tok/s · 用例均值",
+      tone: "prompt",
+    },
+    {
+      label: "环境",
+      value: accelerator ?? `${environment?.host_inventory?.cpu?.logical_cores ?? "—"} cores`,
+      detail: accelerator ? "加速器" : environment?.host_inventory?.cpu?.model ?? "CPU",
+      tone: "reference",
+    },
   ];
 }
 
@@ -433,8 +373,10 @@ function getDetailCards(report: Report | null): { title: string; key: string; va
   const entries = [
     { title: "TTFT P99", key: "p99_ttft" },
     { title: "TPOT P99", key: "p99_tpot" },
-    { title: "Goodput", key: "goodput_pct" },
     { title: "E2E P99", key: "p99_e2e" },
+    { title: "Goodput", key: "goodput_pct" },
+    { title: "QPS", key: "qps" },
+    { title: "失败率", key: "failure_rate" },
   ];
   return entries.map((entry) => ({
     ...entry,
@@ -442,9 +384,30 @@ function getDetailCards(report: Report | null): { title: string; key: string; va
   }));
 }
 
+function getEnvironmentFacts(report: Report | null): { label: string; value: string }[] {
+  const environment = report?.environment;
+  const host = environment?.host_inventory;
+  const cpu = host?.cpu;
+  const devices = host?.accelerators?.devices ?? [];
+  return [
+    { label: "Python", value: environment?.python ?? "—" },
+    { label: "主机", value: environment?.hostname ?? "—" },
+    { label: "平台", value: `${host?.operating_system?.system ?? "—"} ${host?.operating_system?.release ?? ""}`.trim() },
+    { label: "CPU", value: cpu?.model ? `${cpu.model} · ${cpu.logical_cores ?? "—"}C` : "—" },
+    { label: "内存", value: formatBytes(host?.memory?.total_bytes) },
+    { label: "加速器", value: devices.map((device) => device.name).filter(Boolean).join(", ") || "未发现" },
+    { label: "开始", value: formatDate(report?.suite?.started_at) },
+    { label: "结束", value: formatDate(report?.suite?.finished_at) },
+  ];
+}
+
+function finiteMean(values: (number | null | undefined)[]): number | null {
+  const numeric = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return numeric.length ? numeric.reduce((sum, value) => sum + value, 0) / numeric.length : null;
+}
+
 function getChartPoints(report: Report | null): { x: number; y: number }[] {
-  const cases = report?.cases ?? [];
-  return cases
+  return (report?.cases ?? [])
     .filter((entry) => metric(entry, "p50_ttft") !== null && concurrency(entry) !== null)
     .map((entry) => ({
       x: concurrency(entry) as number,
@@ -462,20 +425,18 @@ function Chart({ points, unit }: { points: { x: number; y: number }[]; unit: str
   const paddingTop = 28;
   const paddingBottom = 42;
   const chartWidth = 640;
-  const charWidth = chartWidth - paddingLeft - paddingRight;
+  const chartInnerWidth = chartWidth - paddingLeft - paddingRight;
   const chartHeight = height - paddingTop - paddingBottom;
-  const values = points.map((point) => point.y).filter((value) => Number.isFinite(value));
-  const bounds = points.map((point) => point.x).filter((value) => Number.isFinite(value));
-  const minimumY = Math.min(...values);
-  const maximumY = Math.max(...values);
-  const minimumX = Math.min(...bounds);
-  const maximumX = Math.max(...bounds);
+  const minimumY = Math.min(...points.map((point) => point.y));
+  const maximumY = Math.max(...points.map((point) => point.y));
+  const minimumX = Math.min(...points.map((point) => point.x));
+  const maximumX = Math.max(...points.map((point) => point.x));
   const yRange = Math.max(maximumY - minimumY, 1e-6);
   const xRange = Math.max(maximumX - minimumX, 1);
 
   function coordinateX(value: number): number {
-    if (points.length === 1) return paddingLeft + charWidth / 2;
-    return paddingLeft + ((value - minimumX) / xRange) * charWidth;
+    if (points.length === 1) return paddingLeft + chartInnerWidth / 2;
+    return paddingLeft + ((value - minimumX) / xRange) * chartInnerWidth;
   }
 
   function coordinateY(value: number): number {
@@ -489,14 +450,14 @@ function Chart({ points, unit }: { points: { x: number; y: number }[]; unit: str
   const midX = (firstX + lastX) / 2;
 
   return (
-    <svg className="line-chart" viewBox={`0 0 ${chartWidth} ${height}`} role="img" aria-label="并发和 TTFT 曲线">
+    <svg className="line-chart" viewBox={`0 0 ${chartWidth} ${height}`} role="img" aria-label="TTFT 随并发变化的曲线">
       <path d={areaPath} />
       <path className="line" d={linePath} />
       {points.map((point, index) => (
         <circle key={`${point.x}-${point.y}-${index}`} cx={coordinateX(point.x)} cy={coordinateY(point.y)} r="3.5" />
       ))}
       <text x={paddingLeft - 8} y={height - paddingBottom} textAnchor="end">{formatNumber(minimumY)}{unit}</text>
-      <text x={paddingLeft - 8} y={paddingTop} textAnchor="end">{formatNumber(maximumY)}{unit}</text>
+      <text x={paddingLeft - 8} y={paddingTop + 6} textAnchor="end">{formatNumber(maximumY)}{unit}</text>
       <text x={firstX} y={height - 16} textAnchor="start">{formatNumber(minimumX, 0)}</text>
       <text x={midX} y={height - 16} textAnchor="middle">{formatNumber((minimumX + maximumX) / 2, 0)}</text>
       <text x={lastX} y={height - 16} textAnchor="end">{formatNumber(maximumX, 0)}</text>

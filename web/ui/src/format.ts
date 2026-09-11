@@ -35,3 +35,21 @@ export function finiteMean(values: (number | null | undefined)[]): number | null
     ? items.reduce((sum, value) => sum + value, 0) / items.length
     : null;
 }
+
+export function formatDuration(seconds: number | null | undefined): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "—";
+  if (seconds >= 60) return `${(seconds / 60).toFixed(1)} 分钟`;
+  return `${seconds.toFixed(1)} 秒`;
+}
+
+export function formatBytes(bytes: number | null | undefined): string {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes)) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (Math.abs(value) >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 || unitIndex === 0 ? 1 : 2)} ${units[unitIndex]}`;
+}

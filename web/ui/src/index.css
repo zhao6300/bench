@@ -412,6 +412,49 @@ tbody tr:hover {
   gap: 14px;
 }
 
+.environment-panel {
+  min-height: 280px;
+}
+
+.fact-list {
+  display: grid;
+  gap: 10px 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fact-list div {
+  min-width: 0;
+}
+
+.fact-list dt {
+  color: var(--fg-subtle);
+  font-size: 0.71rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fact-list dd {
+  margin: 3px 0 0;
+  overflow: hidden;
+  font-size: 0.79rem;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.description {
+  margin-top: 15px;
+  display: -webkit-box;
+  color: var(--fg-muted);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+
 .chart-panel {
   min-height: 300px;
 }
@@ -517,6 +560,24 @@ tbody tr:hover {
 
 .compare-panel .table-wrap {
   max-height: 42vh;
+}
+
+.match-note {
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card-2);
+  color: var(--fg-muted);
+  font-size: 0.78rem;
+}
+
+.group-row td {
+  background: rgba(245, 245, 247, 0.94);
+  color: var(--fg-subtle);
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .change {
@@ -633,6 +694,10 @@ tbody tr:hover {
   .compare-grid {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
+  }
+
+  .fact-list {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
