@@ -15,6 +15,7 @@ export default function App() {
   const [report, setReport] = useState<Report | null>(null);
   const [reportA, setReportA] = useState<Report | null>(null);
   const [reportB, setReportB] = useState<Report | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -41,45 +42,55 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     if (!selectedFile) {
       setReport(null);
-      return () => { cancelled = true; };
+      return () => controller.abort();
     }
     void (async () => {
       try {
-        const detail = await fetchReport(selectedFile);
-        if (!cancelled) {
+        const detail = await fetchReport(selectedFile, controller.signal);
+        if (!controller.signal.aborted) {
           setReport(detail);
           setError("");
         }
       } catch (failure) {
-        if (!cancelled) setError(failure instanceof Error ? failure.message : "报告加载失败");
+        if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "报告加载失败");
       }
     })();
-    return () => { cancelled = true; };
+    return () => controller.abort();
   }, [selectedFile]);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     if (!compareAFile || !compareBFile) {
       setReportA(null);
       setReportB(null);
-      return () => { cancelled = true; };
+      setCompareLoading(false);
+      return () => controller.abort();
     }
+
+    setCompareLoading(true);
     void (async () => {
       try {
-        const [dataA, dataB] = await Promise.all([fetchReport(compareAFile), fetchReport(compareBFile)]);
-        if (!cancelled) {
+        const [dataA, dataB] = await Promise.all([
+          fetchReport(compareAFile, controller.signal),
+          fetchReport(compareBFile, controller.signal),
+        ]);
+        if (!controller.signal.aborted) {
           setReportA(dataA);
           setReportB(dataB);
+          setCompareLoading(false);
           setError("");
         }
       } catch (failure) {
-        if (!cancelled) setError(failure instanceof Error ? failure.message : "对比报告加载失败");
+        if (!controller.signal.aborted) {
+          setCompareLoading(false);
+          setError(failure instanceof Error ? failure.message : "对比报告加载失败");
+        }
       }
     })();
-    return () => { cancelled = true; };
+    return () => controller.abort();
   }, [compareAFile, compareBFile]);
 
   return (
@@ -127,6 +138,7 @@ export default function App() {
       )}
 
       {loading ? <div className="status">加载中…</div> : null}
+      {compareLoading && !loading ? <div className="status">对比报告加载中…</div> : null}
       {error ? <div className="status error">{error}</div> : null}
     </div>
   );
