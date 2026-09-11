@@ -65,7 +65,9 @@ uv pip install --python "$python" -e .
 "$python" -m pre_commit install
 
 echo "安装 Web UI 依赖..."
-pnpm --dir="$ui_root" install --frozen-lockfile
+cd "$ui_root"
+pnpm install --frozen-lockfile
+cd "$repo_root"
 
 if [[ "$serve_mode" -eq 0 ]]; then
   echo "依赖安装完成。"
