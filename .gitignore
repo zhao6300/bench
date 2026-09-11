@@ -5,6 +5,7 @@
 
 # Python environments and build artefacts
 .venv/
+.pnpm-store/
 venv/
 __pycache__/
 node_modules/
@@ -32,6 +33,7 @@ htmlcov/
 # Benchmark output, checkpoints, and profiler artefacts
 benchmark-report*.json
 *-report-*.json
+!/web/runs/*.json
 *.lock
 *.tmp-*
 *.nsys-rep
