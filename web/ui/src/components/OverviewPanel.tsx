@@ -9,6 +9,7 @@ import {
   caseKey,
   statusSegments,
 } from "../metrics";
+import { useState } from "react";
 import { formatDate, formatDuration, formatNumber } from "../format";
 import { LineChart } from "./charts";
 import StatusBadge from "./StatusBadge";
@@ -30,12 +31,15 @@ const overviewChartColors: Record<OverviewMetricKey, string> = {
   goodput_pct: "chart-color-amber",
 };
 
+const tableZoomOptions = [1, 1.25, 1.5, 1.75, 2];
+
 export function OverviewPanel({ report }: { report: Report | null }) {
   const reportData = report ?? { cases: [] };
   const cases = (reportData.cases ?? []).filter((caseEntry) => caseMetric(caseEntry, "p50_ttft") !== null);
   const summaryCards = getSummaryCards(reportData);
   const statusString = statusSegments(reportData);
   const environment = environmentFacts(reportData);
+  const [tableZoom, setTableZoom] = useState(1);
 
   return (
     <section className="overview">
@@ -104,9 +108,19 @@ export function OverviewPanel({ report }: { report: Report | null }) {
       </div>
 
       <div className="panel-grid">
-        <section className="panel table-panel">
-          <div className="panel-head">
+        <section className="panel table-panel" style={{ ["--table-zoom" as string]: tableZoom } as React.CSSProperties}>
+          <div className="panel-head table-toolbar">
             <h3>用例结果</h3>
+            <label className="table-zoom" htmlFor="overview-table-zoom">
+              <span>文字大小</span>
+              <select id="overview-table-zoom" value={tableZoom} onChange={(event) => setTableZoom(Number(event.target.value))}>
+                {tableZoomOptions.map((value) => (
+                  <option key={value} value={value}>
+                    {Math.round(value * 100)}%
+                  </option>
+                ))}
+              </select>
+            </label>
             <span>{cases.length} 个</span>
           </div>
           <div className="table-wrap">
