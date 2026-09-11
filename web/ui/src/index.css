@@ -3,8 +3,8 @@
   --bg-soft: #ffffff;
   --card: #ffffff;
   --fg: #1f2430;
-  --fg-muted: #6b7280;
-  --fg-subtle: #5a6478;
+  --fg-muted: #5e6877;
+  --fg-subtle: #454f62;
   --line: #e4e7ef;
   --blue: #5c8ff7;
   --teal: #3ec9b9;
@@ -212,29 +212,29 @@ body {
   min-width: 72px;
   padding: 0 16px;
   color: #fff;
-  font-size: 0.76rem;
-  font-weight: 550;
+  font-size: 0.8rem;
+  font-weight: 620;
 }
 
 .status-segment.passed {
-  background: #17704a;
+  background: #0f6d43;
 }
 
 .status-segment.failed {
-  background: #a73241;
+  background: #992b3a;
 }
 
 .status-segment.interrupted,
 .status-segment.running {
-  background: #9a5615;
+  background: #8b4b12;
 }
 
 .status-segment.pending {
-  background: #2657c0;
+  background: #1f4dbb;
 }
 
 .status-segment.skipped {
-  background: #4d596f;
+  background: #404d66;
 }
 
 .summary-grid {
@@ -456,7 +456,7 @@ body {
 
 .data-table tbody tr:hover td {
   background: #dbe8ff;
-  color: #172b4d;
+  color: #101b33;
 }
 
 .case-cell {
@@ -519,12 +519,16 @@ body {
   font-size: 0.74rem;
 }
 
-.status-badge.passed { background: #17704a; color: #fff; }
-.status-badge.failed { background: #a73241; color: #fff; }
+.status-badge.passed { background: #0f6d43; color: #fff; }
+.status-badge.failed { background: #992b3a; color: #fff; }
 .status-badge.interrupted,
-.status-badge.running { background: #9a5615; color: #fff; }
-.status-badge.pending { background: #2657c0; color: #fff; }
-.status-badge.skipped { background: #4d596f; color: #fff; }
+.status-badge.running { background: #8b4b12; color: #fff; }
+.status-badge.pending { background: #1f4dbb; color: #fff; }
+.status-badge.skipped { background: #404d66; color: #fff; }
+
+.data-table .status-badge {
+  font-size: calc(0.74rem * var(--table-zoom, 1));
+}
 
 .pair-panel {
   display: grid;
@@ -743,27 +747,27 @@ body {
 
 .chart-cursor {
   stroke: rgba(0, 65, 125, 0.45);
-  stroke-width: 2;
+  stroke-width: 3;
 }
 
 .chart-hover-point {
   fill: #fff;
-  stroke-width: 3;
+  stroke-width: 4;
 }
 
 .chart-tooltip rect {
   fill: rgba(22, 28, 48, 0.94);
-  stroke: rgba(255, 255, 255, 0.24);
+  stroke: rgba(255, 255, 255, 0.3);
 }
 
 .chart-tooltip .tooltip-title,
 .chart-tooltip .tooltip-value {
-  font-size: 12px;
+  font-size: 18px;
   fill: #fff;
 }
 
 .chart-tooltip .tooltip-title {
-  font-weight: 650;
+  font-weight: 720;
 }
 
 @media (max-width: 1080px) {

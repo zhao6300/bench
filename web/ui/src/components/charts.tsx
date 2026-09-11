@@ -137,9 +137,9 @@ export function LineChart({ labels, series, unit }: LineChartProps) {
         </>
       )}
       {hoveredIndex !== null && (
-        <g className="chart-tooltip" transform={`translate(${Math.min(Math.max(xValues[hoveredIndex] - 121, 8), width - 236)},${paddingTop + 4})`}>
-          <rect width="228" height={42 + series.length * 20} rx="10" />
-          <text className="tooltip-title" x="12" y="22">
+        <g className="chart-tooltip" transform={`translate(${Math.min(Math.max(xValues[hoveredIndex] - 152, 8), width - 312)},${paddingTop + 4})`}>
+          <rect width="304" height={52 + series.length * 26} rx="10" />
+          <text className="tooltip-title" x="14" y="30">
             {labels[hoveredIndex]}
           </text>
           {series.map((item, seriesIndex) => (
@@ -147,7 +147,7 @@ export function LineChart({ labels, series, unit }: LineChartProps) {
               key={`tooltip-${item.name}-${seriesIndex}`}
               className="tooltip-value"
               x="12"
-              y={44 + seriesIndex * 20}
+              y={54 + seriesIndex * 26}
             >
               {`${item.name}：${formatNumber(item.values[hoveredIndex] ?? null)}${unit ? ` ${unit}` : ""}`}
             </text>

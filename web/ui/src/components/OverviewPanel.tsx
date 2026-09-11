@@ -31,7 +31,7 @@ const overviewChartColors: Record<OverviewMetricKey, string> = {
   goodput_pct: "chart-color-amber",
 };
 
-const tableZoomOptions = [1, 1.25, 1.5, 1.75, 2];
+const tableZoomOptions = [1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 export function OverviewPanel({ report }: { report: Report | null }) {
   const reportData = report ?? { cases: [] };
