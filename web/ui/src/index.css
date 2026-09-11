@@ -173,10 +173,10 @@ body {
 .panel-head h2,
 .panel-head h3 {
   min-width: 0;
-  overflow: hidden;
   font-size: 1rem;
   font-weight: 640;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 
 .hero-panel {
@@ -200,7 +200,6 @@ body {
 
 .status-strip {
   display: flex;
-  overflow: hidden;
   gap: 4px;
   border-radius: 14px;
   background: rgba(228, 232, 242, 0.5);
@@ -240,7 +239,7 @@ body {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -260,19 +259,16 @@ body {
 }
 
 .metric-card-value {
-  overflow: hidden;
   font-size: clamp(1.18rem, 1.4vw, 1.36rem);
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 
 .metric-card-detail {
-  overflow: hidden;
   color: var(--fg-subtle);
   font-size: 0.72rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 .metric-card::before {
@@ -395,19 +391,15 @@ body {
 }
 
 .case-cell {
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 220px;
+  overflow-wrap: anywhere;
 }
 
 .case-select {
   color: var(--fg-muted);
   font-size: 0.78rem;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 130px;
+  overflow-wrap: anywhere;
 }
 
 .environment-panel {
@@ -431,11 +423,9 @@ body {
 
 .environment-list dd {
   margin-top: 3px;
-  overflow: hidden;
   color: var(--fg);
   font-size: 0.79rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .description {
