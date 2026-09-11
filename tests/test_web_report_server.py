@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from benchmark.web import report_server
+from web import report_server
 
 
 def test_run_metadata_lists_reports_without_private_paths(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:

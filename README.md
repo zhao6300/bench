@@ -500,7 +500,7 @@ web/start-web.sh --host 127.0.0.1 --port 8080
 执行如下命令后会自动列出固定到 `web/runs` 的 JSON 报告文件：
 
 ```zsh
-uv run --no-project .venv/bin/python -m benchmark.web.serve
+uv run --no-project .venv/bin/python -m web.serve
 ```
 
 浏览器打开 `http://127.0.0.1:8000/`。页面提供报告概览、状态过滤、用例排序、延迟/吞吐趋势和单个用例详情。把新的 JSON 报告复制进 `web/runs/` 即可刷新列表；该页面只读取本地文件，不会发送推理请求。默认只绑定 loopback，不要把该未鉴权服务暴露到局域网。

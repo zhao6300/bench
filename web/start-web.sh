@@ -78,4 +78,4 @@ fi
 
 echo "启动报告服务: http://$host:$port/"
 cd "$repo_root"
-exec "$python" -m benchmark.web.serve --host "$host" --port "$port" --print-address
+exec "$python" -m web.serve --host "$host" --port "$port" --print-address
