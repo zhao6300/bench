@@ -498,7 +498,7 @@ tbody tr:hover {
 
 .compare-grid {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   align-items: end;
 }
@@ -578,6 +578,34 @@ tbody tr:hover {
   font-weight: 650;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.group-header {
+  text-align: center;
+}
+
+.metric-column {
+  min-width: 205px;
+}
+
+.metric-cell {
+  min-width: 205px;
+  display: block;
+  overflow: hidden;
+}
+
+.metric-pair,
+.metric-change {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-change {
+  margin-top: 4px;
+  font-size: 0.73rem;
+  opacity: 0.88;
 }
 
 .change {

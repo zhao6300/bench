@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { finiteMean, formatDate, formatNumber } from "../format";
 import type { Case, Report } from "../types";
 
@@ -54,8 +53,6 @@ const metricGroups: { name: string; options: MetricOption[] }[] = [
   },
 ];
 
-const flatMetricOptions = metricGroups.flatMap((group) => group.options);
-
 interface ComparisonProps {
   reportA: Report | null;
   reportB: Report | null;
@@ -64,9 +61,6 @@ interface ComparisonProps {
 }
 
 export default function Comparison({ reportA, reportB, labelA, labelB }: ComparisonProps) {
-  const [choice, setChoice] = useState(flatMetricOptions[0].key);
-  const selectedMetric =
-    flatMetricOptions.find((option) => option.key === choice) ?? flatMetricOptions[0];
   const casesA = reportA?.cases ?? [];
   const casesB = reportB?.cases ?? [];
   const aggregationA = casesByName(casesA);
@@ -95,8 +89,13 @@ export default function Comparison({ reportA, reportB, labelA, labelB }: Compari
         name,
         statusA: entryA.status ?? "",
         statusB: entryB.status ?? "",
-        valueA: metricValue(entryA, selectedMetric.key),
-        valueB: metricValue(entryB, selectedMetric.key),
+        metrics: metricGroups.flatMap((group) =>
+          group.options.map((option) => ({
+            option,
+            valueA: metricValue(entryA, option.key),
+            valueB: metricValue(entryB, option.key),
+          })),
+        ),
       };
     });
   const totalCases = casesA.length + casesB.length;
@@ -110,20 +109,6 @@ export default function Comparison({ reportA, reportB, labelA, labelB }: Compari
       </div>
 
       <div className="compare-grid">
-        <label>
-          <span>单用例指标</span>
-          <select value={choice} onChange={(event) => setChoice(event.target.value)}>
-            {metricGroups.map((group) => (
-              <optgroup key={group.name} label={group.name}>
-                {group.options.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.label}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-        </label>
         <div className="tag">
           <span>报告 A · {formatDate(reportA?.suite?.started_at)}</span>
           <strong>{truncateLabel(labelA)}</strong>
@@ -176,24 +161,37 @@ export default function Comparison({ reportA, reportB, labelA, labelB }: Compari
       </div>
 
       <div className="panel-head">
-        <h2>用例级 {selectedMetric.label} 对比</h2>
+        <h2>用例级全部指标对比</h2>
         <small>按用例名称对齐</small>
       </div>
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>用例</th>
-              <th>状态</th>
-              <th>A</th>
-              <th>B</th>
-              <th>变化</th>
-              <th>变化率</th>
+              <th rowSpan={2}>用例</th>
+              <th rowSpan={2}>状态</th>
+              {metricGroups.map((group) => (
+                <th key={group.name} colSpan={group.options.length} className="group-header">
+                  {group.name}
+                </th>
+              ))}
+            </tr>
+            <tr>
+              {metricGroups.flatMap((group) =>
+                group.options.map((option) => (
+                  <th
+                    key={`${group.name}-${option.key}`}
+                    className="metric-column"
+                    title={[group.name, option.label, option.unit].filter(Boolean).join(" · ")}
+                  >
+                    {option.label}
+                  </th>
+                )),
+              )}
             </tr>
           </thead>
           <tbody>
             {caseRows.map((row) => {
-              const delta = numericDelta(row.valueA, row.valueB);
               const statusChanged = row.statusA !== row.statusB;
               return (
                 <tr key={row.name}>
@@ -201,14 +199,30 @@ export default function Comparison({ reportA, reportB, labelA, labelB }: Compari
                   <td>
                     {statusChanged ? `${row.statusA || "无"} → ${row.statusB || "无"}` : row.statusA || "无"}
                   </td>
-                  <td>{formatNumber(row.valueA)}{selectedMetric.unit ? ` ${selectedMetric.unit}` : ""}</td>
-                  <td>{formatNumber(row.valueB)}{selectedMetric.unit ? ` ${selectedMetric.unit}` : ""}</td>
-                  <td className={`change ${getTone(selectedMetric.direction, delta)}`}>
-                    {getDeltaText(selectedMetric.direction, selectedMetric.unit, delta)}
-                  </td>
-                  <td className={`change ${getTone(selectedMetric.direction, delta)}`}>
-                    {formatRelativeChange(row.valueA, row.valueB)}
-                  </td>
+                  {row.metrics.map((item) => {
+                    const delta = numericDelta(item.valueA, item.valueB);
+                    return (
+                      <td
+                        key={item.option.key}
+                        className={`metric-cell change ${getTone(item.option.direction, delta)}`}
+                        title={[
+                          `A: ${formatNumber(item.valueA)}${item.option.unit ? ` ${item.option.unit}` : ""}`,
+                          `B: ${formatNumber(item.valueB)}${item.option.unit ? ` ${item.option.unit}` : ""}`,
+                          getDeltaText(item.option.direction, item.option.unit, delta),
+                          formatRelativeChange(item.valueA, item.valueB),
+                        ].join("\n")}
+                      >
+                        <span className="metric-pair">
+                          {formatNumber(item.valueA)} → {formatNumber(item.valueB)}
+                        </span>
+                        <span className="metric-change">
+                          {getDeltaText(item.option.direction, item.option.unit, delta)}
+                          {" · "}
+                          {formatRelativeChange(item.valueA, item.valueB)}
+                        </span>
+                      </td>
+                    );
+                  })}
                 </tr>
               );
             })}
@@ -283,8 +297,8 @@ function getDeltaText(direction: MetricDirection, unit: string, delta: number | 
   if (delta === null) return "—";
   if (delta === 0) return "持平";
   const improved = direction === "higher" ? delta > 0 : delta < 0;
-  const marker = improved ? "↑" : "↓";
-  return `${marker} ${formatNumber(Math.abs(delta), 1)}${unit ? ` ${unit}` : ""}`;
+  const marker = direction === "neutral" ? "Δ" : improved ? "↑" : "↓";
+  return `${marker} ${formatNumber(direction === "neutral" ? delta : Math.abs(delta), 1)}${unit ? ` ${unit}` : ""}`;
 }
 
 function truncateLabel(label: string): string {
