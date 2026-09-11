@@ -57,7 +57,14 @@ fi
 
 if [[ ! -d "$ui_root/node_modules" ]]; then
   echo "安装前端依赖..."
-  (cd "$ui_root" && pnpm install)
+  (
+    cd "$ui_root"
+    if [[ -f pnpm-lock.yaml ]]; then
+      pnpm install --frozen-lockfile
+    else
+      pnpm install
+    fi
+  )
 fi
 
 if [[ ! -f "$ui_root/dist/index.html" ]] || {

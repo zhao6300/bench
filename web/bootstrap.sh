@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
 ui_root="$repo_root/web/ui"
 python="$repo_root/.venv/bin/python"
 serve_mode=0
@@ -66,7 +67,11 @@ uv pip install --python "$python" -e .
 
 echo "安装 Web UI 依赖..."
 cd "$ui_root"
-pnpm install --frozen-lockfile
+if [[ -f pnpm-lock.yaml ]]; then
+  pnpm install --frozen-lockfile
+else
+  pnpm install
+fi
 cd "$repo_root"
 
 if [[ "$serve_mode" -eq 0 ]]; then
