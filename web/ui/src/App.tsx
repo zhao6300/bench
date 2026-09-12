@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import AuthPanel from "./components/AuthPanel";
 import ComparePanel from "./components/ComparePanel";
 import OverviewPanel from "./components/OverviewPanel";
-import { fetchReport } from "./services";
+import { fetchAuthStatus, fetchReport, logout } from "./services";
 import type { Report, Run } from "./types";
 
 type View = "overview" | "compare";
@@ -17,9 +18,24 @@ export default function App() {
   const [reportB, setReportB] = useState<Report | null>(null);
   const [compareLoading, setCompareLoading] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [auth, setAuth] = useState<{ authenticated: boolean; username?: string } | undefined>(undefined);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const status = await fetchAuthStatus();
+        setAuth(status);
+      } catch {
+        setAuth({ authenticated: false });
+      }
+    })();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (auth?.authenticated !== true) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -39,7 +55,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [auth?.authenticated]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -93,6 +109,22 @@ export default function App() {
     return () => controller.abort();
   }, [compareAFile, compareBFile]);
 
+  if (auth === undefined) {
+    return <div className="app auth-loading">登录检查中…</div>;
+  }
+
+  if (!auth.authenticated) {
+    return (
+      <AuthPanel
+        onAuthenticated={(username) => {
+          setAuth({ authenticated: true, username });
+          setSelectedFile("");
+          setReport(null);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app">
       <header className="topbar">
@@ -121,6 +153,9 @@ export default function App() {
             ))}
           </select>
         </label>
+        <button type="button" className="logout-button" onClick={() => void logout()}>
+          {auth.username ?? "管理员"}
+        </button>
       </header>
 
       {view === "overview" ? (

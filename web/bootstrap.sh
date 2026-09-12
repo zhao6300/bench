@@ -5,6 +5,8 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 ui_root="$repo_root/web/ui"
+data_root="$repo_root/web/data"
+auth_database="$data_root/auth.sqlite3"
 python="$repo_root/.venv/bin/python"
 serve_mode=0
 
@@ -58,6 +60,20 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 cd "$repo_root"
+
+if [[ ! -f "$auth_database" ]]; then
+  if [[ -z "${BENCHMARK_WEB_ADMIN_PASSWORD:-}" ]]; then
+    if read -rs -p "首次初始化 Web 登录数据库，请输入管理员密码: " admin_password; then
+      export BENCHMARK_WEB_ADMIN_PASSWORD="$admin_password"
+      echo
+    else
+      echo "缺少 BENCHMARK_WEB_ADMIN_PASSWORD。" >&2
+      exit 1
+    fi
+  fi
+  echo "初始化 Web 登录 SQLite 数据库..."
+  "$python" -m web.auth_store --database "$auth_database"
+fi
 
 echo "安装 benchmark 与 lint 依赖..."
 uv pip install --python "$python" -r requirements/common.txt

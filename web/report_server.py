@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import http.server
+import http.cookies
 import ipaddress
 import json
 import pathlib
 import typing
 from urllib.parse import unquote, urlsplit
+
+from web.auth_store import AuthStore, SESSION_COOKIE_NAME, SESSION_TTL_SECONDS
 
 
 WEB_ROOT = pathlib.Path(__file__).resolve().parent
@@ -90,12 +93,31 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
     """HTTP request handler for local report discovery and static pages."""
 
     server_version: str = "BenchmarkReportServer/1.0"
+    auth_store: AuthStore
 
     def do_GET(self) -> None:
         """Return the runs metadata, report JSON, or a static file."""
         try:
             if self.path in {"/api/runs", "/api/reports"}:
+                if self._username() is None:
+                    self._send_error(401, "请先登录")
+                    return
                 self._send_bytes(200, "application/json; charset=utf-8", json.dumps(run_metadata()).encode("utf-8"))
+                return
+            if self.path == "/api/auth/session":
+                username = self._username()
+                if username is None:
+                    self._send_bytes(
+                        401,
+                        "application/json; charset=utf-8",
+                        json.dumps({"authenticated": False}).encode("utf-8"),
+                    )
+                else:
+                    self._send_bytes(
+                        200,
+                        "application/json; charset=utf-8",
+                        json.dumps({"authenticated": True, "username": username}).encode("utf-8"),
+                    )
                 return
             request_path = "/index.html" if self.path == "/" else self.path
             content_type = self.static_content_type(request_path)
@@ -112,6 +134,33 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_bytes(200, content_type, file_path.read_bytes())
         except (OSError, ValueError):
             self._send_error(400, "invalid URL path")
+
+    def do_POST(self) -> None:
+        """Authenticate a browser and create its session cookie."""
+        try:
+            if self.path != "/api/auth/session":
+                self._send_error(404, "not found")
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 2 or length > 4096:
+                raise ValueError("invalid request length")
+            credentials = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(credentials, dict):
+                raise ValueError("invalid request body")
+            username = str(credentials.get("username") or "")
+            password = str(credentials.get("password") or "")
+            if not self.auth_store.authenticate(username, password):
+                self._send_error(401, "账号或密码错误")
+                return
+            token = self.auth_store.create_session(username)
+            self._send_bytes(
+                200,
+                "application/json; charset=utf-8",
+                json.dumps({"authenticated": True, "username": username}).encode("utf-8"),
+                extra_headers=self._session_cookie(token),
+            )
+        except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+            self._send_error(400, "登录请求无效")
 
     @staticmethod
     def static_content_type(path: str) -> typing.Optional[str]:
@@ -138,8 +187,78 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
         """Write safe request metadata instead of large report contents."""
         del format_string, args
 
-    def _send_bytes(self, status: int, content_type: str, body: bytes) -> None:
+    def do_DELETE(self) -> None:
+        """Remove the browser's server-side session."""
+        if self.path != "/api/auth/session":
+            self._send_error(404, "not found")
+            return
+        token = self.session_token()
+        self.auth_store.delete_session(token)
+        self._send_bytes(
+            200,
+            "application/json; charset=utf-8",
+            b'{"authenticated": false}',
+            extra_headers=self._session_cookie("", max_age=0),
+        )
+
+    def session_token(self) -> str:
+        """Read the raw session cookie token.
+
+        Returns:
+            The cookie token, or an empty string when missing or malformed.
+        """
+        cookie = http.cookies.SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except http.cookies.CookieError:
+            return ""
+        field = cookie.get(SESSION_COOKIE_NAME)
+        return str(field.value) if field is not None else ""
+
+    def _username(self) -> typing.Optional[str]:
+        """Resolve the authenticated username for the request.
+
+        Returns:
+            The username, or ``None`` when the session is missing or invalid.
+        """
+        token = self.session_token()
+        username = self.auth_store.username_for_session(token)
+        if username is None and token:
+            self.auth_store.delete_session(token)
+        return username
+
+    def _session_cookie(
+        self,
+        token: str,
+        max_age: int = SESSION_TTL_SECONDS,
+    ) -> list[tuple[str, str]]:
+        """Build the HttpOnly authentication cookie.
+
+        Args:
+            token: The new raw token, or an empty string when clearing.
+            max_age: Cookie lifetime in seconds.
+
+        Returns:
+            Headers to append to the response.
+        """
+        expires = "Thu, 01 Jan 1970 00:00:00 GMT" if not token else "Sat, 01 Jan 2100 00:00:00 GMT"
+        return [
+            (
+                "Set-Cookie",
+                f"{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}; Expires={expires}",
+            )
+        ]
+
+    def _send_bytes(
+        self,
+        status: int,
+        content_type: str,
+        body: bytes,
+        extra_headers: typing.Optional[list[tuple[str, str]]] = None,
+    ) -> None:
         self.send_response(status)
+        for name, value in extra_headers or []:
+            self.send_header(name, value)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -158,17 +277,18 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def create_local_server(address: tuple[str, int]) -> http.server.ThreadingHTTPServer:
+def create_local_server(address: tuple[str, int], auth_store: AuthStore) -> http.server.ThreadingHTTPServer:
     """Create an HTTP server bound to the given loopback-safe address.
 
     Args:
         address: Host and port pair passed to the server.
+        auth_store: The SQLite-backed authentication helper.
 
     Returns:
         A thread-per-request server configured to reuse the address and shut
-        down cleanly with Ctrl-C.
+        down cleanly after Ctrl-C.
     """
-
+    ReportRequestHandler.auth_store = auth_store
     return http.server.ThreadingHTTPServer(address, ReportRequestHandler)
 
 
@@ -181,11 +301,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="启动基准报告查看器（默认只绑定 loopback）")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认仅允许 loopback，例如 127.0.0.1 或 ::1")
     parser.add_argument("--port", type=int, default=8000, help="监听端口，默认 8000")
+    parser.add_argument(
+        "--database",
+        default=str(WEB_ROOT / "data" / "auth.sqlite3"),
+        help="登录鉴权 SQLite 数据库路径",
+    )
     parser.add_argument("--print-address", action="store_true", help="启动后打印可打开的 URL")
     parser.add_argument(
         "--allow-non-loopback",
         action="store_true",
-        help="允许绑定非 loopback 地址；该服务未鉴权，仅在受信任网络中启用",
+            help="允许绑定非 loopback 地址；服务仍要求登录，仅在受信任网络中启用",
     )
     parsed = parser.parse_args()
     address = ipaddress.ip_address(parsed.host)
@@ -201,7 +326,8 @@ def main() -> int:
         The process exit code. ``130`` is returned after Ctrl-C.
     """
     args = parse_args()
-    server = create_local_server((args.host, args.port))
+    ReportRequestHandler.auth_store = AuthStore(pathlib.Path(args.database).expanduser())
+    server = create_local_server((args.host, args.port), ReportRequestHandler.auth_store)
     if args.print_address:
         print(f"http://{args.host}:{args.port}", flush=True)
     exit_code = 0

@@ -24,6 +24,7 @@ htmlcov/
 # Local configuration and credentials
 .env
 .env.*
+web/data/
 *.local.json
 *.local.yml
 *.local.yaml

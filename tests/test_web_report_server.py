@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import pathlib
+import sqlite3
 import time
 
 import pytest
 
 from web import report_server
+from web.auth_store import AuthStore, initialize_database
 
 
 def test_run_metadata_lists_reports_without_private_paths(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,10 +100,44 @@ def test_resolve_under_root_rejects_traversal(path: str) -> None:
 
 
 def test_parse_args_limits_host_to_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the unauthenticated report service bound to loopback only."""
+    """Keep the report service bound to loopback until explicitly allowed."""
     monkeypatch.setattr("sys.argv", ["report-server", "--host", "127.0.0.1"])
     assert report_server.parse_args().host == "127.0.0.1"
 
     monkeypatch.setattr("sys.argv", ["report-server", "--host", "0.0.0.0"])
     with pytest.raises(ValueError):
         report_server.parse_args()
+
+
+def test_initialize_database_creates_first_administrator(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bootstrap the first scrypt password hash as a persistent SQLite row."""
+    database = tmp_path / "auth.sqlite3"
+    monkeypatch.setenv("BENCHMARK_WEB_ADMIN_USERNAME", "editor")
+    monkeypatch.setenv("BENCHMARK_WEB_ADMIN_PASSWORD", "benchmark-password")
+
+    initialize_database(database)
+
+    assert database.exists()
+    assert (database.stat().st_mode & 0o777) == 0o600
+    assert AuthStore(database).authenticate("editor", "benchmark-password") is True
+    monkeypatch.delenv("BENCHMARK_WEB_ADMIN_USERNAME", raising=False)
+    monkeypatch.delenv("BENCHMARK_WEB_ADMIN_PASSWORD", raising=False)
+    initialize_database(database)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM admin_users").fetchone()[0] == 1
+    assert AuthStore(database).authenticate("editor", "changed-password") is False
+
+
+def test_auth_store_accepts_only_valid_credentials(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reject missing, stale, and invalid logins without exposing database values."""
+    database = tmp_path / "auth.sqlite3"
+    monkeypatch.setenv("BENCHMARK_WEB_ADMIN_USERNAME", "operator")
+    monkeypatch.setenv("BENCHMARK_WEB_ADMIN_PASSWORD", "secure-admin-password")
+    store = AuthStore(database)
+    assert store.authenticate("operator", "short") is False
+
+    token = store.create_session("operator")
+    assert store.username_for_session(token) == "operator"
+    assert store.username_for_session("expired-" + token) is None
+    store.delete_session(token)
+    assert store.username_for_session(token) is None

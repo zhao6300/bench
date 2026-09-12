@@ -479,7 +479,7 @@ pnpm build
 cd ../..
 ```
 
-在仓库根目录可用下面的一键初始化脚本安装 Python、Web UI 与 pre-commit 依赖：
+在仓库根目录可用下面的一键初始化脚本安装 Python、Web UI 与 pre-commit 依赖。脚本会检查 `web/data/auth.sqlite3`：数据库不存在时交互式输入管理员密码并完成 SQLite 初始化；自动化环境可改用 `BENCHMARK_WEB_ADMIN_PASSWORD`（用户名默认为 `admin`，也可通过 `BENCHMARK_WEB_ADMIN_USERNAME` 指定）。登录密码使用 scrypt 哈希保存，会话令牌在数据库中同样只保存哈希：
 
 ```zsh
 web/bootstrap.sh
@@ -509,7 +509,7 @@ web/start-web.sh --host 0.0.0.0 --port 8080 --allow-non-loopback
 uv run --no-project .venv/bin/python -m web.serve
 ```
 
-浏览器打开 `http://127.0.0.1:8000/`。页面的概览包含结果统计、关键延迟/吞吐指标、运行环境和用例结果表；概览表格可选择 100%–200% 的文字大小。对比页不需要选择指标，会按时延、速率、质量与规模分组直接展示全部指标的平均值、绝对变化和变化率，并在用例级矩阵中按名称自动对齐，同时呈现缺失或新增用例。把新的 JSON 报告复制进 `web/runs/` 即可刷新列表；该页面只读取本地文件，不会发送推理请求。默认只绑定 loopback，不要把该未鉴权服务暴露到局域网；`--allow-non-loopback` 仅在受信任网络中启用。
+浏览器打开 `http://127.0.0.1:8000/`，首先会显示登录页；登录成功后页面提供结果统计、关键延迟/吞吐指标、运行环境和用例结果表，概览表格可选择 100%–200% 的文字大小。对比页不需要选择指标，会按时延、速率、质量与规模分组直接展示全部指标的平均值、绝对变化和变化率，并在用例级矩阵中按名称自动对齐，同时呈现缺失或新增用例。把新的 JSON 报告复制进 `web/runs/` 即可刷新列表；该页面只读取本地文件，不会发送推理请求。默认只绑定 loopback，会话 cookie 使用 HttpOnly 和 SameSite=Strict；`--allow-non-loopback` 仍要求登录，并仅在受信任网络中启用。
 
 ## 数据集与长度语义
 
