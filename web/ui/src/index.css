@@ -327,6 +327,7 @@ body {
 
 .status-segment.passed {
   background: #084c30;
+  color: #ffffff;
 }
 
 .status-segment.failed {
@@ -628,7 +629,7 @@ body {
   font-size: 0.74rem;
 }
 
-.status-badge.passed { background: #084c30; color: #fff; font-weight: 620; }
+.status-badge.passed { background: #084c30; color: #ffffff !important; font-weight: 620; }
 .status-badge.failed { background: #992b3a; color: #fff; }
 .status-badge.interrupted,
 .status-badge.running { background: #8b4b12; color: #fff; }
