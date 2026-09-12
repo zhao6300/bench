@@ -120,6 +120,17 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
                         json.dumps({"authenticated": True, "username": username}).encode("utf-8"),
                 )
                 return
+            if self.path == "/api/auth/profile":
+                username = self._username()
+                if username is None:
+                    self._send_error(401, "请先登录")
+                    return
+                self._send_bytes(
+                    200,
+                    "application/json; charset=utf-8",
+                    json.dumps(self.auth_store.get_profile(username)).encode("utf-8"),
+                )
+                return
             if self.path in {"/reports", "/reports/"}:
                 if self._username() is None:
                     self._send_redirect("/login.html")
@@ -174,6 +185,52 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
         except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError):
             self._send_error(400, "登录请求无效")
 
+    def do_PUT(self) -> None:
+        """Update the current administrator profile or password."""
+        username = self._username()
+        if username is None:
+            self._send_error(401, "请先登录")
+            return
+        try:
+            if self.path == "/api/auth/profile":
+                profile = self._read_json_body(1024 * 1024)
+                updated = self.auth_store.update_profile(
+                    username,
+                    display_name=profile.get("display_name"),
+                    email=profile.get("email"),
+                    avatar_url=profile.get("avatar_url"),
+                )
+                self._send_bytes(
+                    200,
+                    "application/json; charset=utf-8",
+                    json.dumps(updated).encode("utf-8"),
+                )
+                return
+            if self.path == "/api/auth/password":
+                passwords = self._read_json_body(4096)
+                current_password = passwords.get("current_password")
+                new_password = passwords.get("new_password")
+                if not self.auth_store.change_password(
+                    username,
+                    str(current_password or ""),
+                    str(new_password or ""),
+                    keep_session_token=self.session_token(),
+                ):
+                    self._send_error(401, "当前密码不正确")
+                    return
+                self._send_bytes(
+                    200,
+                    "application/json; charset=utf-8",
+                    json.dumps({"password_changed": True}).encode("utf-8"),
+                )
+                return
+            self._send_error(404, "not found")
+        except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError) as failure:
+            if isinstance(failure, (OSError, UnicodeDecodeError, json.JSONDecodeError)):
+                self._send_error(400, "请求无效")
+                return
+            self._send_error(400, str(failure) or "请求无效")
+
     @staticmethod
     def static_content_type(path: str) -> typing.Optional[str]:
         """Map a server path to its supported media type.
@@ -198,6 +255,27 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format_string: str, *args: typing.Any) -> None:
         """Write safe request metadata instead of large report contents."""
         del format_string, args
+
+    def _read_json_body(self, maximum_length: int) -> dict[str, typing.Any]:
+        """Decode one JSON request body.
+
+        Args:
+            maximum_length: The maximum accepted body bytes.
+
+        Returns:
+            The JSON object sent by the browser.
+
+        Raises:
+            ValueError: If the request exceeds its size limit or is not a JSON object.
+        """
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 2 or length > maximum_length:
+            raise ValueError("请求内容无效")
+        body = self.rfile.read(length).decode("utf-8")
+        payload = json.loads(body)
+        if not isinstance(payload, dict):
+            raise ValueError("请求内容无效")
+        return payload
 
     def do_DELETE(self) -> None:
         """Remove the browser's server-side session."""

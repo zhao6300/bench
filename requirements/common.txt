@@ -7,6 +7,8 @@ numpy==2.5.2
 pytest==9.1.1
 boto3==1.43.81
 rich==14.2.0
+# Optional UI/API traffic tests; UI API checks use Playwright.
+playwright==1.62.0
 
 # boto3 uses the standard AWS credential provider chain.
 

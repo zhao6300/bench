@@ -5,6 +5,24 @@ export interface AuthStatus {
   username?: string;
 }
 
+export interface AuthProfile {
+  username: string;
+  display_name?: string | null;
+  email?: string | null;
+  avatar_url?: string | null;
+}
+
+export interface UpdateProfile {
+  display_name: string;
+  email: string;
+  avatar_url?: string | null;
+}
+
+export interface ChangePasswordProps {
+  current_password: string;
+  new_password: string;
+}
+
 function buildReportUrl(filename: string): string {
   if (!filename.endsWith(".json")) throw new Error("无效报告文件");
   return `/runs/${encodeURIComponent(filename)}`;
@@ -43,6 +61,33 @@ export async function login(username: string, password: string): Promise<AuthSta
 export async function logout(): Promise<void> {
   await fetch("/api/auth/session", { method: "DELETE", cache: "no-store" });
   window.location.assign("/");
+}
+
+export async function fetchProfile(): Promise<AuthProfile> {
+  const response = await fetch("/api/auth/profile", { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return await response.json() as AuthProfile;
+}
+
+export async function updateProfile(profile: UpdateProfile): Promise<AuthProfile> {
+  const response = await fetch("/api/auth/profile", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(profile),
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(await responseMessage(response, "保存管理员资料失败"));
+  return await response.json() as AuthProfile;
+}
+
+export async function changePassword(passwords: ChangePasswordProps): Promise<void> {
+  const response = await fetch("/api/auth/password", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(passwords),
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(await responseMessage(response, "修改密码失败"));
 }
 
 export async function fetchReport(filename: string, signal?: AbortSignal): Promise<Report> {

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import hmac
 import os
@@ -10,6 +12,7 @@ import re
 import secrets
 import sqlite3
 import time
+import typing
 from pathlib import Path
 
 
@@ -26,6 +29,11 @@ _SCRYPT_R = 8
 _SCRYPT_P = 1
 _MIN_PASSWORD_LENGTH = 8
 _VALID_USERNAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_VALID_AVATAR_URL = re.compile(r"^data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$")
+_VALID_EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_MAX_AVATAR_BYTES = 128 * 1024
+_MAX_PROFILE_LENGTH = 64
+_MAX_EMAIL_LENGTH = 254
 
 
 def _normalize_username(value: object) -> str:
@@ -106,6 +114,74 @@ def _hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _normalize_display_name(value: object) -> str | None:
+    """Normalize an optional administrator display name.
+
+    Args:
+        value: Untrusted display-name value.
+
+    Returns:
+        The normalized display name, or ``None`` when it is absent.
+
+    Raises:
+        ValueError: If the display name exceeds the supported length.
+    """
+    name = str(value or "").strip()
+    if not name:
+        return None
+    if len(name) > _MAX_PROFILE_LENGTH:
+        raise ValueError("显示名称不能超过 64 个字符")
+    return name
+
+
+def _normalize_email(value: object) -> str | None:
+    """Normalize an optional administrator email address.
+
+    Args:
+        value: Untrusted email value.
+
+    Returns:
+        The normalized email address, or ``None`` when it is absent.
+
+    Raises:
+        ValueError: If the email format or length is invalid.
+    """
+    email = str(value or "").strip()
+    if not email:
+        return None
+    if len(email) > _MAX_EMAIL_LENGTH or not _VALID_EMAIL.fullmatch(email):
+        raise ValueError("邮箱格式无效")
+    return email
+
+
+def _normalize_avatar_url(value: object) -> str | None:
+    """Normalize and validate an uploaded avatar data URL.
+
+    Args:
+        value: Untrusted avatar URL value.
+
+    Returns:
+        The accepted image data URL, or ``None`` when the value is absent.
+
+    Raises:
+        ValueError: If the URL is not an allowed image, decoder input is
+            malformed, or the decoded image exceeds the size limit.
+    """
+    avatar = str(value or "").strip()
+    if not avatar:
+        return None
+    match = _VALID_AVATAR_URL.fullmatch(avatar)
+    if match is None:
+        raise ValueError("头像仅支持 128 KB 以内的 PNG、JPEG 或 WebP 图片")
+    try:
+        image = base64.b64decode(match.group(2), validate=True)
+    except (ValueError, base64.binascii.Error, binascii.Error) as failure:
+        raise ValueError("头像图片数据无效") from failure
+    if not 1 <= len(image) <= _MAX_AVATAR_BYTES:
+        raise ValueError("头像仅支持 128 KB 以内的 PNG、JPEG 或 WebP 图片")
+    return avatar
+
+
 def connect(database: str | Path) -> sqlite3.Connection:
     """Open an initialized SQLite authentication connection.
 
@@ -171,6 +247,10 @@ def initialize_database(
             """
         )
         connection.execute("CREATE INDEX IF NOT EXISTS sessions_expiry ON web_sessions(expires_at)")
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({ADMINS_TABLE})")}
+        for name in ("display_name", "email", "avatar_url"):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE {ADMINS_TABLE} ADD COLUMN {name} TEXT")
         existing = connection.execute(
             f"SELECT username FROM {ADMINS_TABLE} LIMIT 1"
         ).fetchone()
@@ -222,6 +302,126 @@ def authenticate(database: str | Path, username: str, password: str) -> bool:
         return False
     derived = hashlib.scrypt(unsafe_password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=_SCRYPT_BYTES)
     return hmac.compare_digest(derived, bytes.fromhex(parts[5]))
+
+
+def get_profile(database: str | Path, username: str) -> dict[str, typing.Any]:
+    """Read the profile fields of an administrator.
+
+    Args:
+        database: SQLite path used by the report server.
+        username: The authenticated administrator username.
+
+    Returns:
+        Public profile fields with database null values mapped to ``None``.
+
+    Raises:
+        ValueError: If the username is invalid.
+        LookupError: If the administrator cannot be found.
+    """
+    normalized = _normalize_username(username)
+    with connect(database) as connection:
+        row = connection.execute(
+            "SELECT username, display_name, email, avatar_url "
+            f"FROM {ADMINS_TABLE} WHERE username = ? LIMIT 1",
+            (normalized,),
+        ).fetchone()
+    if row is None:
+        raise LookupError("管理员不存在")
+    return {
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "email": row["email"],
+        "avatar_url": row["avatar_url"],
+    }
+
+
+def update_profile(
+    database: str | Path,
+    username: str,
+    display_name: object = None,
+    email: object = None,
+    avatar_url: object = None,
+) -> dict[str, typing.Any]:
+    """Persist optional administrator profile fields.
+
+    Args:
+        database: SQLite path used by the report server.
+        username: The authenticated administrator username.
+        display_name: An optional friendly name.
+        email: An optional contact email.
+        avatar_url: An optional supported image data URL.
+
+    Returns:
+        The refreshed public profile fields.
+
+    Raises:
+        ValueError: If any supplied profile field is invalid.
+        LookupError: If the administrator cannot be found.
+    """
+    normalized = _normalize_username(username)
+    normalized_display_name = _normalize_display_name(display_name)
+    normalized_email = _normalize_email(email)
+    normalized_avatar_url = _normalize_avatar_url(avatar_url)
+    with connect(database) as connection:
+        row = connection.execute(
+            f"SELECT username FROM {ADMINS_TABLE} WHERE username = ? LIMIT 1",
+            (normalized,),
+        ).fetchone()
+        if row is None:
+            raise LookupError("管理员不存在")
+        connection.execute(
+            f"""
+            UPDATE {ADMINS_TABLE}
+            SET display_name = ?, email = ?, avatar_url = ?
+            WHERE username = ?
+            """,
+            (normalized_display_name, normalized_email, normalized_avatar_url, normalized),
+        )
+    return get_profile(database, normalized)
+
+
+def change_password(
+    database: str | Path,
+    username: str,
+    current_password: object,
+    new_password: object,
+    keep_session_token: str | None = None,
+) -> bool:
+    """Verify the current password and replace it with a new password.
+
+    Args:
+        database: SQLite path used by the report server.
+        username: The administrator username.
+        current_password: The password currently used to log in.
+        new_password: The replacement password.
+        keep_session_token: Raw session token to retain after login.
+
+    Returns:
+        ``True`` only when the current password is valid and the new password
+        has been persisted.
+
+    Raises:
+        ValueError: If the new password is shorter than the required minimum.
+    """
+    if not _VALID_USERNAME.fullmatch(str(username or "")):
+        return False
+    replacement = _normalize_password(new_password)
+    if not authenticate(database, username, str(current_password or "")):
+        return False
+    with connect(database) as connection:
+        connection.execute(
+            f"UPDATE {ADMINS_TABLE} SET password_hash = ? WHERE username = ?",
+            (_hash_password(replacement), _normalize_username(username)),
+        )
+        connection.execute(
+            f"""
+            DELETE FROM {SESSIONS_TABLE}
+            WHERE username = ?
+              AND token_hash != ?
+            """,
+            (username, _hash_session_token(str(keep_session_token or ""))),
+        )
+    return True
 
 
 def create_session(database: str | Path, username: str) -> str:
@@ -356,6 +556,69 @@ class AuthStore:
             token: Raw session cookie token.
         """
         delete_session(self.database, token)
+
+    def get_profile(self, username: str) -> dict[str, typing.Any]:
+        """Read the authenticated administrator profile.
+
+        Args:
+            username: The authenticated administrator username.
+
+        Returns:
+            The public profile fields.
+        """
+        return get_profile(self.database, username)
+
+    def update_profile(
+        self,
+        username: str,
+        display_name: object = None,
+        email: object = None,
+        avatar_url: object = None,
+    ) -> dict[str, typing.Any]:
+        """Update the authenticated administrator profile.
+
+        Args:
+            username: The authenticated administrator username.
+            display_name: An optional friendly name.
+            email: An optional contact email.
+            avatar_url: An optional supported image data URL.
+
+        Returns:
+            The refreshed public profile fields.
+        """
+        return update_profile(
+            self.database,
+            username,
+            display_name=display_name,
+            email=email,
+            avatar_url=avatar_url,
+        )
+
+    def change_password(
+        self,
+        username: str,
+        current_password: str,
+        new_password: str,
+        keep_session_token: str | None = None,
+    ) -> bool:
+        """Replace the current password and discard other sessions.
+
+        Args:
+            username: The authenticated administrator username.
+            current_password: The password currently used to log in.
+            new_password: The replacement password.
+            keep_session_token: Raw token for the current browser session.
+
+        Returns:
+            ``True`` only after the password is successfully changed.
+        """
+        return change_password(
+            self.database,
+            username,
+            current_password,
+            new_password,
+            keep_session_token=keep_session_token,
+        )
 
 
 def main() -> int:

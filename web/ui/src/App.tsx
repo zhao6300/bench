@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import AuthPanel from "./components/AuthPanel";
 import ComparePanel from "./components/ComparePanel";
 import OverviewPanel from "./components/OverviewPanel";
-import { fetchAuthStatus, fetchReport, logout } from "./services";
+import ProfilePanel from "./components/ProfilePanel";
+import { fetchAuthStatus, fetchReport, logout, type AuthProfile } from "./services";
 import type { Report, Run } from "./types";
 
 type View = "overview" | "compare";
@@ -17,6 +18,7 @@ export default function App() {
   const [reportA, setReportA] = useState<Report | null>(null);
   const [reportB, setReportB] = useState<Report | null>(null);
   const [compareLoading, setCompareLoading] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [auth, setAuth] = useState<{ authenticated: boolean; username?: string } | undefined>(undefined);
   const [error, setError] = useState("");
@@ -157,6 +159,22 @@ export default function App() {
           {auth.username ?? "管理员"}
         </button>
       </header>
+
+      {profileOpen ? (
+        <ProfilePanel
+          onClose={() => setProfileOpen(false)}
+          onPasswordChanged={() => void logout()}
+          onProfileSaved={(profile: AuthProfile) => {
+            setAuth((previous) => ({
+              authenticated: true,
+              username: previous?.username,
+              display_name: profile.display_name ?? undefined,
+              email: profile.email ?? undefined,
+              avatar_url: profile.avatar_url ?? undefined,
+            }));
+          }}
+        />
+      ) : null}
 
       {view === "overview" ? (
         <OverviewPanel report={report} />
