@@ -20,7 +20,7 @@ export default function App() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [auth, setAuth] = useState<{ authenticated: boolean; username?: string } | undefined>(undefined);
+  const [auth, setAuth] = useState<{ authenticated: boolean; username?: string; display_name?: string | null; avatar_url?: string | null } | undefined>(undefined);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -155,8 +155,19 @@ export default function App() {
             ))}
           </select>
         </label>
-        <button type="button" className="logout-button" onClick={() => void logout()}>
-          {auth.username ?? "管理员"}
+        <button
+          type="button"
+          className="profile-button"
+          onClick={() => setProfileOpen(true)}
+          aria-haspopup="dialog"
+          aria-expanded={profileOpen}
+        >
+          {auth.avatar_url ? (
+            <img src={auth.avatar_url} alt="" />
+          ) : (
+            <span>{(auth.display_name || auth.username || "A").slice(0, 1).toUpperCase()}</span>
+          )}
+          <span>{auth.display_name || auth.username || "管理员"}</span>
         </button>
       </header>
 
