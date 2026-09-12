@@ -107,7 +107,7 @@ export default function App() {
       }
     })();
     return () => controller.abort();
-  }, [compareAFile, compareBFile]);
+  }, [compareAFile, compareBFile, view]);
 
   if (auth === undefined) {
     return <div className="app auth-loading">登录检查中…</div>;

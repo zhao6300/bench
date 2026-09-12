@@ -37,41 +37,86 @@
         background: rgba(255,255,255,.94);
         box-shadow: 0 16px 38px rgba(22,28,54,.11);
       }
-      .icon {
-        margin: 8px auto 14px;
-        width: 52px; height: 52px;
-        display: grid; place-items: center;
-        border-radius: 16px;
-        background: linear-gradient(135deg, var(--blue), var(--teal));
-        color: white; font-weight: 700;
-      }
-      h1 { font-size: 1.22rem; margin: 4px 0; text-align: center; }
-      p.lede { text-align: center; color: #616c7c; margin: 0 0 18px; font-size: .84rem; }
-      label { font-size: .74rem; color: #5c6775; font-weight: 650; }
-      input { margin-top: 6px; }
-      input, button {
-        width: 100%; border-radius: 12px;
-      }
-      input {
-        margin-bottom: 4px; height: 44px; padding: 0 14px;
-        border: 1px solid var(--line); background: #fff; color: var(--fg); font-size: .92rem;
-      }
-      button {
-        margin: 10px 0 0; height: 44px; border: 0; cursor: pointer;
-        background: linear-gradient(135deg, var(--blue), var(--teal));
-        color: white; font-size: .88rem; font-weight: 640;
-      }
-      button:disabled { opacity: .65; cursor: wait; }
-      p.error { color: #a03044; margin-top: 10px; font-size: .84rem; }
-      p.hint { color: #6f7989; margin-top: 14px; font-size: .74rem; text-align: center; }
-      p.hint a { color: #5a75a0; }
+main {
+  width: min(920px, 100%);
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 30px;
+  padding: 38px;
+  border: 1px solid rgba(224, 229, 241, .8);
+  border-radius: 24px;
+  background: linear-gradient(140deg, rgba(255,255,255,.97), rgba(238, 242, 252,.97));
+  box-shadow: 0 16px 38px rgba(22,28,54,.11);
+}
+.brand-side { align-self: stretch; display: grid; align-content: space-between; }
+.icon {
+  width: 58px; height: 58px;
+  display: grid; place-items: center;
+  border-radius: 18px;
+  background: linear-gradient(135deg, var(--blue), var(--teal));
+  color: white; font-weight: 700;
+}
+h1 { font-size: 1.72rem; margin: 12px 0 4px; }
+p.lede { color: #616c7c; margin: 0 0 22px; font-size: .9rem; max-width: 430px; }
+.points { display: grid; gap: 12px; color: #616c7c; font-size: .84rem; }
+.points span {
+  display: inline-flex; align-items: center;
+  gap: 10px;
+}
+.points b { color: var(--fg); font-size: .88rem; }
+.points em {
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border-radius: 10px;
+  background: #edf2fe; color: #35569d;
+  font-size: .84rem; font-style: normal; font-weight: 700;
+}
+.form-panel { display: grid; align-content: center; gap: 12px; }
+label { font-size: .74rem; color: #5c6775; font-weight: 650; }
+input { margin-top: 6px; }
+input, button {
+  width: 100%; border-radius: 12px;
+}
+input {
+  margin-bottom: 4px; height: 46px; padding: 0 14px;
+  border: 1px solid var(--line); background: #fff; color: var(--fg); font-size: .92rem;
+}
+button {
+  margin: 10px 0 0; height: 46px; border: 0; cursor: pointer;
+  background: linear-gradient(135deg, var(--blue), var(--teal));
+  color: white; font-size: .9rem; font-weight: 640;
+}
+button:disabled { opacity: .65; cursor: wait; }
+p.error { color: #a03044; margin-top: 10px; font-size: .84rem; }
+p.hint { color: #6f7989; margin-top: 14px; font-size: .76rem; }
+@media (max-width: 760px) {
+  main {
+    width: min(430px, 100%);
+    grid-template-columns: 1fr;
+    padding: 26px;
+  }
+  h1 { text-align: center; font-size: 1.28rem; }
+  p.lede { text-align: center; max-width: none; }
+  .points { display: none; }
+  .icon { margin: 0 auto 16px; }
+}
     </style>
   </head>
-  <body>
-    <main>
-      <section class="icon" aria-hidden="true">LB</section>
-      <h1>LLM Benchmark</h1>
-      <p class="lede">请登录后查看报告</p>
+<body>
+  <main>
+    <section class="brand-side">
+      <section>
+        <div class="icon" aria-hidden="true">LB</div>
+        <h1>LLM Benchmark</h1>
+        <p class="lede">登录后查看基准报告的整体概览、用例结果、服务等级目标与性能对比。</p>
+        <div class="points">
+          <span><em>概览</em><b>核心指标、吞吐与延迟趋势一起呈现</b></span>
+          <span><em>对比</em><b>选择两份报告并自动对齐用例</b></span>
+          <span><em>安全</em><b>HttpOnly 会话 Cookie 且报告数据受登录保护</b></span>
+        </div>
+      </section>
+    </section>
+    <section class="form-panel">
       <form id="login-form">
         <label for="username">用户名</label>
         <input id="username" name="username" type="text" autocomplete="username" required>
@@ -80,8 +125,9 @@
         <button type="submit" id="submit">登录</button>
       </form>
       <p class="error" id="error" role="alert" hidden></p>
-      <p class="hint">登录后使用 HttpOnly 会话 Cookie 访问报告。</p>
-    </main>
+      <p class="hint">登录成功后将使用 HttpOnly 会话 Cookie 访问报告。</p>
+    </section>
+  </main>
     <script>
       const form = document.getElementById("login-form");
       const button = document.getElementById("submit");

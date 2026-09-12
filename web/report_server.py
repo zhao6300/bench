@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import datetime as dt
 import http.server
 import http.cookies
@@ -267,6 +268,11 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
         body: bytes,
         extra_headers: typing.Optional[list[tuple[str, str]]] = None,
     ) -> None:
+        compressed = False
+        accepted = self.headers.get("Accept-Encoding", "")
+        if "gzip" in accepted and "gzip" not in self.headers.get("Content-Encoding", ""):
+            body = gzip.compress(body, compresslevel=6)
+            compressed = True
         self.send_response(status)
         for name, value in extra_headers or []:
             self.send_header(name, value)
@@ -275,6 +281,9 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Vary", "Accept-Encoding")
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
         self.end_headers()
         self.wfile.write(body)
 
