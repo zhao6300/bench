@@ -138,16 +138,16 @@ export function LineChart({ labels, series, unit }: LineChartProps) {
       )}
       {hoveredIndex !== null && (
         <g className="chart-tooltip" transform={`translate(${Math.min(Math.max(xValues[hoveredIndex] - 152, 8), width - 312)},${paddingTop + 4})`}>
-          <rect width="304" height={52 + series.length * 26} rx="10" />
-          <text className="tooltip-title" x="14" y="30">
+          <rect width="364" height={68 + series.length * 30} rx="12" />
+          <text className="tooltip-title" x="16" y="38">
             {labels[hoveredIndex]}
           </text>
           {series.map((item, seriesIndex) => (
             <text
               key={`tooltip-${item.name}-${seriesIndex}`}
               className="tooltip-value"
-              x="12"
-              y={54 + seriesIndex * 26}
+              x="44"
+              y={62 + seriesIndex * 30}
             >
               {`${item.name}：${formatNumber(item.values[hoveredIndex] ?? null)}${unit ? ` ${unit}` : ""}`}
             </text>

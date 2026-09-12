@@ -426,7 +426,8 @@ body {
 
 .axis-label {
   fill: var(--fg-subtle);
-  font-size: 10px;
+  font-size: 15px;
+  font-weight: 560;
 }
 
 .chart-line {
@@ -578,12 +579,71 @@ body {
   overflow-wrap: anywhere;
 }
 
+.case-pair-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 2px;
+  color: var(--fg-muted);
+  font-size: 0.76rem;
+}
+
 .case-select {
   color: var(--fg-muted);
   font-size: calc(0.78rem * var(--table-zoom));
   min-width: 130px;
   overflow-wrap: anywhere;
 }
+
+.case-pair-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 150px;
+}
+
+.case-pair-row {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: calc(0.72rem * var(--table-zoom, 1));
+}
+
+.case-pair-dot {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: #fff;
+  font-size: calc(0.62rem * var(--table-zoom, 1));
+  font-weight: 700;
+}
+
+.case-pair-dot.a { background: var(--blue); }
+.case-pair-dot.b { background: var(--teal); }
+
+.case-pair-value {
+  display: grid;
+  gap: 3px;
+}
+
+.case-pair-track {
+  height: 12px;
+  width: 100%;
+  border-radius: 999px;
+  background: rgba(24, 30, 52, 0.08);
+  overflow: hidden;
+}
+
+.case-pair-bar {
+  height: 100%;
+  display: block;
+  border-radius: 999px;
+}
+
+.case-pair-bar.a { background: linear-gradient(90deg, var(--blue), #3a6de4); }
+.case-pair-bar.b { background: linear-gradient(90deg, var(--teal), #22a38f); }
 
 .environment-panel {
   gap: 14px;
@@ -876,8 +936,13 @@ body {
 
 .chart-tooltip .tooltip-title,
 .chart-tooltip .tooltip-value {
-  font-size: 18px;
+  font-size: 21px;
   fill: #fff;
+}
+
+.chart-tooltip .tooltip-value {
+  font-size: 19px;
+  font-weight: 640;
 }
 
 .chart-tooltip .tooltip-title {
