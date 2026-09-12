@@ -222,43 +222,43 @@ export function ComparePanel({ reportA, reportB, labelA, labelB, items, onChange
             <h3>用例对照</h3>
             <span>{pairs.length} 对</span>
           </div>
-          <div className="case-pair-legend">
-            <span className="case-pair-dot a" aria-hidden="true">A</span>
-            <span>基准报告 A</span>
-            <span className="case-pair-dot b" aria-hidden="true">B</span>
-            <span>对比报告 B</span>
-          </div>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
                   <th>用例</th>
-                  <th>状态</th>
-                  <th>TTFT P50</th>
-                  <th>TPOT P50</th>
-                  <th>吞吐量</th>
+                  <th>状态 A</th>
+                  <th>状态 B</th>
+                  <th>TTFT P50 A</th>
+                  <th>TTFT P50 B</th>
+                  <th>TPOT P50 A</th>
+                  <th>TPOT P50 B</th>
+                  <th>吞吐量 A</th>
+                  <th>吞吐量 B</th>
                 </tr>
               </thead>
               <tbody>
                 {pairs.map((pair) => (
                   <tr key={pair.key}>
                     <td>{pair.label}</td>
-                    <td>
-                      <div className="case-pair-cell">
-                        <StatusBadge status={pair.statusA} />
-                        <StatusBadge status={pair.statusB} />
-                      </div>
-                    </td>
+                    <td><StatusBadge status={pair.statusA} /></td>
+                    <td><StatusBadge status={pair.statusB} /></td>
                     <td className="case-pair-cell">
                       <CaseMetricCell casePair={pair} entryKey="entryA" tone="a" title="A" metricKey="p50_ttft" unit="s" max={ttftMax} />
+                    </td>
+                    <td className="case-pair-cell">
                       <CaseMetricCell casePair={pair} entryKey="entryB" tone="b" title="B" metricKey="p50_ttft" unit="s" max={ttftMax} />
                     </td>
                     <td className="case-pair-cell">
                       <CaseMetricCell casePair={pair} entryKey="entryA" tone="a" title="A" metricKey="p50_tpot" unit="s" max={tpotMax} />
+                    </td>
+                    <td className="case-pair-cell">
                       <CaseMetricCell casePair={pair} entryKey="entryB" tone="b" title="B" metricKey="p50_tpot" unit="s" max={tpotMax} />
                     </td>
                     <td className="case-pair-cell">
                       <CaseMetricCell casePair={pair} entryKey="entryA" tone="a" title="A" metricKey="overall_throughput" unit="tok/s" max={throughputMax} />
+                    </td>
+                    <td className="case-pair-cell">
                       <CaseMetricCell casePair={pair} entryKey="entryB" tone="b" title="B" metricKey="overall_throughput" unit="tok/s" max={throughputMax} />
                     </td>
                   </tr>
