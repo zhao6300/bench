@@ -8,6 +8,7 @@ import {
 } from "../services";
 
 interface ProfilePanelProps {
+  page: "details" | "password" | "avatar";
   onClose: () => void;
   onPasswordChanged: () => void;
   onProfileSaved: (profile: AuthProfile) => void;
@@ -24,7 +25,7 @@ async function readAvatarDataUrl(file: File): Promise<string> {
   });
 }
 
-export default function ProfilePanel({ onClose, onPasswordChanged, onProfileSaved }: ProfilePanelProps) {
+export default function ProfilePanel({ page, onClose, onPasswordChanged, onProfileSaved }: ProfilePanelProps) {
   const [profile, setProfile] = useState<AuthProfile | null>(null);
   const [passwordMessage, setPasswordMessage] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -122,9 +123,9 @@ export default function ProfilePanel({ onClose, onPasswordChanged, onProfileSave
   return (
     <div className="profile-panel">
       <div className="profile-panel-head">
-        <h2>管理员资料</h2>
-        <button type="button" onClick={onClose} aria-label="关闭管理员资料" className="profile-close">
-          关闭
+        <h2>{page === "avatar" ? "修改头像" : page === "password" ? "修改密码" : "修改资料"}</h2>
+        <button type="button" onClick={onClose} aria-label="返回" className="profile-close">
+          返回
         </button>
       </div>
 
@@ -132,79 +133,88 @@ export default function ProfilePanel({ onClose, onPasswordChanged, onProfileSave
         <p>资料加载中…</p>
       ) : (
         <>
-          <form onSubmit={handleProfileSubmit}>
-            <div className="avatar-row">
-              {avatarUrl ? (
-                <img src={avatarUrl} alt={`${profile?.username || "管理员"} 的头像`} />
-              ) : (
-                <span className="avatar-placeholder">{profile?.username?.slice(0, 1).toUpperCase() || "A"}</span>
-              )}
-              <label htmlFor="admin-avatar">
-                {avatarUrl ? "更换头像" : "上传头像"}
-              </label>
+          {page === "details" ? (
+            <form onSubmit={handleProfileSubmit}>
+              <label htmlFor="admin-display-name">显示名称</label>
+              <input
+                id="admin-display-name"
+                value={display}
+                onChange={(event) => setDisplay(event.target.value)}
+                maxLength={64}
+              />
+              <label htmlFor="admin-email">邮箱</label>
+              <input
+                id="admin-email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+              />
+              <button type="submit" disabled={savingProfile}>
+                {savingProfile ? "保存中…" : "保存资料"}
+              </button>
+            </form>
+          ) : null}
+
+          {page === "avatar" ? (
+            <form onSubmit={(event) => { event.preventDefault(); void handleProfileSubmit(event); }}>
+              <div className="avatar-row">
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt={`${profile?.username || "管理员"} 的头像`} />
+                ) : (
+                  <span className="avatar-placeholder">{profile?.username?.slice(0, 1).toUpperCase() || "A"}</span>
+                )}
+              </div>
+              <label htmlFor="admin-avatar">{avatarUrl ? "更换头像" : "上传头像"}</label>
               <input
                 id="admin-avatar"
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
                 onChange={handleAvatarChange}
               />
-            </div>
+              <button type="submit" disabled={savingProfile}>
+                {savingProfile ? "保存中…" : "保存头像"}
+              </button>
+            </form>
+          ) : null}
 
-            <label htmlFor="admin-display-name">显示名称</label>
-            <input
-              id="admin-display-name"
-              value={display}
-              onChange={(event) => setDisplay(event.target.value)}
-              maxLength={64}
-            />
-            <label htmlFor="admin-email">邮箱</label>
-            <input
-              id="admin-email"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              required
-            />
-            <button type="submit" disabled={savingProfile}>
-              {savingProfile ? "保存中…" : "保存资料"}
-            </button>
-          </form>
-
-          <form onSubmit={handlePasswordSubmit}>
-            <label htmlFor="current-password">当前密码</label>
-            <input
-              id="current-password"
-              type="password"
-              autoComplete="current-password"
-              value={currentPassword}
-              onChange={(event) => setCurrentPassword(event.target.value)}
-              required
-            />
-            <label htmlFor="new-password">新密码</label>
-            <input
-              id="new-password"
-              type="password"
-              autoComplete="new-password"
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              minLength={8}
-              required
-            />
-            <label htmlFor="confirm-password">确认新密码</label>
-            <input
-              id="confirm-password"
-              type="password"
-              autoComplete="new-password"
-              value={confirmPassword}
-              onChange={(event) => setConfirmPassword(event.target.value)}
-              minLength={8}
-              required
-            />
-            <button type="submit" disabled={changingPassword}>
-              {changingPassword ? "修改中…" : "修改密码"}
-            </button>
-            {passwordMessage ? <p className="profile-success">{passwordMessage}</p> : null}
-          </form>
+          {page === "password" ? (
+            <form onSubmit={handlePasswordSubmit}>
+              <label htmlFor="current-password">当前密码</label>
+              <input
+                id="current-password"
+                type="password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(event) => setCurrentPassword(event.target.value)}
+                required
+              />
+              <label htmlFor="new-password">新密码</label>
+              <input
+                id="new-password"
+                type="password"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                minLength={8}
+                required
+              />
+              <label htmlFor="confirm-password">确认新密码</label>
+              <input
+                id="confirm-password"
+                type="password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                minLength={8}
+                required
+              />
+              <button type="submit" disabled={changingPassword}>
+                {changingPassword ? "修改中…" : "修改密码"}
+              </button>
+              {passwordMessage ? <p className="profile-success">{passwordMessage}</p> : null}
+            </form>
+          ) : null}
         </>
       )}
       {error ? <p className="auth-error">{error}</p> : null}

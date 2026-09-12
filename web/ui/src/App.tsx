@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
 import AuthPanel from "./components/AuthPanel";
+import AdminMenu from "./components/AdminMenu";
 import ComparePanel from "./components/ComparePanel";
 import OverviewPanel from "./components/OverviewPanel";
 import ProfilePanel from "./components/ProfilePanel";
 import { fetchAuthStatus, fetchReport, logout, type AuthProfile } from "./services";
 import type { Report, Run } from "./types";
 
-type View = "overview" | "compare";
+type View =
+  | "overview"
+  | "compare"
+  | "profile-details"
+  | "profile-password"
+  | "profile-avatar";
 
 export default function App() {
   const [view, setView] = useState<View>("overview");
@@ -18,7 +24,6 @@ export default function App() {
   const [reportA, setReportA] = useState<Report | null>(null);
   const [reportB, setReportB] = useState<Report | null>(null);
   const [compareLoading, setCompareLoading] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [auth, setAuth] = useState<{ authenticated: boolean; username?: string; display_name?: string | null; avatar_url?: string | null } | undefined>(undefined);
   const [error, setError] = useState("");
@@ -155,25 +160,24 @@ export default function App() {
             ))}
           </select>
         </label>
-        <button
-          type="button"
-          className="profile-button"
-          onClick={() => setProfileOpen(true)}
-          aria-haspopup="dialog"
-          aria-expanded={profileOpen}
-        >
-          {auth.avatar_url ? (
-            <img src={auth.avatar_url} alt="" />
-          ) : (
-            <span>{(auth.display_name || auth.username || "A").slice(0, 1).toUpperCase()}</span>
-          )}
-          <span>{auth.display_name || auth.username || "管理员"}</span>
-        </button>
+        <AdminMenu
+          display={auth.display_name || auth.username || "管理员"}
+          avatarUrl={auth.avatar_url}
+          username={auth.username}
+          onAction={(action) => {
+            if (action === "logout") {
+              void logout();
+            } else {
+              setView(action);
+            }
+          }}
+        />
       </header>
 
-      {profileOpen ? (
+      {view.startsWith("profile-") ? (
         <ProfilePanel
-          onClose={() => setProfileOpen(false)}
+          page={view === "profile-avatar" ? "avatar" : view === "profile-password" ? "password" : "details"}
+          onClose={() => setView("overview")}
           onPasswordChanged={() => void logout()}
           onProfileSaved={(profile: AuthProfile) => {
             setAuth((previous) => ({
