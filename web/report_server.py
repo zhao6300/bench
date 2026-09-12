@@ -117,9 +117,20 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
                         200,
                         "application/json; charset=utf-8",
                         json.dumps({"authenticated": True, "username": username}).encode("utf-8"),
-                    )
+                )
                 return
-            request_path = "/index.html" if self.path == "/" else self.path
+            if self.path in {"/reports", "/reports/"}:
+                if self._username() is None:
+                    self._send_redirect("/login.html")
+                    return
+                request_path = "/index.html"
+            elif self.path in {"/", "/index.html"}:
+                if self._username() is not None:
+                    self._send_redirect("/reports/")
+                    return
+                request_path = "/login.html"
+            else:
+                request_path = self.path
             content_type = self.static_content_type(request_path)
             if content_type is None:
                 self._send_error(404, "not found")
@@ -275,6 +286,18 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_redirect(self, target: str) -> None:
+        """Redirect a browser path to another app path.
+
+        Args:
+            target: The target URL path.
+        """
+        self.send_response(302)
+        self.send_header("Location", target)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
 
 
 def create_local_server(address: tuple[str, int], auth_store: AuthStore) -> http.server.ThreadingHTTPServer:

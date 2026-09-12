@@ -42,6 +42,7 @@ export async function login(username: string, password: string): Promise<AuthSta
 
 export async function logout(): Promise<void> {
   await fetch("/api/auth/session", { method: "DELETE", cache: "no-store" });
+  window.location.assign("/");
 }
 
 export async function fetchReport(filename: string, signal?: AbortSignal): Promise<Report> {
