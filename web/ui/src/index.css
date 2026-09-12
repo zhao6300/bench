@@ -332,19 +332,23 @@ body {
 
 .status-segment.failed {
   background: #992b3a;
+  color: #ffffff;
 }
 
 .status-segment.interrupted,
 .status-segment.running {
   background: #8b4b12;
+  color: #ffffff;
 }
 
 .status-segment.pending {
   background: #1f4dbb;
+  color: #ffffff;
 }
 
 .status-segment.skipped {
   background: #404d66;
+  color: #ffffff;
 }
 
 .summary-grid {
@@ -630,11 +634,11 @@ body {
 }
 
 .status-badge.passed { background: #084c30; color: #ffffff !important; font-weight: 620; }
-.status-badge.failed { background: #992b3a; color: #fff; }
+.status-badge.failed { background: #992b3a; color: #ffffff !important; font-weight: 620; }
 .status-badge.interrupted,
-.status-badge.running { background: #8b4b12; color: #fff; }
-.status-badge.pending { background: #1f4dbb; color: #fff; }
-.status-badge.skipped { background: #404d66; color: #fff; }
+.status-badge.running { background: #8b4b12; color: #ffffff !important; font-weight: 620; }
+.status-badge.pending { background: #1f4dbb; color: #ffffff !important; font-weight: 620; }
+.status-badge.skipped { background: #404d66; color: #ffffff !important; font-weight: 620; }
 
 .data-table .status-badge {
   font-size: calc(0.74rem * var(--table-zoom, 1));
