@@ -85,7 +85,7 @@ function MetricComparison({
               <path d="M1 7 4.35 10.35 11 3.7" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
             </svg>
           ) : null}
-          {deltaText}
+          <span className="case-comparison-winner-text">{deltaText}</span>
         </span>
       </div>
       <div className="case-comparison-bars">
