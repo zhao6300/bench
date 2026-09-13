@@ -1,6 +1,6 @@
 import { caseMetric, caseStringParam, metricOptions, type CasePair } from "../metrics";
 import StatusBadge from "./StatusBadge";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 type MetricDirection = "higher" | "lower" | "neutral";
 
@@ -78,6 +78,47 @@ function comparisonWinner(
   return valueA < valueB ? "a" : "b";
 }
 
+function caseFilterKeywords(entry: CasePair["entryA"]): string[] {
+  const tags = new Set<string>();
+  const source = `${entry?.name ?? ""} ${entry?.case_key ?? ""} ${entry?.id ?? ""}`.toLowerCase();
+  const scalePattern = /(?:input|output|prompt|decode|latency|throughput)-?(\d+(?:\.\d+)?)([km])(?![a-z])/g;
+
+  for (const match of source.matchAll(scalePattern)) {
+    const scale = Number(match[1]);
+    const unit = match[2].toUpperCase();
+    if (Number.isFinite(scale) && scale > 0) tags.add(`${scale}${unit}`);
+  }
+
+  const requests = entry?.matrix?.requests;
+  const concurrency = typeof requests === "number" ? requests : requests?.concurrency;
+  if (typeof concurrency === "number" && Number.isFinite(concurrency)) {
+    tags.add(`${concurrency}并发`);
+  }
+
+  if (tags.size === 0) {
+    for (const key of ["context_len", "random_input_len", "max_tokens", "random_output_len"]) {
+      const value = caseStringParam(entry, key);
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 1024) {
+        tags.add(`${Math.round(parsed / 1024)}K`);
+      }
+    }
+  }
+
+  if (tags.size === 0) {
+    for (const key of ["model", "dataset"]) {
+      const value = caseStringParam(entry, key);
+      if (value) tags.add(value);
+    }
+  }
+
+  return [...tags];
+}
+
+function entryMatchesFilter(entry: CasePair["entryA"], needle: string): boolean {
+  return caseFilterKeywords(entry).some((keyword) => keyword.toLowerCase().includes(needle));
+}
+
 function MetricComparison({
   pair,
   metric,
@@ -137,22 +178,14 @@ function MetricComparison({
 
 export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
   const [selectedPair, setSelectedPair] = useState<CasePair | undefined>();
-  const [hoveredPair, setHoveredPair] = useState<
-    { pair: CasePair; left: number; top?: number; bottom?: number; width: number; maxHeight: number } | undefined
-  >();
   const [query, setQuery] = useState("");
   const [collapsedPairs, setCollapsedPairs] = useState<Set<string>>(new Set());
-  const hoverDelayRef = useRef<number | undefined>(undefined);
 
   const quickKeywords = useMemo(() => {
     const unique = new Set<string>();
     for (const pair of pairs) {
       for (const entry of [pair.entryA, pair.entryB]) {
-        if (entry?.status) unique.add(entry.status);
-        const model = caseStringParam(entry, "model");
-        if (model) unique.add(model);
-        const dataset = caseStringParam(entry, "dataset");
-        if (dataset) unique.add(dataset);
+        for (const keyword of caseFilterKeywords(entry)) unique.add(keyword);
       }
     }
     return [...unique].sort((left, right) => left.localeCompare(right, "zh-CN"));
@@ -177,41 +210,12 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
     ]
       .filter((value): value is string => typeof value === "string")
       .map((value) => String(value).toLowerCase());
-    return pairs.filter((pair) => searchable(pair).some((text) => text.includes(needle)));
+    return pairs.filter((pair) =>
+      searchable(pair).some((text) => text.includes(needle))
+      || entryMatchesFilter(pair.entryA, needle)
+      || entryMatchesFilter(pair.entryB, needle),
+    );
   }, [pairs, query]);
-
-  useEffect(() => () => window.clearTimeout(hoverDelayRef.current), []);
-
-  const clearHoverDelay = () => window.clearTimeout(hoverDelayRef.current);
-
-  const showHoverDetail = (pair: CasePair, event: React.PointerEvent<HTMLElement>) => {
-    clearHoverDelay();
-    const cardRect = event.currentTarget.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const width = Math.min(Math.max(cardRect.width, 584), viewportWidth - 32);
-    const left = Math.max(16, Math.min(cardRect.left, viewportWidth - width - 16));
-    const availableBelow = viewportHeight - cardRect.bottom - 24;
-    const availableAbove = cardRect.top - 24;
-    const below = availableBelow > availableAbove;
-    const top = below ? cardRect.bottom + 8 : undefined;
-    const bottom = below ? undefined : viewportHeight - cardRect.top + 8;
-    const availableHeight = below ? availableBelow : availableAbove;
-
-    setHoveredPair({
-      pair,
-      left,
-      top,
-      bottom,
-      width,
-      maxHeight: Math.min(560, Math.max(240, availableHeight)),
-    });
-  };
-
-  const scheduleHideHoverDetail = () => {
-    clearHoverDelay();
-    hoverDelayRef.current = window.setTimeout(() => setHoveredPair(undefined), 90);
-  };
 
   return (
     <section className="panel case-comparison" aria-label="用例对照">
@@ -298,44 +302,6 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
           </div>
         ) : null}
 
-        {hoveredPair ? (
-          <section
-            className="case-comparison-hover-detail"
-            style={{
-              left: hoveredPair.left,
-              width: hoveredPair.width,
-              maxHeight: hoveredPair.maxHeight,
-              ...(hoveredPair.top !== undefined ? { top: hoveredPair.top } : { bottom: hoveredPair.bottom }),
-            }}
-            aria-hidden="true"
-            onPointerEnter={clearHoverDelay}
-            onPointerLeave={scheduleHideHoverDetail}
-          >
-            <div className="case-comparison-hover-head">
-              <strong>{hoveredPair.pair.entryA?.name ?? hoveredPair.pair.entryB?.name ?? hoveredPair.pair.label}</strong>
-              <button
-                type="button"
-                onClick={() => {
-                  setHoveredPair(undefined);
-                  setSelectedPair(hoveredPair.pair);
-                }}
-              >
-                打开
-              </button>
-            </div>
-            <div className="case-pair-detail-metrics">
-              {detailMetrics.map((metric) => (
-                <MetricComparison
-                  key={metric.key}
-                  pair={hoveredPair.pair}
-                  metric={metric}
-                  max={pairMetricMax(hoveredPair.pair, metric.key)}
-                />
-              ))}
-            </div>
-          </section>
-        ) : null}
-
         <div className="case-comparison-grid">
           {filteredPairs.map((pair) => {
             const title = pair.entryA?.name ?? pair.entryB?.name ?? pair.label;
@@ -355,8 +321,6 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
                     setSelectedPair(pair);
                   }
                 }}
-                onPointerEnter={(event) => showHoverDetail(pair, event)}
-                onPointerLeave={scheduleHideHoverDetail}
               >
                 <header className="case-comparison-case-head">
                   <div className="case-comparison-title-block">
