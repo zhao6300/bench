@@ -403,6 +403,31 @@ def test_profile_api_updates_profile_fields(
         server.server_close()
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/details",
+        "/admin/password",
+        "/admin/avatar",
+    ],
+)
+def test_admin_routes_are_served_inside_authenticated_report_app(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    """Authenticated admin pages resolve through the single static app root."""
+    server, server_url, store = _start_auth_server(tmp_path, monkeypatch, "operator", "secure-admin-password")
+    token = store.create_session("operator")
+    try:
+        response = urllib.request.urlopen(urllib.request.Request(f"{server_url}{path}", headers={"Cookie": f"benchmark_session={token}"}))
+        assert response.status == 200
+        assert response.headers.get("Content-Type", "").startswith("text/html")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def _request(url: str, body: dict[str, str | None] | None = None, token: str | None = None, method: str = "GET"):
     """Send one loopback API request without persistent cookies."""
     headers = {}

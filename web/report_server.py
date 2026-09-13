@@ -136,6 +136,11 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
                     self._send_redirect("/login.html")
                     return
                 request_path = "/index.html"
+            elif self.path in {"/admin/details", "/admin/password", "/admin/avatar"}:
+                if self._username() is None:
+                    self._send_redirect("/login.html")
+                    return
+                request_path = "/index.html"
             elif self.path in {"/", "/index.html"}:
                 if self._username() is not None:
                     self._send_redirect("/reports/")

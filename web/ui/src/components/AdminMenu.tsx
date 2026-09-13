@@ -40,10 +40,10 @@ export default function AdminMenu({ display, avatarUrl, username, onAction }: Ad
         className="admin-menu-button"
         aria-haspopup="menu"
         aria-expanded={open}
+        title={display}
         onClick={() => setOpen((previous) => !previous)}
       >
         {avatarUrl ? <img className="admin-avatar" src={avatarUrl} alt="" /> : <span className="admin-avatar">{fallbackLetter}</span>}
-        <span className="admin-label">{display}</span>
       </button>
       {open ? (
         <div className="admin-menu-panel" role="menu">

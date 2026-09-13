@@ -141,9 +141,9 @@ body {
   display: flex;
   align-items: center;
   gap: 9px;
-  height: 42px;
-  min-width: 172px;
-  padding: 0 14px 0 10px;
+  height: 38px;
+  min-width: 44px;
+  padding: 0 4px;
   border: 1px solid var(--line);
   border-radius: 15px;
   overflow: hidden;
@@ -168,11 +168,6 @@ body {
   color: #fff;
   font-size: 0.82rem;
   font-weight: 670;
-}
-
-.admin-label {
-  color: var(--fg);
-  font-weight: 630;
 }
 
 .admin-menu-panel {

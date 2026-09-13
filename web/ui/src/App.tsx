@@ -14,6 +14,12 @@ type View =
   | "profile-password"
   | "profile-avatar";
 
+const adminRoute: Partial<Record<View, string>> = {
+  "profile-details": "/admin/details",
+  "profile-password": "/admin/password",
+  "profile-avatar": "/admin/avatar",
+};
+
 export default function App() {
   const [view, setView] = useState<View>("overview");
   const [runs, setRuns] = useState<Run[]>([]);
@@ -169,6 +175,10 @@ export default function App() {
               void logout();
             } else {
               setView(action);
+              const route = adminRoute[action];
+              if (route) {
+                window.history.pushState(null, "", route);
+              }
             }
           }}
         />
