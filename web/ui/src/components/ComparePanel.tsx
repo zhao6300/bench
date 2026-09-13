@@ -80,7 +80,7 @@ export function ComparePanel({ reportA, reportB, labelA, labelB, items, onChange
         </div>
       </article>
 
-      <ConfigComparePanel pairs={matched} />
+      <ConfigComparePanel pairs={matched} reportA={reportA} reportB={reportB} />
 
                   <div className="chart-grid">
         {comparisonMetrics.map((metric) => {

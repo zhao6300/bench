@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import type { CasePair } from "../metrics";
 import { caseParamNumber, caseStringParam } from "../metrics";
+import type { Report } from "../types";
 
 type ConfigFieldType = "boolean" | "number" | "string";
 
@@ -12,6 +13,7 @@ interface ConfigField {
 
 interface ConfigFieldGroup {
   name: string;
+  source: "case" | "suite";
   fields: ConfigField[];
 }
 
@@ -28,7 +30,17 @@ interface ConfigRowDisplay {
 
 const configFieldGroups: ConfigFieldGroup[] = [
   {
+    name: "套件配置",
+    source: "suite",
+    fields: [
+      { label: "配置文件", key: "config_file", type: "string" },
+      { label: "执行计划哈希", key: "execution_plan_sha256", type: "string" },
+      { label: "失败策略", key: "failure_policy", type: "string" },
+    ],
+  },
+  {
     name: "模型与负载",
+    source: "case",
     fields: [
       { label: "运行模式", key: "mode", type: "string" },
       { label: "模型", key: "model", type: "string" },
@@ -38,14 +50,13 @@ const configFieldGroups: ConfigFieldGroup[] = [
       { label: "随机输入长度", key: "random_input_len", type: "number" },
       { label: "随机输出长度", key: "random_output_len", type: "number" },
       { label: "随机前缀长度", key: "random_prefix_len", type: "number" },
-      { label: "随机范围比例", key: "random_range_ratio", type: "number" },
-      { label: "共享前缀比例", key: "prefix_ratio", type: "number" },
       { label: "最大输出 Token", key: "max_tokens", type: "number" },
       { label: "请求数", key: "num_prompts", type: "number" },
     ],
   },
   {
     name: "执行与资源",
+    source: "case",
     fields: [
       { label: "并发", key: "concurrency", type: "number" },
       { label: "TP 大小", key: "tp_size", type: "number" },
@@ -58,6 +69,7 @@ const configFieldGroups: ConfigFieldGroup[] = [
   },
   {
     name: "质量目标",
+    source: "case",
     fields: [
       { label: "SLO TTFT", key: "slo_ttft", type: "number" },
       { label: "SLO TPOT", key: "slo_tpot", type: "number" },
@@ -67,6 +79,7 @@ const configFieldGroups: ConfigFieldGroup[] = [
   },
   {
     name: "API",
+    source: "case",
     fields: [
       { label: "API 地址", key: "api_base", type: "string" },
       { label: "API 传输", key: "api_transport", type: "string" },
@@ -104,20 +117,42 @@ function configRow(pairs: CasePair[], field: ConfigField): ConfigRowDisplay {
   return { key: field.key, label: field.label, valueA, valueB, hasValue, status };
 }
 
+function suiteValue(report: Report | null | undefined, field: ConfigField): string {
+  const suite = report?.suite;
+  const value = suite ? suite[field.key as "config_file" | "execution_plan_sha256" | "failure_policy"] : undefined;
+  return typeof value === "string" && value ? value : "—";
+}
+
+function suiteRow(reportA: Report | null | undefined, reportB: Report | null | undefined, field: ConfigField): ConfigRowDisplay {
+  const valueA = suiteValue(reportA, field);
+  const valueB = suiteValue(reportB, field);
+  const hasValue = valueA !== "—" || valueB !== "—";
+  const status: ConfigStatus = valueA === "—" && valueB === "—" ? "—" : valueA === "—" ? "仅 B" : valueB === "—" ? "仅 A" : valueA === valueB ? "一致" : "不同";
+  return { key: field.key, label: field.label, valueA, valueB, hasValue, status };
+}
+
 function summarize(values: Set<string>): string {
   if (!values.size || values.has("—")) return "—";
   if (values.size === 1) return Array.from(values)[0] ?? "—";
   return `按用例变化（${values.size} 种）`;
 }
 
-export function ConfigComparePanel({ pairs }: { pairs: CasePair[] }) {
-  if (!pairs.length) {
+export function ConfigComparePanel({ pairs, reportA, reportB }: {
+  pairs: CasePair[];
+  reportA?: Report | null;
+  reportB?: Report | null;
+}) {
+  const suiteRows = configFieldGroups
+    .filter((group) => group.source === "suite")
+    .flatMap((group) => group.fields.map((field) => suiteRow(reportA, reportB, field)));
+
+  if (!pairs.length && !suiteRows.some((row) => row.hasValue)) {
     return (
       <article className="panel config-compare-panel">
         <div className="panel-head">
           <div>
             <h3>配置对比</h3>
-            <p className="config-subtitle">两份报告暂无对齐用例。</p>
+            <p className="config-subtitle">两份报告暂无可比配置。</p>
           </div>
           <span>0 个对齐用例</span>
         </div>
@@ -131,7 +166,7 @@ export function ConfigComparePanel({ pairs }: { pairs: CasePair[] }) {
       <div className="panel-head">
         <div>
           <h3>配置对比</h3>
-          <p className="config-subtitle">基于 A / B 对齐用例的参数，不重复测量结果。</p>
+          <p className="config-subtitle">基于 A / B 对齐用例和套件级配置，不重复测量结果。</p>
         </div>
         <span>{pairs.length} 个对齐用例</span>
       </div>
@@ -139,15 +174,17 @@ export function ConfigComparePanel({ pairs }: { pairs: CasePair[] }) {
         <table className="data-table config-table">
           <thead>
             <tr>
-              <th scope="col">配置项</th>
-              <th scope="col">报告 A</th>
-              <th scope="col">报告 B</th>
+              <th className="config-column" scope="col">配置项</th>
+              <th className="report-column" scope="col">报告 A</th>
+              <th className="report-column" scope="col">报告 B</th>
               <th scope="col">状态</th>
             </tr>
           </thead>
           <tbody>
             {configFieldGroups.map((group) => {
-              const rows = group.fields.map((field) => configRow(pairs, field));
+              const rows = group.source === "suite"
+                ? group.fields.map((field) => suiteRow(reportA, reportB, field))
+                : group.fields.map((field) => configRow(pairs, field));
               if (!rows.some((row) => row.hasValue)) return null;
               return (
                 <Fragment key={group.name}>

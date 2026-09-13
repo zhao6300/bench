@@ -1503,6 +1503,15 @@ body {
   white-space: nowrap;
 }
 
+.config-table .report-column {
+  width: min(38vw, 520px);
+}
+
+.config-table td {
+  max-width: 520px;
+  overflow-wrap: anywhere;
+}
+
 .config-status {
   display: inline-flex;
   align-items: center;

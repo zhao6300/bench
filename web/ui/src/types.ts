@@ -34,6 +34,8 @@ export interface ReportSuite {
   duration_seconds?: number;
   run_state?: string;
   metadata?: SuiteMetadata;
+  failure_policy?: string;
+  execution_plan_sha256?: string;
 }
 
 export interface EnvironmentHost {
