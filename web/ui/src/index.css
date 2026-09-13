@@ -782,6 +782,132 @@ body {
   gap: 16px;
 }
 
+.data-table .case-row.passed {
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.data-table .case-row.passed:hover td {
+  background: #f3f7ff;
+  transform: translateX(2px);
+}
+
+.data-table .case-row.passed:focus-visible {
+  outline: 3px solid rgba(92,143,247,0.35);
+  outline-offset: -1px;
+}
+
+.case-detail {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+.case-detail-panel {
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.case-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.case-detail-head > div:nth-child(1) {
+  display: grid;
+  gap: 4px;
+}
+
+.case-detail-head h1 {
+  font-size: 1.4rem;
+  color: var(--fg);
+}
+
+.case-detail-id {
+  color: var(--fg-subtle);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.case-detail-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.case-detail-close {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--fg);
+  font-size: 0.8rem;
+  font-weight: 620;
+  cursor: pointer;
+}
+
+.case-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.case-detail-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.case-detail-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.case-detail-card h2 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 0.9rem;
+}
+
+.case-detail-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.case-detail-items div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(228,231,239,0.7);
+  border-radius: 12px;
+  background: var(--bg-soft);
+}
+
+.case-detail-items span {
+  color: var(--fg-subtle);
+  font-size: 0.7rem;
+}
+
+.case-detail-items strong {
+  color: var(--fg);
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
 .case-comparison {
   display: grid;
   gap: 18px;
@@ -834,7 +960,7 @@ body {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: center;
 }
 
 .case-comparison-case-head {
@@ -897,9 +1023,9 @@ body {
     align-items: stretch;
   }
 
-  .case-comparison-status {
-    justify-content: flex-start;
-  }
+.case-comparison-status {
+  justify-content: center;
+}
 
   .case-comparison-bars {
     gap: 5px;
@@ -927,25 +1053,32 @@ body {
 
 .case-comparison-metric-label {
   color: var(--fg);
+  text-align: center;
   white-space: nowrap;
 }
 
 .case-comparison-winner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
   font-size: 0.8rem;
   font-weight: 640;
-  padding: 3px 6px;
-  border-radius: 20px;
+  text-align: center;
   background: #f2f5f8;
   color: var(--fg-subtle);
 }
 
 .case-comparison-winner.a {
-  background: var(--blue);
+  background: #e8edfd;
   color: #ffffff;
 }
 
 .case-comparison-winner.b {
-  background: var(--teal);
+  background: #dcf6f1;
   color: #ffffff;
 }
 
@@ -962,8 +1095,15 @@ body {
 }
 
 .case-comparison-side {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #eef1f7;
   color: var(--fg-subtle);
-  font-size: 0.76rem;
+  font-size: 0.7rem;
+  color: var(--fg-subtle);
   font-weight: 640;
   text-align: center;
 }
@@ -1043,11 +1183,14 @@ body {
 .status-badge {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   border-radius: 999px;
   padding: 5px 10px;
+  min-width: 74px;
   background: rgba(229, 232, 240, 0.65);
   color: var(--fg);
   font-size: 0.74rem;
+  text-align: center;
 }
 
 .status-badge.passed { background: #084c30; color: #ffffff !important; font-weight: 620; }

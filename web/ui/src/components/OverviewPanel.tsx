@@ -11,6 +11,7 @@ import {
 } from "../metrics";
 import { useState } from "react";
 import { formatDate, formatDuration, formatNumber } from "../format";
+import CaseDetailPanel from "./CaseDetailPanel";
 import { LineChart } from "./charts";
 import StatusBadge from "./StatusBadge";
 import type { Report } from "../types";
@@ -40,6 +41,11 @@ export function OverviewPanel({ report }: { report: Report | null }) {
   const statusString = statusSegments(reportData);
   const environment = environmentFacts(reportData);
   const [tableZoom, setTableZoom] = useState(1);
+  const [selectedCase, setSelectedCase] = useState<typeof cases[number] | null>(null);
+
+  if (selectedCase) {
+    return <CaseDetailPanel caseEntry={selectedCase} onClose={() => setSelectedCase(null)} />;
+  }
 
   return (
     <section className="overview">
@@ -140,7 +146,26 @@ export function OverviewPanel({ report }: { report: Report | null }) {
               </thead>
               <tbody>
                 {cases.map((caseEntry, index) => (
-                  <tr key={`${caseKey(caseEntry)}-${index}`}>
+                  <tr
+                    key={`${caseKey(caseEntry)}-${index}`}
+                    className={caseEntry.status === "passed" ? "case-row passed" : "case-row"}
+                    tabIndex={caseEntry.status === "passed" ? 0 : undefined}
+                    onClick={
+                      caseEntry.status === "passed"
+                        ? () => setSelectedCase(caseEntry)
+                        : undefined
+                    }
+                    onKeyDown={
+                      caseEntry.status === "passed"
+                        ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setSelectedCase(caseEntry);
+                            }
+                          }
+                        : undefined
+                    }
+                  >
             <td><StatusBadge status={caseEntry.status} /></td>
             <td className="case-cell">{caseEntry.name ?? "—"}</td>
                     <td className="case-select">{caseStringParam(caseEntry, "model") || "—"}</td>
