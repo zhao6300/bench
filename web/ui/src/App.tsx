@@ -193,7 +193,7 @@ export default function App() {
 
       {view === "overview" ? (
         <OverviewPanel report={report} />
-      ) : (
+      ) : view === "compare" ? (
         <ComparePanel
           reportA={reportA}
           reportB={reportB}
@@ -203,6 +203,8 @@ export default function App() {
           onChangeA={setCompareAFile}
           onChangeB={setCompareBFile}
         />
+      ) : (
+        null
       )}
 
       {loading ? <div className="status">加载中…</div> : null}
