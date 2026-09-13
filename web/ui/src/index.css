@@ -954,6 +954,80 @@ body {
   outline-offset: 3px;
 }
 
+.case-comparison-filter {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) auto auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.case-comparison-search {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.case-comparison-search span {
+  color: var(--fg-subtle);
+  font-size: 0.72rem;
+}
+
+.case-comparison-search input {
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--fg);
+  font-size: 0.84rem;
+}
+
+.case-comparison-search input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(92,143,247,0.16);
+  outline: none;
+}
+
+.case-comparison-result-count {
+  color: var(--fg-muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.case-comparison-filter button {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--fg);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.case-comparison-quick-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.case-comparison-quick-keywords button {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f3f6ff;
+  color: var(--fg-muted);
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.case-comparison-quick-keywords button.active {
+  background: var(--blue);
+  color: #fff;
+}
+
 .case-pair-detail {
   display: grid;
   gap: 16px;

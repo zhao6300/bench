@@ -1,6 +1,6 @@
-import { caseMetric, metricOptions, type CasePair } from "../metrics";
+import { caseMetric, caseStringParam, metricOptions, type CasePair } from "../metrics";
 import StatusBadge from "./StatusBadge";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 type MetricDirection = "higher" | "lower" | "neutral";
 
@@ -126,6 +126,43 @@ function MetricComparison({
 
 export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
   const [selectedPair, setSelectedPair] = useState<CasePair | undefined>();
+  const [query, setQuery] = useState("");
+
+  const quickKeywords = useMemo(() => {
+    const unique = new Set<string>();
+    for (const pair of pairs) {
+      for (const entry of [pair.entryA, pair.entryB]) {
+        if (entry?.status) unique.add(entry.status);
+        const model = caseStringParam(entry, "model");
+        if (model) unique.add(model);
+        const dataset = caseStringParam(entry, "dataset");
+        if (dataset) unique.add(dataset);
+      }
+    }
+    return [...unique].sort((left, right) => left.localeCompare(right, "zh-CN"));
+  }, [pairs]);
+
+  const filteredPairs = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return pairs;
+    const searchable = (pair: CasePair) => [
+      pair.entryA?.name,
+      pair.entryA?.id,
+      pair.entryA?.case_key,
+      pair.statusA,
+      caseStringParam(pair.entryA, "model"),
+      caseStringParam(pair.entryA, "dataset"),
+      pair.entryB?.name,
+      pair.entryB?.id,
+      pair.entryB?.case_key,
+      pair.statusB,
+      caseStringParam(pair.entryB, "model"),
+      caseStringParam(pair.entryB, "dataset"),
+    ]
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => String(value).toLowerCase());
+    return pairs.filter((pair) => searchable(pair).some((text) => text.includes(needle)));
+  }, [pairs, query]);
 
   return (
     <section className="panel case-comparison" aria-label="用例对照">
@@ -136,6 +173,41 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
             按用例对齐 A/B 两份报告，较优方向以角标和条形边界标识
           </p>
         </div>
+      </div>
+      <div className="case-comparison-filter" aria-label="用例对照快速过滤">
+        <label className="case-comparison-search" htmlFor="case-comparison-search-input">
+          <span>过滤用例</span>
+          <input
+            id="case-comparison-search-input"
+            value={query}
+            list="case-comparison-quick-keywords"
+            placeholder={`按名称、ID、状态、模型或数据集过滤，如 ${query || "DeepSeek-V4-Flash"}`}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+        <span className="case-comparison-result-count">
+          {filteredPairs.length} / {pairs.length}
+        </span>
+        {query ? (
+          <button type="button" onClick={() => setQuery("")}>清除</button>
+        ) : null}
+        <datalist id="case-comparison-quick-keywords">
+          {quickKeywords.map((keyword) => (
+            <option key={keyword} value={keyword} />
+          ))}
+        </datalist>
+      </div>
+      <div className="case-comparison-quick-keywords" aria-label="已有用例关键字">
+        {quickKeywords.map((keyword) => (
+          <button
+            key={keyword}
+            type="button"
+            className={query === keyword ? "active" : ""}
+            onClick={() => setQuery(keyword)}
+          >
+            {keyword}
+          </button>
+        ))}
       </div>
       {pairs.length === 0 ? (
         <div className="case-comparison-empty">暂无可对齐的用例</div>
@@ -170,7 +242,7 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
         ) : null}
 
         <div className="case-comparison-grid">
-          {pairs.map((pair) => {
+          {filteredPairs.map((pair) => {
             const title = pair.entryA?.name ?? pair.entryB?.name ?? pair.label;
             const detail = pair.entryA?.id ?? pair.entryB?.id ?? "";
             return (
