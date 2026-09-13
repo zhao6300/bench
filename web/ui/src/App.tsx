@@ -21,7 +21,13 @@ const adminRoute: Partial<Record<View, string>> = {
 };
 
 export default function App() {
-  const [view, setView] = useState<View>("overview");
+  const [view, setView] = useState<View>(() => {
+    const route = window.location.pathname;
+    if (route === "/admin/details") return "profile-details";
+    if (route === "/admin/password") return "profile-password";
+    if (route === "/admin/avatar") return "profile-avatar";
+    return "overview";
+  });
   const [runs, setRuns] = useState<Run[]>([]);
   const [selectedFile, setSelectedFile] = useState("");
   const [compareAFile, setCompareAFile] = useState("");
