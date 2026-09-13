@@ -1028,6 +1028,28 @@ body {
   color: #fff;
 }
 
+.case-pair-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  padding: 24px 16px;
+}
+
+.case-pair-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: auto;
+  border: none;
+  background: rgba(15, 23, 42, 0.5);
+  backdrop-filter: blur(4px);
+  cursor: pointer;
+}
+
 .case-pair-detail {
   display: grid;
   gap: 16px;
@@ -1036,6 +1058,12 @@ body {
   border-radius: 16px;
   background: #fff;
   box-shadow: var(--shadow);
+  position: relative;
+  z-index: 1;
+  width: min(1200px, calc(100vw - 48px));
+  pointer-events: auto;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
 }
 
 .case-pair-detail-head {
@@ -1058,6 +1086,7 @@ body {
 }
 
 .case-pair-detail-status {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1108,6 +1137,20 @@ body {
   gap: 6px;
   flex-wrap: wrap;
   justify-content: center;
+}
+
+.case-comparison-status button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
 }
 
 .case-comparison-case-head {

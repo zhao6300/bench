@@ -127,6 +127,7 @@ function MetricComparison({
 export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
   const [selectedPair, setSelectedPair] = useState<CasePair | undefined>();
   const [query, setQuery] = useState("");
+  const [collapsedPairs, setCollapsedPairs] = useState<Set<string>>(new Set());
 
   const quickKeywords = useMemo(() => {
     const unique = new Set<string>();
@@ -214,37 +215,46 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
       ) : (
         <>
         {selectedPair ? (
-          <section className="case-pair-detail" aria-label="用例详细对比">
-            <header className="case-pair-detail-head">
-              <div>
-                <h4>用例详细对比</h4>
-                <span className="case-pair-detail-title">
-                  {selectedPair.entryA?.name ?? selectedPair.entryB?.name ?? selectedPair.label}
-                </span>
+          <div className="case-pair-modal" role="dialog" aria-modal="true">
+            <button
+              type="button"
+              className="case-pair-modal-backdrop"
+              aria-label="关闭详细对比"
+              onClick={() => setSelectedPair(undefined)}
+            />
+            <section className="case-pair-detail" aria-label="用例详细对比">
+              <header className="case-pair-detail-head">
+                <div>
+                  <h4>用例详细对比</h4>
+                  <span className="case-pair-detail-title">
+                    {selectedPair.entryA?.name ?? selectedPair.entryB?.name ?? selectedPair.label}
+                  </span>
+                </div>
+                <div className="case-pair-detail-status">
+                  <StatusBadge status={selectedPair.statusA} />
+                  <StatusBadge status={selectedPair.statusB} />
+                </div>
+                <button type="button" onClick={() => setSelectedPair(undefined)}>关闭</button>
+              </header>
+              <div className="case-pair-detail-metrics">
+                {detailMetrics.map((metric) => (
+                  <MetricComparison
+                    key={metric.key}
+                    pair={selectedPair}
+                    metric={metric}
+                    max={pairMetricMax(selectedPair, metric.key)}
+                  />
+                ))}
               </div>
-              <div className="case-pair-detail-status">
-                <StatusBadge status={selectedPair.statusA} />
-                <StatusBadge status={selectedPair.statusB} />
-              </div>
-              <button type="button" onClick={() => setSelectedPair(undefined)}>返回</button>
-            </header>
-            <div className="case-pair-detail-metrics">
-              {detailMetrics.map((metric) => (
-                <MetricComparison
-                  key={metric.key}
-                  pair={selectedPair}
-                  metric={metric}
-                  max={pairMetricMax(selectedPair, metric.key)}
-                />
-              ))}
-            </div>
-          </section>
+            </section>
+          </div>
         ) : null}
 
         <div className="case-comparison-grid">
           {filteredPairs.map((pair) => {
             const title = pair.entryA?.name ?? pair.entryB?.name ?? pair.label;
             const detail = pair.entryA?.id ?? pair.entryB?.id ?? "";
+            const isCollapsed = collapsedPairs.has(pair.key);
             return (
               <article
                 className="case-comparison-card"
@@ -252,7 +262,7 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
                 tabIndex={0}
                 role="button"
                 aria-label={`查看 ${title} 详细对比`}
-                onClick={() => setSelectedPair(pair)}
+                      onClick={() => setSelectedPair(pair)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
@@ -265,21 +275,41 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
                     <span className="case-comparison-title">{title}</span>
                     {detail ? <span className="case-comparison-detail">{detail}</span> : null}
                   </div>
-                  <div className="case-comparison-status">
-                    <StatusBadge status={pair.statusA} />
-                    <StatusBadge status={pair.statusB} />
+                    <div className="case-comparison-status">
+                      <StatusBadge status={pair.statusA} />
+                      <StatusBadge status={pair.statusB} />
+                      <button
+                        type="button"
+                        aria-expanded={!isCollapsed}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setCollapsedPairs((previous) => {
+                            const next = new Set(previous);
+                            if (next.has(pair.key)) {
+                              next.delete(pair.key);
+                            } else {
+                              next.add(pair.key);
+                            }
+                            return next;
+                          });
+                        }}
+                      >
+                        {isCollapsed ? "展开" : "折叠"}
+                      </button>
                   </div>
                 </header>
-                <div className="case-comparison-metrics">
-                  {detailMetrics.map((metric) => (
-                    <MetricComparison
-                      key={metric.key}
-                      pair={pair}
-                      metric={metric}
-                      max={pairMetricMax(pair, metric.key)}
-                    />
-                  ))}
-                </div>
+                {isCollapsed ? null : (
+                  <div className="case-comparison-metrics">
+                    {detailMetrics.map((metric) => (
+                      <MetricComparison
+                        key={metric.key}
+                        pair={pair}
+                        metric={metric}
+                        max={pairMetricMax(pair, metric.key)}
+                      />
+                    ))}
+                  </div>
+                )}
               </article>
             );
           })}
