@@ -79,7 +79,14 @@ function MetricComparison({
     <div className="case-comparison-metric">
       <div className="case-comparison-metric-head">
         <span className="case-comparison-metric-label">{metric.label}</span>
-        <span className={winner ? `case-comparison-winner ${winner}` : "case-comparison-winner"}>{deltaText}</span>
+        <span className={winner ? `case-comparison-winner ${winner}` : "case-comparison-winner"}>
+          {winner ? (
+            <svg className="case-comparison-winner-icon" viewBox="0 0 12 12" aria-hidden="true">
+              <path d="M1 7 4.35 10.35 11 3.7" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+            </svg>
+          ) : null}
+          {deltaText}
+        </span>
       </div>
       <div className="case-comparison-bars">
         {sideKeys.map((entryKey, index) => {

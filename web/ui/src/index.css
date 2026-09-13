@@ -990,9 +990,9 @@ body {
 
 .case-comparison-metric-head {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(88px, auto) minmax(148px, 1fr);
   align-items: center;
-  gap: 6px;
+  gap: 10px;
 }
 
 .case-comparison-metric-label {
@@ -1007,14 +1007,25 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  height: 28px;
+  width: 100%;
+  gap: 7px;
   min-width: 0;
+  overflow: hidden;
   overflow-wrap: anywhere;
+  padding: 0 10px;
+  border-radius: 999px;
   font-size: 0.8rem;
   font-weight: 640;
-  padding: 4px 7px;
-  border-radius: 999px;
+  text-align: center;
   background: #f2f5f8;
   color: var(--fg-subtle);
+}
+
+.case-comparison-winner-icon {
+  flex: 0 0 auto;
+  width: 12px;
 }
 
 @media (max-width: 760px) {
@@ -1061,25 +1072,21 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 30px;
-  padding: 0 11px;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  font-weight: 640;
-  text-align: center;
-  background: #f2f5f8;
-  color: var(--fg-subtle);
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
 }
 
 .case-comparison-winner.a {
-  background: #e8edfd;
-  color: #ffffff;
+  background: #dce6ff;
+  color: #1c4dc0;
+  box-shadow: inset 0 0 0 1px rgba(66, 118, 255, 0.24);
 }
 
 .case-comparison-winner.b {
-  background: #dcf6f1;
-  color: #ffffff;
+  background: #d8f5ef;
+  color: #077263;
+  box-shadow: inset 0 0 0 1px rgba(25, 179, 162, 0.24);
 }
 
 .case-comparison-bars {
@@ -1184,13 +1191,16 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  height: 28px;
   border-radius: 999px;
-  padding: 5px 10px;
-  min-width: 74px;
+  min-width: 82px;
+  padding: 0 10px;
   background: rgba(229, 232, 240, 0.65);
   color: var(--fg);
   font-size: 0.74rem;
   text-align: center;
+  white-space: nowrap;
 }
 
 .status-badge.passed { background: #084c30; color: #ffffff !important; font-weight: 620; }
