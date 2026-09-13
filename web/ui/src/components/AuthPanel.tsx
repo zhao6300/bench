@@ -1,4 +1,5 @@
 import { useState } from "react";
+import BrandMark from "./BrandMark";
 import { login } from "../services";
 
 interface AuthPanelProps {
@@ -29,7 +30,7 @@ export default function AuthPanel({ onAuthenticated }: AuthPanelProps) {
   return (
     <div className="auth-shell">
       <form className="auth-panel" onSubmit={handleSubmit}>
-        <div className="brand-icon auth-brand">LB</div>
+        <div className="brand-icon auth-brand"><BrandMark /></div>
         <h1>LLM Benchmark</h1>
         <p>请登录后查看报告</p>
         <label htmlFor="auth-username">用户名</label>

@@ -4,6 +4,7 @@ import AdminMenu from "./components/AdminMenu";
 import ComparePanel from "./components/ComparePanel";
 import OverviewPanel from "./components/OverviewPanel";
 import ProfilePanel from "./components/ProfilePanel";
+import BrandMark from "./components/BrandMark";
 import { fetchAuthStatus, fetchReport, logout, type AuthProfile } from "./services";
 import type { Report, Run } from "./types";
 
@@ -148,7 +149,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-icon">LB</div>
+          <div className="brand-icon"><BrandMark /></div>
           <div className="brand-copy">
             <h1>LLM Benchmark</h1>
             <p>实时查看推理性能指标</p>
