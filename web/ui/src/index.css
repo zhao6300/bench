@@ -1490,14 +1490,47 @@ body {
   font-size: 0.76rem;
 }
 
-.metric-delta {
-  display: grid;
-  gap: 12px;
-  padding: clamp(16px, 2vw, 20px);
-  border: 1px solid rgba(224, 229, 241, 0.8);
-  border-radius: var(--radius);
-  background: #fff;
-  box-shadow: var(--shadow);
+.config-subtitle {
+  margin-top: 4px;
+  color: var(--fg-subtle);
+  font-size: 0.76rem;
+}
+
+.config-table th[scope="row"] {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-status {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(229, 232, 240, 0.7);
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.config-status.is-equal {
+  background: rgba(18, 178, 129, 0.12);
+  color: #0b6c4c;
+}
+
+.config-status.is-different {
+  background: rgba(196, 49, 74, 0.12);
+  color: #992b3a;
+}
+
+.config-empty {
+  padding: 32px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  color: var(--fg-muted);
+  text-align: center;
 }
 
 .metric-group-header th {

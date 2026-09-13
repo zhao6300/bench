@@ -1,10 +1,11 @@
-import { formatDate, formatDuration, formatNumber } from "../format";
-import { caseMetric, caseLabel, metricComparisonRows, metricGroups, pairCases } from "../metrics";
+import { formatDate, formatDuration } from "../format";
+import { caseMetric, caseLabel, pairCases } from "../metrics";
 import { LineChart } from "./charts";
 import type { Report } from "../types";
 import type { Run } from "../types";
 import StatusBadge from "./StatusBadge";
 import { CaseComparisonPanel } from "./CaseComparisonPanel";
+import { ConfigComparePanel } from "./ConfigComparePanel";
 
 const comparisonMetrics = [
   { key: "p50_ttft", label: "TTFT P50", unit: "s", color: "chart-color-purple" },
@@ -12,23 +13,6 @@ const comparisonMetrics = [
   { key: "overall_throughput", label: "吞吐量", unit: "tok/s", color: "chart-color-blue" },
   { key: "goodput_pct", label: "Goodput", unit: "%", color: "chart-color-amber" },
 ] as const;
-
-function formatMetric(value: number | null, unit: string): string {
-  if (value === null) return "—";
-  return [formatNumber(value, 3), unit].filter(Boolean).join(" ");
-}
-
-function formatSignedDelta(value: number | null, unit: string): string {
-  if (value === null) return "—";
-  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
-  return `${sign}${formatNumber(Math.abs(value), 3)}${unit ? ` ${unit}` : ""}`;
-}
-
-function formatSignedPercent(value: number | null): string {
-  if (value === null) return "—";
-  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
-  return `${sign}${formatNumber(Math.abs(value), 1)}%`;
-}
 
 export function ComparePanel({ reportA, reportB, labelA, labelB, items, onChangeA, onChangeB }: {
   reportA: Report | null;
@@ -41,7 +25,6 @@ export function ComparePanel({ reportA, reportB, labelA, labelB, items, onChange
 }) {
   const pairs = pairCases(reportA, reportB);
   const matched = pairs.filter((pair) => pair.matched);
-  const deltaRows = metricComparisonRows(matched);
   const labels = matched.map((pair) => caseLabel(pair.entryA, 0) || caseLabel(pair.entryB, 0));
 
   return (
@@ -97,45 +80,7 @@ export function ComparePanel({ reportA, reportB, labelA, labelB, items, onChange
         </div>
       </article>
 
-      <div className="metric-delta">
-        <div className="panel-head">
-          <h3>指标差异一览</h3>
-          <span>{matched.length} / {pairs.length} 个用例对齐</span>
-        </div>
-            <div className="table-wrap">
-          <table className="data-table compare-metric-table">
-            <thead>
-              <tr>
-                <th>指标</th>
-                <th>报告 A</th>
-                <th>报告 B</th>
-                <th>变化（B − A）</th>
-                <th>相对变化</th>
-              </tr>
-            </thead>
-            <tbody>
-              {metricGroups.map((group) => (
-                <>
-                  <tr key={group.name} className="metric-group-header">
-                    <th colSpan={5}>{group.name}</th>
-                  </tr>
-                  {deltaRows
-                    .filter((row) => group.options.some((option) => option.key === row.option.key))
-                    .map((row) => (
-                      <tr key={row.option.key}>
-                        <td>{row.option.label}</td>
-                        <td>{formatMetric(row.valueA, row.option.unit)}</td>
-                        <td>{formatMetric(row.valueB, row.option.unit)}</td>
-                        <td>{formatSignedDelta(row.delta, row.option.unit)}</td>
-                        <td>{formatSignedPercent(row.deltaPct)}</td>
-                      </tr>
-                    ))}
-                </>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <ConfigComparePanel pairs={matched} />
 
                   <div className="chart-grid">
         {comparisonMetrics.map((metric) => {
