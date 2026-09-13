@@ -912,6 +912,7 @@ body {
   display: grid;
   gap: 18px;
   width: 100%;
+  position: relative;
 }
 
 .case-comparison-header {
@@ -1134,28 +1135,42 @@ body {
 .case-comparison-status {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: wrap;
-  justify-content: center;
+  flex: 0 0 auto;
+  justify-content: flex-end;
 }
 
 .case-comparison-status button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
   height: 28px;
-  padding: 0 10px;
+  width: 28px;
+  padding: 0;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 8px;
   background: #fff;
   color: var(--fg-muted);
-  font-size: 0.72rem;
   cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.case-comparison-status button:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+  transform: translateY(-1px);
+}
+
+.case-comparison-status button svg {
+  width: 14px;
+  height: 14px;
 }
 
 .case-comparison-case-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
@@ -1164,6 +1179,55 @@ body {
   display: grid;
   gap: 2px;
   min-width: 0;
+}
+
+.case-comparison-hover-detail {
+  position: fixed;
+  z-index: 18;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid rgba(92, 143, 247, 0.24);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.12);
+  overflow: auto;
+}
+
+.case-comparison-hover-detail .case-comparison-metric {
+  min-height: max-content;
+}
+
+.case-comparison-hover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.case-comparison-hover-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.case-comparison-hover-head button {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--fg);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.case-comparison-hover-head button:hover {
+  border-color: var(--blue);
+  color: var(--blue);
 }
 
 .case-comparison-metrics {

@@ -1,6 +1,6 @@
 import { caseMetric, caseStringParam, metricOptions, type CasePair } from "../metrics";
 import StatusBadge from "./StatusBadge";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type MetricDirection = "higher" | "lower" | "neutral";
 
@@ -45,6 +45,17 @@ const detailMetricKeys = [
   "qps",
   "failure_rate",
 ] as const;
+
+const summaryMetricKeys = [
+  "p50_ttft",
+  "p50_tpot",
+  "overall_throughput",
+  "goodput_pct",
+] as const;
+
+const summaryMetrics = metricOptions.filter((metric) =>
+  (summaryMetricKeys as readonly string[]).includes(metric.key),
+);
 
 const detailMetrics = metricOptions.filter((metric) =>
   (detailMetricKeys as readonly string[]).includes(metric.key),
@@ -126,8 +137,12 @@ function MetricComparison({
 
 export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
   const [selectedPair, setSelectedPair] = useState<CasePair | undefined>();
+  const [hoveredPair, setHoveredPair] = useState<
+    { pair: CasePair; left: number; top?: number; bottom?: number; width: number; maxHeight: number } | undefined
+  >();
   const [query, setQuery] = useState("");
   const [collapsedPairs, setCollapsedPairs] = useState<Set<string>>(new Set());
+  const hoverDelayRef = useRef<number | undefined>(undefined);
 
   const quickKeywords = useMemo(() => {
     const unique = new Set<string>();
@@ -164,6 +179,39 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
       .map((value) => String(value).toLowerCase());
     return pairs.filter((pair) => searchable(pair).some((text) => text.includes(needle)));
   }, [pairs, query]);
+
+  useEffect(() => () => window.clearTimeout(hoverDelayRef.current), []);
+
+  const clearHoverDelay = () => window.clearTimeout(hoverDelayRef.current);
+
+  const showHoverDetail = (pair: CasePair, event: React.PointerEvent<HTMLElement>) => {
+    clearHoverDelay();
+    const cardRect = event.currentTarget.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const width = Math.min(Math.max(cardRect.width, 584), viewportWidth - 32);
+    const left = Math.max(16, Math.min(cardRect.left, viewportWidth - width - 16));
+    const availableBelow = viewportHeight - cardRect.bottom - 24;
+    const availableAbove = cardRect.top - 24;
+    const below = availableBelow > availableAbove;
+    const top = below ? cardRect.bottom + 8 : undefined;
+    const bottom = below ? undefined : viewportHeight - cardRect.top + 8;
+    const availableHeight = below ? availableBelow : availableAbove;
+
+    setHoveredPair({
+      pair,
+      left,
+      top,
+      bottom,
+      width,
+      maxHeight: Math.min(560, Math.max(240, availableHeight)),
+    });
+  };
+
+  const scheduleHideHoverDetail = () => {
+    clearHoverDelay();
+    hoverDelayRef.current = window.setTimeout(() => setHoveredPair(undefined), 90);
+  };
 
   return (
     <section className="panel case-comparison" aria-label="用例对照">
@@ -250,6 +298,44 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
           </div>
         ) : null}
 
+        {hoveredPair ? (
+          <section
+            className="case-comparison-hover-detail"
+            style={{
+              left: hoveredPair.left,
+              width: hoveredPair.width,
+              maxHeight: hoveredPair.maxHeight,
+              ...(hoveredPair.top !== undefined ? { top: hoveredPair.top } : { bottom: hoveredPair.bottom }),
+            }}
+            aria-hidden="true"
+            onPointerEnter={clearHoverDelay}
+            onPointerLeave={scheduleHideHoverDetail}
+          >
+            <div className="case-comparison-hover-head">
+              <strong>{hoveredPair.pair.entryA?.name ?? hoveredPair.pair.entryB?.name ?? hoveredPair.pair.label}</strong>
+              <button
+                type="button"
+                onClick={() => {
+                  setHoveredPair(undefined);
+                  setSelectedPair(hoveredPair.pair);
+                }}
+              >
+                打开
+              </button>
+            </div>
+            <div className="case-pair-detail-metrics">
+              {detailMetrics.map((metric) => (
+                <MetricComparison
+                  key={metric.key}
+                  pair={hoveredPair.pair}
+                  metric={metric}
+                  max={pairMetricMax(hoveredPair.pair, metric.key)}
+                />
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         <div className="case-comparison-grid">
           {filteredPairs.map((pair) => {
             const title = pair.entryA?.name ?? pair.entryB?.name ?? pair.label;
@@ -262,13 +348,15 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
                 tabIndex={0}
                 role="button"
                 aria-label={`查看 ${title} 详细对比`}
-                      onClick={() => setSelectedPair(pair)}
+                onClick={() => setSelectedPair(pair)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     setSelectedPair(pair);
                   }
                 }}
+                onPointerEnter={(event) => showHoverDetail(pair, event)}
+                onPointerLeave={scheduleHideHoverDetail}
               >
                 <header className="case-comparison-case-head">
                   <div className="case-comparison-title-block">
@@ -281,6 +369,7 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
                       <button
                         type="button"
                         aria-expanded={!isCollapsed}
+                        aria-label={isCollapsed ? "展开用例" : "折叠用例"}
                         onClick={(event) => {
                           event.stopPropagation();
                           setCollapsedPairs((previous) => {
@@ -294,13 +383,24 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
                           });
                         }}
                       >
-                        {isCollapsed ? "展开" : "折叠"}
+                        <svg
+                          aria-hidden="true"
+                          viewBox="0 0 12 12"
+                          style={isCollapsed ? { transform: "rotate(-90deg)" } : undefined}
+                        >
+                          <path
+                            d="M2.5 4.5H9.5L6 8.2Z"
+                            fill="currentColor"
+                            stroke="currentColor"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
                       </button>
                   </div>
                 </header>
                 {isCollapsed ? null : (
                   <div className="case-comparison-metrics">
-                    {detailMetrics.map((metric) => (
+                    {summaryMetrics.map((metric) => (
                       <MetricComparison
                         key={metric.key}
                         pair={pair}
