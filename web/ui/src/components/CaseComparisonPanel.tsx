@@ -1,7 +1,8 @@
-import { caseMetric, type CasePair } from "../metrics";
+import { caseMetric, metricOptions, type CasePair } from "../metrics";
 import StatusBadge from "./StatusBadge";
+import { useState } from "react";
 
-type MetricDirection = "higher" | "lower";
+type MetricDirection = "higher" | "lower" | "neutral";
 
 interface ComparisonMetric {
   key: string;
@@ -9,13 +10,6 @@ interface ComparisonMetric {
   unit: string;
   direction: MetricDirection;
 }
-
-const comparisonMetrics: ComparisonMetric[] = [
-  { key: "p50_ttft", label: "TTFT P50", unit: "s", direction: "lower" },
-  { key: "p50_tpot", label: "TPOT P50", unit: "s", direction: "lower" },
-  { key: "overall_throughput", label: "整体吞吐", unit: "tok/s", direction: "higher" },
-  { key: "goodput_pct", label: "Goodput", unit: "%", direction: "higher" },
-];
 
 const sideKeys = ["entryA", "entryB"] as const;
 
@@ -39,10 +33,27 @@ function relativeChange(valueA: number, valueB: number): number {
   return ((valueB - valueA) / Math.abs(valueA)) * 100;
 }
 
-function metricMax(pairs: CasePair[], metricKey: string): number {
-  const values = pairs.flatMap((pair) =>
-    sideKeys.map((entryKey) => caseMetric(pair[entryKey], metricKey)),
-  ).filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0);
+const detailMetricKeys = [
+  "p50_ttft",
+  "p90_ttft",
+  "p99_ttft",
+  "p50_tpot",
+  "p90_tpot",
+  "p99_tpot",
+  "overall_throughput",
+  "goodput_pct",
+  "qps",
+  "failure_rate",
+] as const;
+
+const detailMetrics = metricOptions.filter((metric) =>
+  (detailMetricKeys as readonly string[]).includes(metric.key),
+);
+
+function pairMetricMax(pair: CasePair, metricKey: string): number {
+  const values = sideKeys
+    .map((sideKey) => caseMetric(pair[sideKey], metricKey))
+    .filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0);
   return values.length ? Math.max(...values) : 1;
 }
 
@@ -114,10 +125,7 @@ function MetricComparison({
 }
 
 export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
-  const maxima = comparisonMetrics.map((metric) => ({
-    ...metric,
-    max: metricMax(pairs, metric.key),
-  }));
+  const [selectedPair, setSelectedPair] = useState<CasePair | undefined>();
 
   return (
     <section className="panel case-comparison" aria-label="用例对照">
@@ -132,12 +140,54 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
       {pairs.length === 0 ? (
         <div className="case-comparison-empty">暂无可对齐的用例</div>
       ) : (
+        <>
+        {selectedPair ? (
+          <section className="case-pair-detail" aria-label="用例详细对比">
+            <header className="case-pair-detail-head">
+              <div>
+                <h4>用例详细对比</h4>
+                <span className="case-pair-detail-title">
+                  {selectedPair.entryA?.name ?? selectedPair.entryB?.name ?? selectedPair.label}
+                </span>
+              </div>
+              <div className="case-pair-detail-status">
+                <StatusBadge status={selectedPair.statusA} />
+                <StatusBadge status={selectedPair.statusB} />
+              </div>
+              <button type="button" onClick={() => setSelectedPair(undefined)}>返回</button>
+            </header>
+            <div className="case-pair-detail-metrics">
+              {detailMetrics.map((metric) => (
+                <MetricComparison
+                  key={metric.key}
+                  pair={selectedPair}
+                  metric={metric}
+                  max={pairMetricMax(selectedPair, metric.key)}
+                />
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         <div className="case-comparison-grid">
           {pairs.map((pair) => {
             const title = pair.entryA?.name ?? pair.entryB?.name ?? pair.label;
             const detail = pair.entryA?.id ?? pair.entryB?.id ?? "";
             return (
-              <article className="case-comparison-card" key={pair.key}>
+              <article
+                className="case-comparison-card"
+                key={pair.key}
+                tabIndex={0}
+                role="button"
+                aria-label={`查看 ${title} 详细对比`}
+                onClick={() => setSelectedPair(pair)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedPair(pair);
+                  }
+                }}
+              >
                 <header className="case-comparison-case-head">
                   <div className="case-comparison-title-block">
                     <span className="case-comparison-title">{title}</span>
@@ -149,14 +199,20 @@ export function CaseComparisonPanel({ pairs }: { pairs: CasePair[] }) {
                   </div>
                 </header>
                 <div className="case-comparison-metrics">
-                  {maxima.map((metric) => (
-                    <MetricComparison key={metric.key} pair={pair} metric={metric} max={metric.max} />
+                  {detailMetrics.map((metric) => (
+                    <MetricComparison
+                      key={metric.key}
+                      pair={pair}
+                      metric={metric}
+                      max={pairMetricMax(pair, metric.key)}
+                    />
                   ))}
                 </div>
               </article>
             );
           })}
         </div>
+        </>
       )}
     </section>
   );
