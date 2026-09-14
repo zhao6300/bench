@@ -1,0 +1,26 @@
+{
+  "source": "openai/gsm8k",
+  "revision": "740312add88f781978c0658806c59bc2815b9866",
+  "config": "main",
+  "license": "MIT",
+  "splits": [
+    {
+      "name": "train",
+      "records": 7473,
+      "sha256": "ea82612ea9582142387730c793eb67d3b12849002bc0b7fa6f8efafa7351419d"
+    },
+    {
+      "name": "test",
+      "records": 1319,
+      "sha256": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59"
+    }
+  ],
+  "parquet_urls": [
+    "https://huggingface.co/api/datasets/openai/gsm8k/parquet/main/train/0.parquet",
+    "https://huggingface.co/api/datasets/openai/gsm8k/parquet/main/test/0.parquet"
+  ],
+  "output_files": [
+    "openai-gsm8k-train.jsonl",
+    "openai-gsm8k-test.jsonl"
+  ]
+}

@@ -534,6 +534,9 @@ uv run --no-project .venv/bin/python -m web.serve
 
 `gsm8k` 适合测试 GSM8K 风格文本的复制负载。文本源仍然使用本地 JSON/JSONL/CSV，不联网下载 Hugging Face 数据。参数 `gsm8k_input_len` 控制目标输入 token 数；超过单条题目的部分会重复该题目的 issue/answer 段。`gsm8k_output_len` 设置输出上限，便于观察 DSpark/DFlash2 等投机解码路径的收益。每轮生成前会注入 `gsm8k_round_prefix_len` 的 `run_id` 级随机前缀：同一轮内请求共享该前缀，不同 repeat/sweep 轮使用不同 `run_id`，从而避免前一轮的 KV cache 误判当前轮结果；`run_id` 未提供时会生成随机值，同一 `run_id` 在相同 seed 下可复现。需要精确对比投机解码器时，固定 `seed` 并使用不同 `run_id` 即可复现抽取顺序且保证轮次隔离。使用样例请复制 [`benchmark-config-ported-datasets.json`](examples/benchmark-config-ported-datasets.json) 并替换后端、模型与 tokenizer。
 
+GSM8K 的完整 test split 已经整理到 `examples/datasets/gsm8k/openai-gsm8k-test.jsonl`，共 1319 条；完整 train split 也在 `openai-gsm8k-train.jsonl`。请使用本地路径作为 `dataset_path`，例如：
+`"dataset_path": "examples/datasets/gsm8k/openai-gsm8k-test.jsonl"`。源数据、revision、许可证和原始 parquet SHA256 见 `examples/datasets/gsm8k/_source.json`。
+
 ## 配置说明
 
 每个 suite 配置的根对象使用 `version: 1`，并可定义：
