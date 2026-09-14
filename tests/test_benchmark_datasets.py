@@ -4,6 +4,7 @@ import pytest
 from types import SimpleNamespace
 
 from benchmark.benchmark_datasets import (
+    BenchmarkDataset,
     BurstGptDataset,
     Gsm8kDataset,
     HuggingFaceDataset,
@@ -409,3 +410,20 @@ def test_gsm8k_dataset_maps_cli_and_run_id_into_batch(tmp_path) -> None:
     assert first.output_lens == [16]
     assert first.prompts != second.prompts
     assert first.shared_prefix_len == 44
+
+
+def test_gsm8k_dataset_seed_selects_contiguous_repeatable_offset(tmp_path) -> None:
+    """GSM8K sampling selects a seed-derived offset and contiguous records."""
+    path = tmp_path / "gsm8k.jsonl"
+    path.write_text(
+        "\n".join(
+            '{"question":"q' f"{index}"
+            '","answer":"' f"{index}"
+            '"}' for index in range(12)
+        ),
+        encoding="utf-8",
+    )
+    rows = Gsm8kDataset(dataset_path=str(path), random_seed=17).data
+    selected = BenchmarkDataset._sample_contiguous_rows(rows, num_requests=5, seed=17)
+
+    assert [row["question"] for row in selected] == ["q8", "q9", "q10", "q11", "q0"]

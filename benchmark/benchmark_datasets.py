@@ -132,6 +132,24 @@ class BenchmarkDataset(ABC):
         return [rows[index] for index in selected]
 
     @staticmethod
+    def _sample_contiguous_rows(
+        rows: Sequence[Any],
+        num_requests: int,
+        seed: int | None,
+        no_oversample: bool = False,
+    ) -> list[Any]:
+        """Select rows from a seed-derived offset with deterministic adjacency."""
+        if num_requests < 1:
+            raise ValueError("num_requests must be positive")
+        if not rows:
+            return []
+        offset = random_module.Random(seed).randrange(len(rows))
+        if no_oversample:
+            return list(rows[offset : offset + num_requests])
+        indexes = [(offset + index) % len(rows) for index in range(num_requests)]
+        return [rows[index] for index in indexes]
+
+    @staticmethod
     def _shared_token_prefix(tokenizer: TokenizerLike, prompts: Sequence[str]) -> int:
         """Return the token prefix shared by the first two sampled prompts."""
         if len(prompts) < 2:
@@ -636,12 +654,11 @@ class ShareGptDataset(BenchmarkDataset):
     ) -> DatasetBatch:
         if output_len is not None and output_len < 1:
             raise ValueError("sharegpt output_len must be positive when set")
-        rows = self._sample_rows(
+        rows = self._sample_contiguous_rows(
             self.data,
             num_requests,
             self.random_seed,
             no_oversample=no_oversample,
-            disable_shuffle=self.disable_shuffle,
         )
         requests = []
         for index, entry in enumerate(rows):
@@ -892,12 +909,11 @@ class Gsm8kDataset(BenchmarkDataset):
 
         round_text = f"【GSM8K-ROUND-{run_id or uuid.uuid4().hex[:8]}】"
         requests = []
-        rows = self._sample_rows(
+        rows = self._sample_contiguous_rows(
             self.data,
             num_requests,
             self.random_seed,
             no_oversample=no_oversample,
-            disable_shuffle=self.disable_shuffle,
         )
         if not rows:
             raise ValueError("gsm8k dataset has no usable records")
