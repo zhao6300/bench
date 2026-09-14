@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from io import BytesIO
 import json
 import math
 import sys
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
 
-from benchmark.benchmark import BenchmarkConfigError, _load_resume_report, _write_json_report, load_suite_config
+from benchmark.benchmark import (
+    BenchmarkConfigError,
+    _load_resume_report,
+    _write_json_report,
+    load_suite_config,
+)
 from benchmark.report_storage import (
     ReportStorageError,
     S3ReportStorage,

@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeAlias
 
 try:
     from .logging_utils import exception_type, get_logger, safe_endpoint
@@ -19,6 +19,8 @@ except ImportError:
 
 
 LOGGER = get_logger("api")
+
+RequestResult: TypeAlias = dict[str, Any]
 
 
 def build_chat_payload(

@@ -177,7 +177,7 @@ def test_build_arrival_plan_rejects_invalid_combinations_and_values(
 
 @pytest.mark.parametrize("request_count", [-1, True, 1.5])
 def test_build_arrival_plan_rejects_invalid_request_count(
-    request_count: int | float,
+    request_count: float,
 ) -> None:
     """请求数仅接受非负整数。"""
     with pytest.raises(ValueError, match="request_count"):

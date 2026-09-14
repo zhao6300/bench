@@ -15,7 +15,6 @@ import time
 import typing
 from pathlib import Path
 
-
 WEB_ROOT = Path(__file__).resolve().parent
 DEFAULT_DATABASE = WEB_ROOT / "data" / "auth.sqlite3"
 ADMINS_TABLE = "admin_users"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+from typing import ClassVar
 
 import pytest
 
@@ -232,13 +233,13 @@ class _FakeLayout:
         self.children: list[_FakeLayout] = []
         self.content: object | None = None
 
-    def split_column(self, *children: "_FakeLayout") -> None:
+    def split_column(self, *children: _FakeLayout) -> None:
         self.children = list(children)
 
-    def split_row(self, *children: "_FakeLayout") -> None:
+    def split_row(self, *children: _FakeLayout) -> None:
         self.children = list(children)
 
-    def __getitem__(self, name: str) -> "_FakeLayout":
+    def __getitem__(self, name: str) -> _FakeLayout:
         if self.name == name:
             return self
         for child in self.children:
@@ -260,7 +261,7 @@ class _FakeTable:
         self.rows: list[tuple[object, ...]] = []
 
     @classmethod
-    def grid(cls, **_kwargs: object) -> "_FakeTable":
+    def grid(cls, **_kwargs: object) -> _FakeTable:
         return cls()
 
     def add_column(self, *args: object, **_kwargs: object) -> None:
@@ -281,14 +282,14 @@ class _FakePanel:
 class _FakeText(str):
     """Accept Rich Text keyword arguments in dashboard tests."""
 
-    def __new__(cls, value: str, **_kwargs: object) -> "_FakeText":
+    def __new__(cls, value: str, **_kwargs: object) -> "_FakeText":  # noqa: UP037
         return super().__new__(cls, value)
 
 
 class _FakeLive:
     """Capture alternate-screen lifecycle configuration."""
 
-    instances: list["_FakeLive"] = []
+    instances: ClassVar[list[_FakeLive]] = []
 
     def __init__(self, renderable: object, **kwargs: object) -> None:
         self.renderable = renderable

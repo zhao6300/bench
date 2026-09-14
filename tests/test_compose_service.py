@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -76,7 +76,7 @@ def test_managed_compose_service_uses_fixed_argv_and_cleans_up(tmp_path: Path) -
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append((command, float(kwargs["timeout"])))
-        stdout = "" if command[-2:] == ["ps", "-aq"] else ""
+        stdout = ""
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
     service = ManagedComposeService(resolved, command_runner=runner)

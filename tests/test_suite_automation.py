@@ -698,7 +698,7 @@ def test_compose_profiles_run_serially_and_report_deployment_parameters(monkeypa
         "TP_SIZE": "4",
         "DP_SIZE": "2",
     }
-    for profile_name, profile in profiles.items():
+    for profile in profiles.values():
         report = json.loads(Path(profile["report"]).read_text(encoding="utf-8"))
         assert report["run"]["automation"]["docker_service"]["environment"] == (
             profile["environment"]

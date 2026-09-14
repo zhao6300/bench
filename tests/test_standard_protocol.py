@@ -13,7 +13,6 @@ from benchmark.standard_protocol import (
     build_standard_summary,
 )
 
-
 _STANDARD_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "examples" / "benchmark-config-standard-v1.json"
 )

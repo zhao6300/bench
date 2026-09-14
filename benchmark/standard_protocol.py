@@ -6,7 +6,6 @@ import hashlib
 import json
 from typing import Any
 
-
 STANDARD_V1_PROTOCOL_ID = "standard-v1"
 STANDARD_V1_WORKLOAD_IDS = (
     "latency-short",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from types import SimpleNamespace
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -469,7 +469,7 @@ class _FailingResponse:
 
     status_code = 401
 
-    def __enter__(self) -> "_FailingResponse":
+    def __enter__(self) -> "_FailingResponse":  # noqa: UP037
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -620,7 +620,7 @@ def test_aiohttp_planned_arrivals_queue_behind_concurrency_limit(monkeypatch) ->
         ),
     )
 
-    intervals = [later - earlier for earlier, later in zip(started_at, started_at[1:])]
+    intervals = [later - earlier for earlier, later in pairwise(started_at)]
     assert completed == [0, 1, 2]
     assert len(admissions) == 3
     assert min(intervals) >= 0.025

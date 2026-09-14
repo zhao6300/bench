@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import sys
 import time
+from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
@@ -107,18 +108,16 @@ def test_vllm_prefix_cache_counter_rate_aggregates_matched_label_series(
     monkeypatch,
 ) -> None:
     snapshots = iter([
-        "\n".join([
-            'vllm:prefix_cache_hits{model_name="model-a"} 10',
-            'vllm:prefix_cache_queries{model_name="model-a"} 20',
-            'vllm:prefix_cache_hits{model_name="model-b"} 5',
-            'vllm:prefix_cache_queries{model_name="model-b"} 10',
-        ]),
-        "\n".join([
-            'vllm:prefix_cache_hits{model_name="model-a"} 25',
-            'vllm:prefix_cache_queries{model_name="model-a"} 40',
-            'vllm:prefix_cache_hits{model_name="model-b"} 8',
-            'vllm:prefix_cache_queries{model_name="model-b"} 14',
-        ]),
+        """vllm:prefix_cache_hits{model_name="model-a"} 10
+vllm:prefix_cache_queries{model_name="model-a"} 20
+vllm:prefix_cache_hits{model_name="model-b"} 5
+vllm:prefix_cache_queries{model_name="model-b"} 10
+""",
+        """vllm:prefix_cache_hits{model_name="model-a"} 25
+vllm:prefix_cache_queries{model_name="model-a"} 40
+vllm:prefix_cache_hits{model_name="model-b"} 8
+vllm:prefix_cache_queries{model_name="model-b"} 14
+""",
     ])
 
     def get(*_args: object, **_kwargs: object) -> SimpleNamespace:
@@ -198,10 +197,9 @@ def test_vllm_prefix_cache_counter_rate_excludes_resets_and_zero_queries() -> No
 def test_sglang_cache_hit_rate_gauge_remains_a_periodic_metric(monkeypatch) -> None:
     response = SimpleNamespace(
         status_code=200,
-        text="\n".join([
-            'sglang:cache_hit_rate{engine=\"0\"} 0.4',
-            'sglang:cache_hit_rate{engine=\"1\"} 0.7',
-        ]),
+        text="""sglang:cache_hit_rate{engine="0"} 0.4
+sglang:cache_hit_rate{engine="1"} 0.7
+""",
     )
     monkeypatch.setattr(
         benchmark_module,
@@ -496,7 +494,7 @@ def test_target_rps_requests_scheduler_keeps_planned_arrivals_open_loop(monkeypa
         target_rps=100.0,
     )
 
-    intervals = [later - earlier for earlier, later in zip(started_at, started_at[1:])]
+    intervals = [later - earlier for earlier, later in pairwise(started_at)]
     assert min(intervals) >= 0.025
     pacing = metrics["pacing"]
     assert pacing["mode"] == "fixed"

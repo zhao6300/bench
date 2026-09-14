@@ -212,15 +212,17 @@ LLM Prefill / Decode 性能基准测试工具 (benchmark.py)
 import argparse
 import concurrent.futures
 import copy
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import platform
 import random
 import re
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from itertools import pairwise
+from pathlib import Path
+
 try:
     import requests
 except ImportError:
@@ -231,7 +233,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -240,32 +242,38 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 try:
     # Installed package / console-script path.
+    from .api_transport import (
+        finalize_stream_results,
+        run_aiohttp_chat_requests,
+        send_requests_chat_request,
+    )
     from .benchmark_datasets import (
         BenchmarkDataset,
         BurstGptDataset,
+        DatasetBatch,
         Gsm8kDataset,
         HuggingFaceDataset,
-        DatasetBatch,
         ShareGptDataset,
         SonnetDataset,
         TextDataset,
         create_dataset,
         parse_range_ratio,
     )
+    from .compose_service import (
+        ComposeServiceError,
+        ManagedComposeService,
+        resolve_compose_service,
+    )
+    from .host_inventory import collect_host_inventory
+    from .logging_utils import configure_logging, get_logger
+    from .progress import ProgressDependencyError, create_progress_reporter
     from .report_storage import (
         ReportStorageError,
         create_report_storage,
         parse_report_location,
         serialize_json_report,
     )
-    from .api_transport import (
-        finalize_stream_results,
-        run_aiohttp_chat_requests,
-        send_requests_chat_request,
-    )
     from .request_schedule import ArrivalPlan, build_arrival_plan
-    from .progress import ProgressDependencyError, create_progress_reporter
-    from .host_inventory import collect_host_inventory
     from .standard_protocol import (
         StandardProtocolError,
         build_standard_summary,
@@ -283,40 +291,40 @@ try:
         validate_immutable_report_target,
         wait_for_api_targets,
     )
-    from .compose_service import (
-        ComposeServiceError,
-        ManagedComposeService,
-        resolve_compose_service,
-    )
-    from .logging_utils import configure_logging, get_logger
 except ImportError:
     # Direct execution: python benchmark/benchmark.py ...
+    from api_transport import (
+        finalize_stream_results,
+        run_aiohttp_chat_requests,
+        send_requests_chat_request,
+    )
     from benchmark_datasets import (
         BenchmarkDataset,
         BurstGptDataset,
+        DatasetBatch,
         Gsm8kDataset,
         HuggingFaceDataset,
-        DatasetBatch,
         ShareGptDataset,
         SonnetDataset,
         TextDataset,
         create_dataset,
         parse_range_ratio,
     )
+    from compose_service import (
+        ComposeServiceError,
+        ManagedComposeService,
+        resolve_compose_service,
+    )
+    from host_inventory import collect_host_inventory
+    from logging_utils import configure_logging, get_logger
+    from progress import ProgressDependencyError, create_progress_reporter
     from report_storage import (
         ReportStorageError,
         create_report_storage,
         parse_report_location,
         serialize_json_report,
     )
-    from api_transport import (
-        finalize_stream_results,
-        run_aiohttp_chat_requests,
-        send_requests_chat_request,
-    )
     from request_schedule import ArrivalPlan, build_arrival_plan
-    from progress import ProgressDependencyError, create_progress_reporter
-    from host_inventory import collect_host_inventory
     from standard_protocol import (
         StandardProtocolError,
         build_standard_summary,
@@ -334,12 +342,6 @@ except ImportError:
         validate_immutable_report_target,
         wait_for_api_targets,
     )
-    from compose_service import (
-        ComposeServiceError,
-        ManagedComposeService,
-        resolve_compose_service,
-    )
-    from logging_utils import configure_logging, get_logger
 
 
 LOGGER = get_logger("benchmark")
@@ -437,9 +439,9 @@ def nsys_start():
            "-o", f"/nsys-output/{NSYS_OUTPUT_NAME}"]
     print(f"  [nsys] Starting profiling: {' '.join(cmd)}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
         if result.returncode == 0:
-            print(f"  [nsys] Profiling started successfully")
+            print("  [nsys] Profiling started successfully")
         else:
             print(f"  [nsys] WARNING: nsys start returned code {result.returncode}")
             if result.stderr.strip():
@@ -457,9 +459,9 @@ def nsys_stop():
     cmd = ["docker", "exec", NSYS_CONTAINER, "nsys", "stop", f"--session={NSYS_SESSION}"]
     print(f"  [nsys] Stopping profiling: {' '.join(cmd)}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
         if result.returncode == 0:
-            print(f"  [nsys] Profiling stopped, .nsys-rep saved")
+            print("  [nsys] Profiling stopped, .nsys-rep saved")
         else:
             print(f"  [nsys] WARNING: nsys stop returned code {result.returncode}")
             if result.stderr.strip():
@@ -486,7 +488,7 @@ def collect_and_print_system_info(args):
 
     # ── Client (benchmark runner) info ──
     print("  ── 客户端 (Benchmark Runner) ──")
-    print(f"    时间戳          : {datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"    时间戳          : {datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print(f"    Python          : {platform.python_version()}")
     print(f"    OS              : {platform.system()} {platform.release()} ({platform.machine()})")
 
@@ -978,8 +980,8 @@ def torch_sync():
 
 def run_offline_benchmark(args):
     """使用 vLLM 离线 LLM 类进行精确测量"""
-    from vllm import LLM, SamplingParams
     from transformers import AutoTokenizer
+    from vllm import LLM, SamplingParams
 
     total_requests = args.num_prompts if args.num_prompts is not None else args.concurrency
     if total_requests < args.concurrency:
@@ -1684,9 +1686,7 @@ def _summarize_pacing(
         可写入 round 指标的节流摘要。
     """
     timestamps = [item["timestamp"] for item in admissions]
-    intervals = [
-        later - earlier for earlier, later in zip(timestamps, timestamps[1:])
-    ]
+    intervals = [later - earlier for earlier, later in pairwise(timestamps)]
     interval_summary = {
         "min": min(intervals) if intervals else None,
         "avg": sum(intervals) / len(intervals) if intervals else None,
@@ -2022,9 +2022,7 @@ def run_api_benchmark_round(
         max_tokens_list = list(max_tokens)
 
     metrics_api_base = (
-        url[:-len("/chat/completions")]
-        if url.endswith("/chat/completions")
-        else url
+        url.removesuffix("/chat/completions")
     )
     prefix_cache_counter_start = query_gpu_metrics(metrics_api_base, headers=headers)
     prefix_cache_counter_start_at = time.perf_counter()
@@ -2392,13 +2390,13 @@ def print_benchmark_metrics(metrics, workload):
         return
 
     # ── TTFT ──
-    print(f"\n  ── TTFT (首 Token 延迟) ──")
+    print("\n  ── TTFT (首 Token 延迟) ──")
     print(f"    平均 / 最小 / 最大      : {m['avg_ttft']:.3f} / {m['min_ttft']:.3f} / {m['max_ttft']:.3f} 秒")
     if m['successful'] > 1:
         print(f"    P50 / P90 / P99         : {m['p50_ttft']:.3f} / {m['p90_ttft']:.3f} / {m['p99_ttft']:.3f} 秒")
 
     # ── E2E Latency ──
-    print(f"\n  ── E2E 端到端延迟 ──")
+    print("\n  ── E2E 端到端延迟 ──")
     if m.get('avg_total_time') is not None:
         print(f"    平均                    : {m['avg_total_time']:.3f} 秒")
     else:
@@ -2408,20 +2406,20 @@ def print_benchmark_metrics(metrics, workload):
 
     # ── TPOT ──
     if m['avg_tpot'] is not None:
-        print(f"\n  ── TPOT (每输出 Token 耗时) ──")
+        print("\n  ── TPOT (每输出 Token 耗时) ──")
         print(f"    平均                    : {m['avg_tpot']*1000:.1f} ms")
         if m.get('p50_tpot') is not None:
             print(f"    P50 / P90 / P99         : {m['p50_tpot']*1000:.1f} / {m['p90_tpot']*1000:.1f} / {m['p99_tpot']*1000:.1f} ms")
 
     # ── Estimated ITL ──
     if m['avg_estimated_itl'] is not None:
-        print(f"\n  ── 预估 ITL (基于流式 Chunk 延后分词) ──")
+        print("\n  ── 预估 ITL (基于流式 Chunk 延后分词) ──")
         print(f"    平均                    : {m['avg_estimated_itl']*1000:.1f} ms")
         if m.get('p50_estimated_itl') is not None:
             print(f"    P50 / P90 / P99         : {m['p50_estimated_itl']*1000:.1f} / {m['p90_estimated_itl']*1000:.1f} / {m['p99_estimated_itl']*1000:.1f} ms")
 
     # ── Throughput ──
-    print(f"\n  ── 吞吐量（成功且 token 数可验证的请求） ──")
+    print("\n  ── 吞吐量（成功且 token 数可验证的请求） ──")
     if m.get("prompt_throughput") is not None:
         print(f"    Prompt 全流程工作负载率  : {m['prompt_throughput']:.1f} tokens/s  (prompt tokens / 全测试窗口)")
     if m.get("prefill_throughput") is not None:
@@ -2440,7 +2438,7 @@ def print_benchmark_metrics(metrics, workload):
 
     # ── Goodput ──
     if m.get('goodput_pct') is not None:
-        print(f"\n  ── Goodput (SLO 达标率) ──")
+        print("\n  ── Goodput (SLO 达标率) ──")
         print(f"    SLO: TTFT ≤ {m['slo_ttft']:.3g}s AND TPOT ≤ {m['slo_tpot'] * 1000:.3g}ms")
         print(f"    达标率                  : {m['goodput_pct']:.1f}%  ({m['slo_passed']}/{m['total_requests']} 请求)")
         print(f"    Goodput QPS             : {m['goodput_qps']:.2f} req/s")
@@ -2693,8 +2691,7 @@ def run_mixed_benchmark(args):
 
     workload_entries = parse_workload_mix(mix_str)
     total_requests = args.num_prompts if args.num_prompts is not None else args.concurrency
-    if total_requests < args.concurrency:
-        total_requests = args.concurrency
+    total_requests = max(total_requests, args.concurrency)
 
     tokenizer_path = args.tokenizer or args.model
     _emit_progress_event(args, "stage_started", "加载 tokenizer", tokenizer_path)
@@ -2705,7 +2702,7 @@ def run_mixed_benchmark(args):
     # Print workload distribution
     _emit_progress_event(args, "stage_started", "构造混合负载")
     print(f"[2/4] 构造混合负载 (总请求数={total_requests}, 并发数={args.concurrency})")
-    print(f"      负载分布:")
+    print("      负载分布:")
     for i, e in enumerate(workload_entries):
         count = max(1, round(e["weight"] * total_requests))
         print(f"        类型 {i+1}: input={e['input']:>7d}, output={e['output']:>5d}, 比例={e['weight']*100:.0f}% (~{count} 请求)")
@@ -2859,13 +2856,13 @@ def run_mixed_benchmark(args):
     _print_pacing_summary(m)
 
     # ── TTFT ──
-    print(f"\n  ── TTFT (首 Token 延迟) ──")
+    print("\n  ── TTFT (首 Token 延迟) ──")
     print(f"    平均 / 最小 / 最大      : {m['avg_ttft']:.3f} / {m['min_ttft']:.3f} / {m['max_ttft']:.3f} 秒")
     if m['successful'] > 1:
         print(f"    P50 / P90 / P99         : {m['p50_ttft']:.3f} / {m['p90_ttft']:.3f} / {m['p99_ttft']:.3f} 秒")
 
     # ── E2E ──
-    print(f"\n  ── E2E 端到端延迟 ──")
+    print("\n  ── E2E 端到端延迟 ──")
     if m.get('avg_total_time') is not None:
         print(f"    平均                    : {m['avg_total_time']:.3f} 秒")
     else:
@@ -2875,20 +2872,20 @@ def run_mixed_benchmark(args):
 
     # ── TPOT ──
     if m['avg_tpot'] is not None:
-        print(f"\n  ── TPOT (每输出 Token 耗时) ──")
+        print("\n  ── TPOT (每输出 Token 耗时) ──")
         print(f"    平均                    : {m['avg_tpot']*1000:.1f} ms")
         if m.get('p50_tpot') is not None:
             print(f"    P50 / P90 / P99         : {m['p50_tpot']*1000:.1f} / {m['p90_tpot']*1000:.1f} / {m['p99_tpot']*1000:.1f} ms")
 
     # ── Estimated ITL ──
     if m['avg_estimated_itl'] is not None:
-        print(f"\n  ── 预估 ITL (基于流式 Chunk 延后分词) ──")
+        print("\n  ── 预估 ITL (基于流式 Chunk 延后分词) ──")
         print(f"    平均                    : {m['avg_estimated_itl']*1000:.1f} ms")
         if m.get('p50_estimated_itl') is not None:
             print(f"    P50 / P90 / P99         : {m['p50_estimated_itl']*1000:.1f} / {m['p90_estimated_itl']*1000:.1f} / {m['p99_estimated_itl']*1000:.1f} ms")
 
     # ── Throughput ──
-    print(f"\n  ── 吞吐量（成功且 token 数可验证的请求） ──")
+    print("\n  ── 吞吐量（成功且 token 数可验证的请求） ──")
     if m.get("prompt_throughput") is not None:
         print(f"    Prompt 全流程工作负载率  : {m['prompt_throughput']:.1f} tokens/s  (prompt tokens / 全测试窗口)")
     if m.get("prefill_throughput") is not None:
@@ -2907,7 +2904,7 @@ def run_mixed_benchmark(args):
 
     # ── Goodput ──
     if m.get('goodput_pct') is not None:
-        print(f"\n  ── Goodput (SLO 达标率) ──")
+        print("\n  ── Goodput (SLO 达标率) ──")
         print(f"    SLO: TTFT ≤ {m['slo_ttft']:.3g}s AND TPOT ≤ {m['slo_tpot'] * 1000:.3g}ms")
         print(f"    达标率                  : {m['goodput_pct']:.1f}%  ({m['slo_passed']}/{m['total_requests']} 请求)")
         print(f"    Goodput QPS             : {m['goodput_qps']:.2f} req/s")
@@ -3768,8 +3765,9 @@ def run_pd_ratio_benchmark(args):
     handoff, router overhead, or concurrent Prefill/Decode interference. Their
     result is a deployment candidate that must be validated on a real P/D setup.
     """
-    from transformers import AutoTokenizer
     import math
+
+    from transformers import AutoTokenizer
 
     avg_input = getattr(args, "avg_input_tokens", 4096)
     avg_output = getattr(args, "avg_output_tokens", 2048)
@@ -3915,7 +3913,7 @@ def run_pd_ratio_benchmark(args):
 
     # ── Phase 3: Calculate P:D sizing ratio ──
     _emit_progress_event(args, "stage_started", "计算 P:D 容量比例")
-    print(f"\n[4/4] 计算 P:D 初始容量比例 ...")
+    print("\n[4/4] 计算 P:D 初始容量比例 ...")
 
     prefill_input_tokens = prefill_workload["prompt_tokens"]["avg"]
     decode_output_tokens = decode_workload["requested_output_tokens"]["avg"]
@@ -4101,7 +4099,7 @@ def run_pd_ratio_benchmark(args):
             print()
             print(f"  ★ {total_gpus} 卡实际部署 (TP={tp_size}) : {actual_p}P : {actual_d}D  (共 {actual_p + actual_d} 实例)")
             print()
-            print(f"  建议启动命令:")
+            print("  建议启动命令:")
             print(f"    PD_MODE=enabled PD_PREFILL_COUNT={actual_p} PD_DECODE_COUNT={actual_d} \\")
             print(f"    PD_PREFILL_MAX_NUM_SEQS={prefill_max_num_seqs} \\")
             print(f"    PD_PREFILL_MAX_NUM_BATCHED_TOKENS={prefill_max_batched_tokens} \\")
@@ -4120,8 +4118,8 @@ def run_pd_ratio_benchmark(args):
             for reason in pd_reasons_for:
                 print(f"    ℹ {reason}")
         print()
-        print(f"  统一部署可以避免 KV cache 传输开销 (~10-20%)、Router 调度延迟，")
-        print(f"  并简化运维。当负载分布不均衡或 GPU 资源有限时，统一部署通常更优。")
+        print("  统一部署可以避免 KV cache 传输开销 (~10-20%)、Router 调度延迟，")
+        print("  并简化运维。当负载分布不均衡或 GPU 资源有限时，统一部署通常更优。")
         if total_gpus:
             print()
             print(f"  建议启动命令 (统一部署, {total_instances} 实例):")
@@ -4174,7 +4172,7 @@ def run_pd_ratio_benchmark(args):
 #   sweep       - if True, run in auto-search mode instead of single round
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List
+from typing import Any
 
 
 @dataclass
@@ -4183,7 +4181,7 @@ class Preset:
     name: str
     description: str
     focus: str
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     sweep: bool = False
     slo_capacity_search: bool = False
     pd_ratio: bool = False
@@ -4191,7 +4189,7 @@ class Preset:
 
 
 # ── Preset Registry (add new presets here) ─────────────────────────────
-PRESET_REGISTRY: List[Preset] = [
+PRESET_REGISTRY: list[Preset] = [
     Preset(
         name="prefill-max",
         description="测试系统最大 Prefill 吞吐能力",
@@ -4291,7 +4289,7 @@ PRESET_REGISTRY: List[Preset] = [
 ]
 
 
-def get_preset_names() -> List[str]:
+def get_preset_names() -> list[str]:
     """Return all registered preset names for argparse choices."""
     return [p.name for p in PRESET_REGISTRY]
 
@@ -4379,7 +4377,7 @@ class BenchmarkConfigError(ValueError):
 
 
 def _now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _expand_config_env(value, location="config"):
@@ -4402,7 +4400,7 @@ def _expand_config_env(value, location="config"):
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", replace, value)
 
 
-def load_suite_config(path: str) -> Dict[str, Any]:
+def load_suite_config(path: str) -> dict[str, Any]:
     """Load and validate the structural portion of a benchmark suite JSON file."""
     try:
         with open(path, "r", encoding="utf-8") as file:
@@ -4563,7 +4561,7 @@ def _structured_workload_to_string(value, location: str) -> str:
     return mix
 
 
-def normalize_case_params(params: Dict[str, Any], location="params") -> Dict[str, Any]:
+def normalize_case_params(params: dict[str, Any], location="params") -> dict[str, Any]:
     """Flatten ergonomic nested case parameters into argparse destination names."""
     if not isinstance(params, dict):
         raise BenchmarkConfigError(f"{location} must be an object")
@@ -4781,8 +4779,8 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
                         " when set" if minimum == 1 else ""
                     )
                 )
-        gsm8k_input_len = getattr(args, "gsm8k_input_len")
-        gsm8k_prefix_len = getattr(args, "gsm8k_round_prefix_len")
+        gsm8k_input_len = args.gsm8k_input_len
+        gsm8k_prefix_len = args.gsm8k_round_prefix_len
         if (
             not isinstance(gsm8k_input_len, int)
             or isinstance(gsm8k_input_len, bool)
@@ -4799,7 +4797,7 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
             raise BenchmarkConfigError(
                 f"{location}.gsm8k_round_prefix_len must be a non-negative integer"
             )
-        gsm8k_shared_prefix_ratio = getattr(args, "gsm8k_shared_prefix_ratio")
+        gsm8k_shared_prefix_ratio = args.gsm8k_shared_prefix_ratio
         if (
             not isinstance(gsm8k_shared_prefix_ratio, (int, float))
             or isinstance(gsm8k_shared_prefix_ratio, bool)
@@ -4813,7 +4811,7 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
         value = getattr(args, key)
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
             raise BenchmarkConfigError(f"{location}.{key} must be a positive integer when set")
-    value = getattr(args, "random_input_len")
+    value = args.random_input_len
     if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
         raise BenchmarkConfigError(
             f"{location}.random_input_len must be a non-negative integer when set"
@@ -4971,7 +4969,7 @@ def _build_case_args(defaults, case, matrix_values):
     return args, scenario
 
 
-def expand_suite_cases(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def expand_suite_cases(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Expand matrix dimensions and repeat counts into deterministic case runs."""
     import itertools
 
@@ -5026,7 +5024,7 @@ def execute_benchmark(args, scenario: str):
     return run_api_benchmark(args)
 
 
-def _quality_metric_samples(result: Dict[str, Any]):
+def _quality_metric_samples(result: dict[str, Any]):
     """Yield (label, metrics) pairs that represent request-bearing benchmark rounds."""
     if result.get("scenario") == "slo-capacity-search":
         selected_metrics = result.get("selected_metrics")
@@ -5050,7 +5048,7 @@ def _quality_metric_samples(result: Dict[str, Any]):
                 yield f"history[{index}]", round_metrics
 
 
-def _case_has_request_failures(record: Dict[str, Any]) -> bool:
+def _case_has_request_failures(record: dict[str, Any]) -> bool:
     """Return whether a completed case contains any failed API requests."""
     result = record.get("result")
     if not isinstance(result, dict):
@@ -5068,15 +5066,17 @@ def _case_has_request_failures(record: Dict[str, Any]) -> bool:
     return False
 
 
-def _quality_failures(result: Dict[str, Any], args) -> List[str]:
+def _quality_failures(result: dict[str, Any], args) -> list[str]:
     """Return quality-gate violations without discarding the measured result."""
     if (
         result.get("scenario") == "slo-capacity-search"
         and not isinstance(result.get("selected_metrics"), dict)
     ):
         return [
-            "slo-capacity-search found no concurrency satisfying the configured "
-            "SLO pass-rate and failure-rate thresholds"
+            (
+                "slo-capacity-search found no concurrency satisfying the configured "
+                "SLO pass-rate and failure-rate thresholds"
+            )
         ]
 
     violations = []
@@ -5111,7 +5111,7 @@ def _quality_failures(result: Dict[str, Any], args) -> List[str]:
     return violations
 
 
-def _safe_effective_params(args) -> Dict[str, Any]:
+def _safe_effective_params(args) -> dict[str, Any]:
     params = {}
     for key, value in vars(args).items():
         if key.startswith("_") or key in SUITE_MANAGEMENT_ARGS or key == "api_key":
@@ -5133,7 +5133,7 @@ def _strip_request_details(value):
     return value
 
 
-def _write_json_report(storage, report: Dict[str, Any], indent: int = 2) -> None:
+def _write_json_report(storage, report: dict[str, Any], indent: int = 2) -> None:
     """Serialize and persist a report through its selected storage backend."""
     storage.write_text(serialize_json_report(report, indent))
 
@@ -5146,7 +5146,7 @@ def _checkpoint_hash(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _checkpoint_case_key(case: Dict[str, Any], args, scenario: str) -> str:
+def _checkpoint_case_key(case: dict[str, Any], args, scenario: str) -> str:
     """Identify one expanded execution independently of its display position."""
     return _checkpoint_hash({
         "base_name": case["base_name"],
@@ -5160,7 +5160,7 @@ def _checkpoint_case_key(case: Dict[str, Any], args, scenario: str) -> str:
     })
 
 
-def _checkpoint_resume_key(case: Dict[str, Any], scenario: str) -> str:
+def _checkpoint_resume_key(case: dict[str, Any], scenario: str) -> str:
     """Identify an expanded case across explicitly allowed config changes."""
     return _checkpoint_hash({
         "base_name": case["base_name"],
@@ -5173,7 +5173,7 @@ def _checkpoint_resume_key(case: Dict[str, Any], scenario: str) -> str:
     })
 
 
-def _checkpoint_record_resume_key(record: Dict[str, Any]) -> str:
+def _checkpoint_record_resume_key(record: dict[str, Any]) -> str:
     """Identify a recorded expanded case across allowed config changes."""
     return _checkpoint_hash({
         "base_name": record.get("base_name"),
@@ -5194,7 +5194,7 @@ def _checkpoint_plan_fingerprint(prepared) -> str:
     ])
 
 
-def _new_case_record(case: Dict[str, Any], args, scenario: str, case_key: str) -> Dict[str, Any]:
+def _new_case_record(case: dict[str, Any], args, scenario: str, case_key: str) -> dict[str, Any]:
     """Create a checkpoint record before its case has started."""
     return {
         "id": case["id"],
@@ -5220,7 +5220,7 @@ def _new_case_record(case: Dict[str, Any], args, scenario: str, case_key: str) -
     }
 
 
-def _skip_pending_records(records: list[Dict[str, Any]], reason: str) -> None:
+def _skip_pending_records(records: list[dict[str, Any]], reason: str) -> None:
     """Mark unstarted selected cases as skipped with a shared lifecycle reason."""
     for record in records:
         if record["status"] != "pending":
@@ -5243,7 +5243,7 @@ def _load_resume_report(
     plan_fingerprint: str,
     *,
     allow_config_changes: bool = False,
-) -> Dict[str, Any] | None:
+) -> dict[str, Any] | None:
     """Load a suite checkpoint, optionally accepting a changed execution plan."""
     try:
         payload = storage.read_text()
@@ -5283,7 +5283,7 @@ def _load_resume_report(
     return report
 
 
-def _new_report(suite_name: str, config_path=None) -> Dict[str, Any]:
+def _new_report(suite_name: str, config_path=None) -> dict[str, Any]:
     return {
         "schema_version": SUITE_SCHEMA_VERSION,
         "suite": {
@@ -5329,7 +5329,7 @@ def _update_report_summary(report, started_perf, *, terminal: bool = False):
 
 
 def _print_failed_case_summary(
-    report: Dict[str, Any], args: Any | None = None
+    report: dict[str, Any], args: Any | None = None
 ) -> None:
     """Render a concise terminal summary for every failed suite case."""
     failed_cases = [
@@ -5363,16 +5363,14 @@ def _case_selected(case, case_filters, tag_filters):
         for pattern in case_filters
     ):
         return False
-    if tag_filters and not any(tag in case["tags"] for tag in tag_filters):
-        return False
-    return True
+    return not (tag_filters and not any(tag in case["tags"] for tag in tag_filters))
 
 
 def _run_configured_suite_single(
     config_path: str,
     cli_args,
     *,
-    config: Dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
     timestamp_override: str | None = None,
 ) -> int:
     """Run one suite against one configured API service lifecycle."""
@@ -5458,7 +5456,7 @@ def _run_configured_suite_single(
     # Microseconds plus PID prevent colliding report names when multiple
     # benchmark processes start in the same second.
     timestamp = timestamp_override or cli_timestamp or (
-        f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-p{os.getpid()}"
+        f"{datetime.now(timezone.utc).astimezone().strftime('%Y%m%d-%H%M%S-%f')}-p{os.getpid()}"
     )
     if not report_target:
         report_target = f"benchmark-report-{timestamp}.json"
@@ -5818,7 +5816,7 @@ def _run_configured_suite_single(
     abort_remaining = False
     interrupted = False
     timed_out = False
-    blocked_matrix_base_names: Dict[str, str] = {}
+    blocked_matrix_base_names: dict[str, str] = {}
     for position, ((case, args, scenario, _), record) in enumerate(zip(prepared, records), start=1):
         if (
             automation.enabled
@@ -6098,19 +6096,19 @@ def _run_configured_suite_single(
 
 def _run_benchmark_container_suite(
     *,
-    config: Dict[str, Any],
+    config: dict[str, Any],
     config_path: str,
     cli_args,
     timestamp: str,
     report_location,
     report_storage,
     checkpoint_lock,
-    report: Dict[str, Any],
-    records: list[Dict[str, Any]],
+    report: dict[str, Any],
+    records: list[dict[str, Any]],
     started_perf: float,
     indent: int,
     managed_compose_service,
-    docker_report: Dict[str, Any],
+    docker_report: dict[str, Any],
 ) -> int:
     """Run one suite in the configured Compose benchmark client container."""
     container_policy = parse_automation(
@@ -6255,7 +6253,7 @@ def _run_benchmark_container_suite(
 
 
 def _write_benchmark_container_config(
-    config: Dict[str, Any],
+    config: dict[str, Any],
     report_path: str,
     api_base: str,
 ) -> str:
@@ -6289,13 +6287,13 @@ def _write_benchmark_container_config(
     return path
 
 
-def _container_report_template_name(config: Dict[str, Any], cli_args) -> str:
+def _container_report_template_name(config: dict[str, Any], cli_args) -> str:
     """Return the fixed container-local report filename template."""
     target = cli_args.report or config.get("report", {}).get("path")
     return os.path.basename(target or "benchmark-report-{timestamp}.json")
 
 
-def _read_container_report(report_storage) -> Dict[str, Any] | None:
+def _read_container_report(report_storage) -> dict[str, Any] | None:
     """Load one JSON report written by the benchmark client container."""
     content = report_storage.read_text()
     if content is None:
@@ -6357,7 +6355,7 @@ def run_configured_suite(config_path: str, cli_args) -> int:
     )
 
 
-def _config_for_compose_profile(config: Dict[str, Any], profile) -> Dict[str, Any]:
+def _config_for_compose_profile(config: dict[str, Any], profile) -> dict[str, Any]:
     """Build a single-profile suite config with effective deployment parameters.
 
     Args:
@@ -6392,11 +6390,11 @@ def _profile_report_target(raw_target: str | None, profile_name: str) -> str:
 def _run_profiled_configured_suite(
     config_path: str,
     cli_args,
-    config: Dict[str, Any],
+    config: dict[str, Any],
     service_policy,
 ) -> int:
     """Run profiles serially and checkpoint each profile lifecycle outcome."""
-    timestamp = f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-p{os.getpid()}"
+    timestamp = f"{datetime.now(timezone.utc).astimezone().strftime('%Y%m%d-%H%M%S-%f')}-p{os.getpid()}"
     raw_target = cli_args.report or config.get("report", {}).get("path")
     automation = parse_automation(config.get("automation"))
     outcomes = []
@@ -6479,8 +6477,8 @@ def _profile_outcome(
     report: str | None = None,
     exit_code: int | None = None,
     *,
-    environment: Dict[str, str],
-) -> Dict[str, Any]:
+    environment: dict[str, str],
+) -> dict[str, Any]:
     """Build one aggregate profile outcome with deployment parameters."""
     return {
         "name": profile.name,
@@ -6515,8 +6513,8 @@ def _profile_report_display_name(config_path: str, target: str) -> str:
 def _write_profile_summary(
     config_path: str,
     target: str,
-    config: Dict[str, Any],
-    outcomes: list[Dict[str, Any]],
+    config: dict[str, Any],
+    outcomes: list[dict[str, Any]],
     interrupted: bool,
     *,
     resume: bool = False,
@@ -6556,7 +6554,7 @@ def _write_profile_summary(
         raise BenchmarkConfigError(f"cannot write profile summary {target!r}: {exc}") from exc
 
 
-def _profile_summary_state(outcomes: list[Dict[str, Any]]) -> str:
+def _profile_summary_state(outcomes: list[dict[str, Any]]) -> str:
     """Derive the aggregate state from completed profile lifecycle results."""
     states = {item["state"] for item in outcomes}
     if "failed" in states:

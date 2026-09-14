@@ -6,15 +6,16 @@ change how inputs are generated without changing request execution or metrics.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 import csv
-from dataclasses import dataclass
 import json
 import math
 import random as random_module
-from pathlib import Path
-from typing import Any, Protocol, Sequence
 import uuid
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Protocol
 
 
 class TokenizerLike(Protocol):
@@ -413,7 +414,7 @@ class RandomDataset(BenchmarkDataset):
             raise ValueError("batched random dataset requests are not supported by this benchmark")
 
         vocab_size = int(tokenizer.vocab_size)
-        prohibited_tokens = set(int(token) for token in tokenizer.all_special_ids)
+        prohibited_tokens = {int(token) for token in tokenizer.all_special_ids}
         allowed_tokens = self._np.array(
             [token for token in range(vocab_size) if token not in prohibited_tokens],
             dtype=int,
@@ -550,7 +551,7 @@ class SonnetDataset(BenchmarkDataset):
         super().__init__(**kwargs)
         path = self._require_path(self.dataset_path)
         with open(path, encoding="utf-8") as handle:
-            self.data = [line for line in handle.readlines() if line.strip()]
+            self.data = [line for line in handle if line.strip()]
         if not self.data:
             raise ValueError("sonnet dataset_path contains no non-empty lines")
 

@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import argparse
-import gzip
 import datetime as dt
-import http.server
+import gzip
 import http.cookies
+import http.server
 import ipaddress
 import json
 import pathlib
 import typing
 from urllib.parse import unquote, urlsplit
 
-from web.auth_store import AuthStore, SESSION_COOKIE_NAME, SESSION_TTL_SECONDS
-
+from web.auth_store import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, AuthStore
 
 WEB_ROOT = pathlib.Path(__file__).resolve().parent
 STATIC_ROOT = WEB_ROOT / "ui" / "dist"
@@ -60,7 +59,7 @@ def run_metadata() -> list[dict[str, typing.Any]]:
     return output
 
 
-def resolve_under_root(relative: str, root: pathlib.Path) -> typing.Optional[pathlib.Path]:
+def resolve_under_root(relative: str, root: pathlib.Path) -> pathlib.Path | None:
     """Resolve a web-relative path without allowing traversal outside ``root``.
 
     Args:
@@ -85,7 +84,7 @@ def resolve_under_root(relative: str, root: pathlib.Path) -> typing.Optional[pat
     resolved = (root / candidate).resolve(strict=False)
     try:
         resolved.relative_to(root.resolve(strict=False))
-    except ValueError as exc:
+    except ValueError:
         return None
     return resolved
 
@@ -131,12 +130,7 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
                     json.dumps(self.auth_store.get_profile(username)).encode("utf-8"),
                 )
                 return
-            if self.path in {"/reports", "/reports/"}:
-                if self._username() is None:
-                    self._send_redirect("/login.html")
-                    return
-                request_path = "/index.html"
-            elif self.path in {"/admin/details", "/admin/password", "/admin/avatar"}:
+            if self.path in {"/reports", "/reports/"} or self.path in {"/admin/details", "/admin/password", "/admin/avatar"}:
                 if self._username() is None:
                     self._send_redirect("/login.html")
                     return
@@ -237,7 +231,7 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_error(400, str(failure) or "请求无效")
 
     @staticmethod
-    def static_content_type(path: str) -> typing.Optional[str]:
+    def static_content_type(path: str) -> str | None:
         """Map a server path to its supported media type.
 
         Args:
@@ -310,7 +304,7 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
         field = cookie.get(SESSION_COOKIE_NAME)
         return str(field.value) if field is not None else ""
 
-    def _username(self) -> typing.Optional[str]:
+    def _username(self) -> str | None:
         """Resolve the authenticated username for the request.
 
         Returns:
@@ -349,7 +343,7 @@ class ReportRequestHandler(http.server.BaseHTTPRequestHandler):
         status: int,
         content_type: str,
         body: bytes,
-        extra_headers: typing.Optional[list[tuple[str, str]]] = None,
+        extra_headers: list[tuple[str, str]] | None = None,
     ) -> None:
         compressed = False
         accepted = self.headers.get("Accept-Encoding", "")

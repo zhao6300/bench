@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
 import platform
+import re
 import shutil
 import socket
 import subprocess
-from typing import Callable, Protocol
-import re
-
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Protocol
 
 CommandRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 TextReader = Callable[[str], str | None]
@@ -489,12 +489,12 @@ def _command_scalar(command_runner: CommandRunner, command: list[str]) -> str | 
 
 def _unavailable_probe(vendor: str, tool: str) -> AcceleratorProbeResult:
     """Build a non-error result for an optional tool absent from the host."""
-    return AcceleratorProbeResult("{}_probe".format(vendor), vendor, tool, "unavailable", [], "tool_unavailable")
+    return AcceleratorProbeResult(f"{vendor}_probe", vendor, tool, "unavailable", [], "tool_unavailable")
 
 
 def _failed_probe(vendor: str, tool: str, reason: str) -> AcceleratorProbeResult:
     """Build a safe failed collector result without recording command output."""
-    return AcceleratorProbeResult("{}_probe".format(vendor), vendor, tool, "failed", [], reason)
+    return AcceleratorProbeResult(f"{vendor}_probe", vendor, tool, "failed", [], reason)
 
 
 

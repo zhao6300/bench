@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import hashlib
 import os
-from pathlib import Path
 import subprocess
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any
 
 try:
     from .logging_utils import get_logger
@@ -139,7 +140,7 @@ def resolve_compose_service(
     )
     assert policy.project_name is not None
     digest = hashlib.sha256(
-        f"{config_directory}\0{policy.project_name}".encode("utf-8")
+        f"{config_directory}\0{policy.project_name}".encode()
     ).hexdigest()[:16]
     return ResolvedComposeService(
         policy=policy,

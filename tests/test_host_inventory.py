@@ -100,7 +100,7 @@ def test_collect_host_inventory_merges_vendor_collectors_without_identifiers(mon
 
 def test_missing_or_failing_vendor_tool_is_reported_without_failing_inventory(monkeypatch) -> None:
     """Treat optional accelerator tooling as unavailable rather than a benchmark error."""
-    monkeypatch.setattr(host_inventory.socket, "if_nameindex", lambda: [])
+    monkeypatch.setattr(host_inventory.socket, "if_nameindex", list)
 
     inventory = host_inventory.collect_host_inventory(
         command_runner=lambda _command: (_ for _ in ()).throw(FileNotFoundError()),
@@ -116,7 +116,7 @@ def test_missing_or_failing_vendor_tool_is_reported_without_failing_inventory(mo
 
 def test_custom_accelerator_collector_can_extend_inventory(monkeypatch) -> None:
     """Allow a future vendor plugin without changing the host collector core."""
-    monkeypatch.setattr(host_inventory.socket, "if_nameindex", lambda: [])
+    monkeypatch.setattr(host_inventory.socket, "if_nameindex", list)
 
     class _CustomCollector:
         def collect(self, _command_runner):
@@ -149,7 +149,7 @@ def test_custom_accelerator_collector_can_extend_inventory(monkeypatch) -> None:
 
 def test_malformed_custom_collector_is_isolated_without_stopping_inventory(monkeypatch) -> None:
     """Treat an invalid extension result as a non-fatal accelerator probe failure."""
-    monkeypatch.setattr(host_inventory.socket, "if_nameindex", lambda: [])
+    monkeypatch.setattr(host_inventory.socket, "if_nameindex", list)
 
     class _MalformedCollector:
         def collect(self, _command_runner):

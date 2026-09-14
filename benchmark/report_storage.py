@@ -7,13 +7,14 @@ single writer per object key: S3 has no portable equivalent of ``flock`` here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
-from typing import Any, Mapping
-from urllib.parse import urlsplit
 import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 
 
 class ReportStorageError(RuntimeError):
@@ -268,7 +269,7 @@ class S3ReportStorage:
     @staticmethod
     def acquire_checkpoint_lock():
         """S3 has no portable flock equivalent; callers must enforce one writer."""
-        return None
+        return
 
     @staticmethod
     def release_checkpoint_lock(lock_file) -> None:

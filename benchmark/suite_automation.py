@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
 import math
 import re
 import time
-from typing import Any, Callable
-from urllib.parse import urlsplit
 import uuid
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
+from typing import Any
+from urllib.parse import urlsplit
 
 try:
     from .compose_service import (

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import pytest
 from types import SimpleNamespace
 
+import pytest
+
+from benchmark.benchmark import build_request_batch
 from benchmark.benchmark_datasets import (
     BenchmarkDataset,
     BurstGptDataset,
@@ -15,7 +17,6 @@ from benchmark.benchmark_datasets import (
     create_dataset,
     parse_range_ratio,
 )
-from benchmark.benchmark import build_request_batch
 
 
 class FakeTokenizer:

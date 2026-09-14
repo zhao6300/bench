@@ -538,6 +538,14 @@ uv run --no-project .venv/bin/python -m web.serve
 GSM8K 的完整 test split 已经整理到 `examples/datasets/gsm8k/openai-gsm8k-test.jsonl`，共 1319 条；完整 train split 也在 `openai-gsm8k-train.jsonl`。请使用本地路径作为 `dataset_path`，例如：
 `"dataset_path": "examples/datasets/gsm8k/openai-gsm8k-test.jsonl"`。源数据、revision、许可证和原始 parquet SHA256 见 `examples/datasets/gsm8k/_source.json`。
 
+不使用 JSON 配置时，也可以用单条 CLI 命令直接评估 GSM8K，例如：
+
+```zsh
+llm-benchmark --mode api --dataset gsm8k --dataset-path examples/datasets/gsm8k/openai-gsm8k-test.jsonl --gsm8k-input-len 4096 --gsm8k-output-len 32 --gsm8k-round-prefix-len 32 --gsm8k-shared-prefix-ratio 0.7 --seed 42 --concurrency 8 --num-prompts 32 --model replace-with-served-model --tokenizer /path/to/local/tokenizer --api-base http://localhost:8001/v1
+```
+
+这条命令会发送真实请求；请先把 `model`、`tokenizer` 和 `api-base` 替换为当前服务的启动参数。
+
 ## 配置说明
 
 每个 suite 配置的根对象使用 `version: 1`，并可定义：

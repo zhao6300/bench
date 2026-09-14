@@ -12,7 +12,7 @@ class _FakeResponse:
     def __init__(self, chunks: list[bytes]) -> None:
         self._chunks = chunks
 
-    def __enter__(self) -> _FakeResponse:
+    def __enter__(self) -> "_FakeResponse":  # noqa: UP037
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -31,7 +31,7 @@ def test_iter_sse_data_reassembles_split_utf8_and_ignores_comments() -> None:
         {"choices": [{"delta": {"content": "你好"}}]},
         ensure_ascii=False,
     ).encode("utf-8")
-    split_at = payload.index("你".encode("utf-8")) + 1
+    split_at = payload.index("你".encode()) + 1
     chunks = [
         b": keep-alive\n\n",
         b"data: " + payload[:split_at],
@@ -53,7 +53,7 @@ def test_aiter_sse_data_matches_sync_utf8_and_comment_handling() -> None:
         {"choices": [{"delta": {"content": "你好"}}]},
         ensure_ascii=False,
     ).encode("utf-8")
-    split_at = payload.index("你".encode("utf-8")) + 1
+    split_at = payload.index("你".encode()) + 1
 
     async def chunks():
         yield b": keep-alive\r\n\r\n"

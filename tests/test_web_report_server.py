@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import pathlib
 import json
+import pathlib
 import sqlite3
 import threading
 import time
@@ -13,6 +13,7 @@ from http.client import HTTPResponse
 from http.server import ThreadingHTTPServer
 
 import pytest
+
 from web import report_server
 from web.auth_store import AuthStore, initialize_database
 from web.report_server import create_local_server
@@ -172,7 +173,7 @@ def test_migrates_legacy_auth_schema_with_admin_profile_fields(
             """
         )
         connection.execute(
-            f"""
+            """
             ALTER TABLE admin_users
             RENAME COLUMN display_name TO __old_display_name
             """
