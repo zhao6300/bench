@@ -346,6 +346,31 @@ def test_gsm8k_dataset_copies_records_and_isolates_rounds(tmp_path) -> None:
     assert first.shared_prefix_len == 32
 
 
+def test_gsm8k_dataset_supports_shared_prefix_ratio(tmp_path) -> None:
+    path = tmp_path / "gsm8k.jsonl"
+    path.write_text(
+        '{"question":"hello math","answer":"2"}\n'
+        '{"question":"second math","answer":"3"}\n',
+        encoding="utf-8",
+    )
+    dataset = Gsm8kDataset(dataset_path=str(path), random_seed=17)
+
+    batch = dataset.sample(
+        FakeTokenizer(),
+        num_requests=2,
+        input_len=100,
+        output_len=8,
+        prefix_len=32,
+        shared_prefix_ratio=0.7,
+        run_id="same-round",
+    )
+
+    assert batch.prompt_lens == [100, 100]
+    assert batch.shared_prefix_len == 70
+    assert batch.prompts[0][:70] == batch.prompts[1][:70]
+    assert batch.prompts[0][70:] != batch.prompts[1][70:]
+
+
 def test_gsm8k_dataset_maps_cli_and_run_id_into_batch(tmp_path) -> None:
     path = tmp_path / "gsm8k.jsonl"
     path.write_text(
@@ -363,6 +388,7 @@ def test_gsm8k_dataset_maps_cli_and_run_id_into_batch(tmp_path) -> None:
         gsm8k_input_len=64,
         gsm8k_output_len=16,
         gsm8k_round_prefix_len=32,
+        gsm8k_shared_prefix_ratio=0.7,
         no_oversample=True,
     )
 
@@ -382,4 +408,4 @@ def test_gsm8k_dataset_maps_cli_and_run_id_into_batch(tmp_path) -> None:
     assert first.prompt_lens == [64]
     assert first.output_lens == [16]
     assert first.prompts != second.prompts
-    assert first.shared_prefix_len == 32
+    assert first.shared_prefix_len == 44

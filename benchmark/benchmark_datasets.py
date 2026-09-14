@@ -810,6 +810,7 @@ class Gsm8kDataset(BenchmarkDataset):
     DEFAULT_INPUT_LEN = 2048
     DEFAULT_OUTPUT_LEN = 256
     DEFAULT_ROUND_PREFIX_LEN = 32
+    DEFAULT_SHARED_PREFIX_RATIO = 0.0
 
     PROMPT_KEYS = ("question", "question_text", "problem")
     ANSWER_KEYS = ("answer", "output", "response", "completion")
@@ -860,6 +861,7 @@ class Gsm8kDataset(BenchmarkDataset):
         input_len: int = DEFAULT_INPUT_LEN,
         output_len: int | None = None,
         prefix_len: int = DEFAULT_ROUND_PREFIX_LEN,
+        shared_prefix_ratio: float = DEFAULT_SHARED_PREFIX_RATIO,
         no_oversample: bool = False,
         run_id: str = "",
         **kwargs: Any,
@@ -870,14 +872,25 @@ class Gsm8kDataset(BenchmarkDataset):
             raise ValueError("gsm8k input_len must be positive and prefix_len non-negative")
         if output_len is not None and output_len < 1:
             raise ValueError("gsm8k output_len must be positive when set")
-        if prefix_len >= input_len:
-            raise ValueError("gsm8k round prefix must be shorter than input_len")
+        if not 0.0 <= shared_prefix_ratio <= 1.0:
+            raise ValueError(
+                "gsm8k shared_prefix_ratio must be between 0 and 1"
+            )
+        if shared_prefix_ratio:
+            shared_prefix_len = int(input_len * shared_prefix_ratio)
+        else:
+            shared_prefix_len = prefix_len
+        if shared_prefix_len >= input_len:
+            raise ValueError(
+                "gsm8k shared prefix must leave room for a unique prompt tail"
+            )
+        if prefix_len > shared_prefix_len:
+            raise ValueError(
+                "gsm8k round prefix must not exceed the shared prefix"
+            )
+        unique_length = input_len - shared_prefix_len
 
         round_text = f"【GSM8K-ROUND-{run_id or uuid.uuid4().hex[:8]}】"
-        round_ids = self._tokenizer_sequence(tokenizer, round_text)
-        if prefix_len and len(round_ids) > prefix_len:
-            raise ValueError("gsm8k round prefix is too short for the round marker")
-        prefix_ids = (round_ids * ((prefix_len // len(round_ids)) + 1))[:prefix_len]
         requests = []
         rows = self._sample_rows(
             self.data,
@@ -886,7 +899,40 @@ class Gsm8kDataset(BenchmarkDataset):
             no_oversample=no_oversample,
             disable_shuffle=self.disable_shuffle,
         )
-        body_target = input_len - len(prefix_ids)
+        if not rows:
+            raise ValueError("gsm8k dataset has no usable records")
+        shared_record = rows[0]
+        shared_prompt_text = self._pick(shared_record, self.PROMPT_KEYS)
+        if not shared_prompt_text:
+            raise ValueError("gsm8k shared prefix record requires a question field")
+        shared_answer_text = self._pick(shared_record, self.ANSWER_KEYS)
+        shared_text = f"Question: {shared_prompt_text}\nAnswer: {shared_answer_text or ''}\n"
+        shared_source_ids = self._tokenizer_sequence(tokenizer, shared_text)
+        round_ids = self._tokenizer_sequence(tokenizer, round_text)
+        round_prefix_ids = (
+            (round_ids * ((prefix_len // len(round_ids)) + 1))[:prefix_len]
+            if prefix_len
+            else []
+        )
+        shared_body_target = shared_prefix_len - len(round_prefix_ids)
+        shared_source_repeats = max(
+            1,
+            math.ceil(len(round_prefix_ids) + shared_body_target) // len(shared_source_ids),
+        )
+        shared_body_ids = (
+            shared_source_ids * shared_source_repeats
+        )[:shared_body_target]
+        if len(round_prefix_ids) + len(shared_body_ids) != shared_prefix_len:
+            raise ValueError(
+                "gsm8k shared prefix could not be built from the source text"
+            )
+        prefix_text_ids = round_prefix_ids + shared_body_ids
+        prefix_text = tokenizer.decode(prefix_text_ids)
+        prefix_len_actual = len(tokenizer.encode(prefix_text))
+        if prefix_len_actual != shared_prefix_len:
+            raise ValueError(
+                "gsm8k shared prefix cannot be encoded at the requested length"
+            )
         for index, record in enumerate(rows):
             question = self._pick(record, self.PROMPT_KEYS)
             if not question:
@@ -897,9 +943,9 @@ class Gsm8kDataset(BenchmarkDataset):
             )
             source_text = f"Question: {question}\nAnswer: {answer or ''}\n"
             source_ids = self._tokenizer_sequence(tokenizer, source_text)
-            repeats = max(1, math.ceil(body_target / len(source_ids)))
-            body_ids = (source_ids * repeats)[:body_target]
-            prompt_ids = prefix_ids + body_ids
+            repeats = max(1, math.ceil(unique_length / len(source_ids)))
+            body_ids = (source_ids * repeats)[:unique_length]
+            prompt_ids = prefix_text_ids + body_ids
             prompt = tokenizer.decode(prompt_ids)
             actual_ids = self._tokenizer_sequence(tokenizer, prompt)
             # The text is sent to the backend, so only a decodable prompt is accepted.
@@ -916,7 +962,7 @@ class Gsm8kDataset(BenchmarkDataset):
                     request_id=f"{request_id_prefix}{index}",
                 )
             )
-        return DatasetBatch(requests, shared_prefix_len=len(prefix_ids))
+        return DatasetBatch(requests, shared_prefix_len=prefix_len_actual)
 
 
 def create_dataset(

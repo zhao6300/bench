@@ -277,7 +277,7 @@ export BENCHMARK_HOST_PORT=8000
 | 256K 并发阶梯 | [`benchmark-config-concurrency-staircase-256k.json`](examples/benchmark-config-concurrency-staircase-256k.json) | 固定 256K 请求形状的多档并发测试。 |
 | 64K / 128K / 240K 并发矩阵 | [`benchmark-config-concurrency-matrix-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-64k-128k-240k.json) | 多上下文长度和并发组合。 |
 | 32K / 64K / 128K / 240K 并发矩阵 | [`benchmark-config-concurrency-matrix-32k-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-32k-64k-128k-240k.json) | 2K / 4K / 8K / 16K 输出；每组覆盖 18 个指定并发档位，70% 共享前缀，正式请求数为并发两倍；默认启用，失败时停止当前长度组的剩余档位。 |
-| GSM8K 32K / 64K / 128K / 240K 并发矩阵 | [`benchmark-config-gsm8k-concurrency-matrix-32k-64k-128k-240k.json`](examples/benchmark-config-gsm8k-concurrency-matrix-32k-64k-128k-240k.json) | 使用本地 GSM8K test split，覆盖原矩阵的 4 个长度组和 18 个并发档位，并按 run_id 注入轮次前缀。 |
+| GSM8K 32K / 64K / 128K / 240K 并发矩阵 | [`benchmark-config-gsm8k-concurrency-matrix-32k-64k-128k-240k.json`](examples/benchmark-config-gsm8k-concurrency-matrix-32k-64k-128k-240k.json) | 使用本地 GSM8K test split，覆盖原矩阵的 4 个长度组和 18 个并发档位；每个组共享 70% 前缀，并按 run_id 注入轮次前缀。 |
 | 128K / 2K P/D 分离评估 | [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json) | 分别测量单实例 Prefill/Decode 并给出 P:D 实例比例和调度参数建议；默认禁用。 |
 | 混合负载 API 压测 | [`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json) | 随机混合短入长出、中等请求与长入短出；默认禁用。 |
 
@@ -533,7 +533,7 @@ uv run --no-project .venv/bin/python -m web.serve
 
 已移植 vLLM serving benchmark 中的 `sonnet`、`sharegpt`、`burstgpt`、`hf` 和 `gsm8k` 数据集；它们要求显式设置 `dataset_path`，且默认只读取本地文件，不会触发 Hugging Face 或 API 网络下载。`sonnet` 使用多行纯文本并支持 `sonnet_input_len`、`sonnet_output_len` 和共享的 `sonnet_prefix_len`；`sharegpt` 读取 `conversations[0..1].value` JSON/JSONL，输出默认取第二轮的自然 token 数；`burstgpt` 读取本地 CSV 的 GPT-4 行并从 integer token 字段构造请求；`hf` 是通用离线记录适配器，自动识别 `prompt/input/question` 与 `completion/response/answer` 等常见字段。数据源请求数不足时可继续循环复用，加入 `no_oversample: true` 可返回实际可用请求而非循环；`sharegpt`/`hf` 支持 `disable_shuffle: true` 保留原始顺序。
 
-`gsm8k` 适合测试 GSM8K 风格文本的复制负载。文本源仍然使用本地 JSON/JSONL/CSV，不联网下载 Hugging Face 数据。参数 `gsm8k_input_len` 控制目标输入 token 数；超过单条题目的部分会重复该题目的 issue/answer 段。`gsm8k_output_len` 设置输出上限，便于观察 DSpark/DFlash2 等投机解码路径的收益。每轮生成前会注入 `gsm8k_round_prefix_len` 的 `run_id` 级随机前缀：同一轮内请求共享该前缀，不同 repeat/sweep 轮使用不同 `run_id`，从而避免前一轮的 KV cache 误判当前轮结果；`run_id` 未提供时会生成随机值，同一 `run_id` 在相同 seed 下可复现。需要精确对比投机解码器时，固定 `seed` 并使用不同 `run_id` 即可复现抽取顺序且保证轮次隔离。使用样例请复制 [`benchmark-config-ported-datasets.json`](examples/benchmark-config-ported-datasets.json) 并替换后端、模型与 tokenizer。
+`gsm8k` 适合测试 GSM8K 风格文本的复制负载。文本源仍然使用本地 JSON/JSONL/CSV，不联网下载 Hugging Face 数据。参数 `gsm8k_input_len` 控制目标输入 token 数；超过单条题目的部分会重复该题目的 issue/answer 段。`gsm8k_output_len` 设置输出上限，便于观察 DSpark/DFlash2 等投机解码路径的收益。每轮生成前会注入 `gsm8k_round_prefix_len` 的 `run_id` 级随机前缀：同一轮内请求共享该前缀，不同 repeat/sweep 轮使用不同 `run_id`，从而避免前一轮的 KV cache 误判当前轮结果；`run_id` 未提供时会生成随机值，同一 `run_id` 在相同 seed 下可复现。支持 `gsm8k_shared_prefix_ratio`，设为 `0.7` 时同一轮请求共享 70% token 前缀，其余 30% 按请求变化。需要精确对比投机解码器时，固定 `seed` 并使用不同 `run_id` 即可复现抽取顺序且保证轮次隔离。使用样例请复制 [`benchmark-config-ported-datasets.json`](examples/benchmark-config-ported-datasets.json) 并替换后端、模型与 tokenizer。
 
 GSM8K 的完整 test split 已经整理到 `examples/datasets/gsm8k/openai-gsm8k-test.jsonl`，共 1319 条；完整 train split 也在 `openai-gsm8k-train.jsonl`。请使用本地路径作为 `dataset_path`，例如：
 `"dataset_path": "examples/datasets/gsm8k/openai-gsm8k-test.jsonl"`。源数据、revision、许可证和原始 parquet SHA256 见 `examples/datasets/gsm8k/_source.json`。

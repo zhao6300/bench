@@ -800,6 +800,7 @@ def build_request_batch(
                 resolved_output_len if output_len is not None else args.gsm8k_output_len
             ),
             prefix_len=args.gsm8k_round_prefix_len,
+            shared_prefix_ratio=getattr(args, "gsm8k_shared_prefix_ratio", 0.0),
             no_oversample=args.no_oversample,
             run_id=run_id,
         )
@@ -4798,6 +4799,16 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
             raise BenchmarkConfigError(
                 f"{location}.gsm8k_round_prefix_len must be a non-negative integer"
             )
+        gsm8k_shared_prefix_ratio = getattr(args, "gsm8k_shared_prefix_ratio")
+        if (
+            not isinstance(gsm8k_shared_prefix_ratio, (int, float))
+            or isinstance(gsm8k_shared_prefix_ratio, bool)
+            or not math.isfinite(gsm8k_shared_prefix_ratio)
+            or not 0.0 <= gsm8k_shared_prefix_ratio <= 1.0
+        ):
+            raise BenchmarkConfigError(
+                f"{location}.gsm8k_shared_prefix_ratio must be between 0 and 1"
+            )
     for key in ("random_output_len",):
         value = getattr(args, key)
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
@@ -6664,6 +6675,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gsm8k-round-prefix-len", type=int, default=32,
         help="[gsm8k数据集] 每轮注入的独立随机前缀 token 数（默认：32）"
+    )
+    parser.add_argument(
+        "--gsm8k-shared-prefix-ratio", type=float, default=0.0,
+        help="[gsm8k数据集] 同一轮内共享前缀占比（0~1，默认：0）"
     )
     parser.add_argument(
         "--sonnet-input-len", type=int, default=550,
