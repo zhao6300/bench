@@ -61,7 +61,7 @@ llm-benchmark --config examples/benchmark-config.example.json --list-cases
 
 ### 实时进度显示
 
-实际运行 benchmark 时，`--progress` 控制控制台实时状态显示，默认 `off`，不会显示 TUI 或行式实时进度。显式传入 `--progress rich` 时，交互式终端会使用接近全屏的 Rich dashboard；`--progress auto` 仍会按终端能力选择 Rich 或 plain，`--progress plain` 强制使用行式输出。dashboard 在独立终端屏幕中按顶部运行状态、suite/case 与当前 round 分区、最近事件和底部运行信息展示进度；Rich 模式下，初始化、服务诊断、预热、扫描、结果和运行错误等文本会进入“最近事件”区域，不会直接写入控制台破坏 TUI。宽终端使用 suite/round 双栏，窄终端自动改为纵向布局。benchmark 完成且（若启用）最终 JSON 报告已写入后，Rich 会切换到表格化结果总览。最终页采用“总览 + 详情”布局：上方总览表按终端宽度显示 3/5/6 列，用于快速比较用例、状态、负载、核心指标和结论；它会以当前选中用例为中心分页，避免长 suite 挤满屏幕。核心指标展示聚合吞吐、平均 TTFT 和达标率。下方详情面板展示选中用例的 TTFT/TPOT/E2E 平均值与分位数、吞吐、Goodput、服务端观测、场景结果和错误说明；按 `↑`/`↓` 或 `j`/`k` 可切换用例。TUI 将内部场景标识显示为用户名称，例如“单一负载接口”“混合负载接口”“吞吐扫描”“服务等级目标容量搜索”和“预填充/解码容量评估”，但 JSON 报告仍保留兼容的内部 key。列头仅说明指标类别；每项数值都会在本身旁边显示单位，例如毫秒、个 token、个 token/秒、个请求/秒、百分比或个请求。详情使用标准的 TTFT、TPOT、E2E 缩写，以及整体吞吐、每秒完成请求数、达标率和 KV Cache 观测。延迟分位数会显示平均值、P50、P90 和 P99；扫描显示峰值吞吐和最佳并发，服务等级目标容量搜索显示最大通过并发、确认并发与失败边界，预填充/解码容量评估显示两阶段吞吐和实例比建议。所有不适用或报告缺失的指标显示为 `-`，不会以零值伪造结果。此时按 `Q` 或 `Ctrl-C` 退出并恢复原有终端内容。plain/off 模式不读取键盘，仍会自动结束。dashboard 不会写入 JSON 报告。
+实际运行 benchmark 时，`--progress` 控制控制台实时状态显示，默认 `off`，不会显示 TUI 或行式实时进度。显式传入 `--progress rich` 时，交互式终端会使用接近全屏的 Rich dashboard；`--progress auto` 仍会按终端能力选择 Rich 或 plain，`--progress plain` 强制使用行式输出。dashboard 在独立终端屏幕中按顶部运行状态、suite/case 与当前 round 分区、启动日志和底部运行信息展示进度；Rich 模式下，初始化、服务诊断、预热、扫描、结果和运行错误等启动日志会完整进入“启动日志”区域，不会直接写入控制台破坏 TUI。宽终端使用 suite/round 双栏，窄终端自动改为纵向布局。benchmark 完成且（若启用）最终 JSON 报告已写入后，Rich 会切换到表格化结果总览。最终页采用“总览 + 详情”布局：上方总览表按终端宽度显示 3/5/6 列，用于快速比较用例、状态、负载、核心指标和结论；它会以当前选中用例为中心分页，避免长 suite 挤满屏幕。核心指标展示聚合吞吐、平均 TTFT 和达标率。下方详情面板展示选中用例的 TTFT/TPOT/E2E 平均值与分位数、吞吐、Goodput、服务端观测、场景结果和错误说明；按 `↑`/`↓` 或 `j`/`k` 可切换用例。TUI 将内部场景标识显示为用户名称，例如“单一负载接口”“混合负载接口”“吞吐扫描”“服务等级目标容量搜索”和“预填充/解码容量评估”，但 JSON 报告仍保留兼容的内部 key。列头仅说明指标类别；每项数值都会在本身旁边显示单位，例如毫秒、个 token、个 token/秒、个请求/秒、百分比或个请求。详情使用标准的 TTFT、TPOT、E2E 缩写，以及整体吞吐、每秒完成请求数、达标率和 KV Cache 观测。延迟分位数会显示平均值、P50、P90 和 P99；扫描显示峰值吞吐和最佳并发，服务等级目标容量搜索显示最大通过并发、确认并发与失败边界，预填充/解码容量评估显示两阶段吞吐和实例比建议。所有不适用或报告缺失的指标显示为 `-`，不会以零值伪造结果。此时按 `Q` 或 `Ctrl-C` 退出并恢复原有终端内容。plain/off 模式不读取键盘，仍会自动结束。dashboard 不会写入 JSON 报告。
 
 ```zsh
 # 默认：关闭实时进度/TUI，保留最终指标、错误与 JSON 报告输出
@@ -101,7 +101,7 @@ llm-benchmark --debug --progress plain \
   --config examples/benchmark-config.example.json
 ```
 
-调试日志只记录请求 ID、并发度、token 数量、耗时、状态码和安全的目标 host/path 等元数据，不记录 prompt、完整请求体、SSE 内容、生成文本、Authorization/API key、S3 凭据或捕获的 Compose stdout/stderr。Rich dashboard 运行时会动态捕获当前 `stderr`，因此 debug 日志会进入 dashboard 的最近事件区域；`--validate-config` 和 `--list-cases` 仍不会发送 API 请求、启动 Docker 或执行 GPU benchmark。
+调试日志只记录请求 ID、并发度、token 数量、耗时、状态码和安全的目标 host/path 等元数据，不记录 prompt、完整请求体、SSE 内容、生成文本、Authorization/API key、S3 凭据或捕获的 Compose stdout/stderr。Rich dashboard 运行时会动态捕获当前 `stderr`，因此 debug 日志会进入 dashboard 的启动日志区域；`--validate-config` 和 `--list-cases` 仍不会发送 API 请求、启动 Docker 或执行 GPU benchmark。
 
 项目使用 Rich 管理实时请求计数和状态表，因此不需要额外引入 `tqdm`；两者同时使用会产生重复进度条并干扰重定向日志。
 

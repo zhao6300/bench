@@ -285,7 +285,6 @@ class RichProgressReporter(ProgressReporter):
 
     def _record_event(self, message: str) -> None:
         self._events.append(message)
-        del self._events[:-8]
 
     def _wait_for_final_exit(self) -> None:
         """Wait for navigation or exit keys when terminal input is available."""
@@ -1004,7 +1003,7 @@ class RichProgressReporter(ProgressReporter):
         table.add_column(overflow="fold")
         for event in self._events or ["等待 benchmark 事件..."]:
             table.add_row(event)
-        return self._Panel(table, title="最近事件", border_style="yellow")
+        return self._Panel(table, title="启动日志", border_style="yellow")
 
     def _footer_panel(self) -> Any:
         status = self._last_error or "正常运行"
