@@ -242,7 +242,12 @@ try:
     # Installed package / console-script path.
     from .benchmark_datasets import (
         BenchmarkDataset,
+        BurstGptDataset,
+        Gsm8kDataset,
+        HuggingFaceDataset,
         DatasetBatch,
+        ShareGptDataset,
+        SonnetDataset,
         TextDataset,
         create_dataset,
         parse_range_ratio,
@@ -289,6 +294,7 @@ except ImportError:
     from benchmark_datasets import (
         BenchmarkDataset,
         BurstGptDataset,
+        Gsm8kDataset,
         HuggingFaceDataset,
         DatasetBatch,
         ShareGptDataset,
@@ -775,12 +781,27 @@ def build_request_batch(
     dataset_name = args.dataset
     resolved_input_len = input_len if input_len is not None else args.context_len
     resolved_output_len = output_len if output_len is not None else args.max_tokens
-    if dataset_name in {"sonnet", "sharegpt", "burstgpt", "hf"} and dataset is None:
+    if dataset_name in {"sonnet", "sharegpt", "burstgpt", "hf", "gsm8k"} and dataset is None:
         dataset = create_dataset(
             dataset_name,
             random_seed=args.random_seed if args.random_seed is not None else args.seed,
             dataset_path=getattr(args, "dataset_path", None),
             disable_shuffle=getattr(args, "disable_shuffle", False),
+        )
+    if dataset_name == "gsm8k":
+        gsm8k_dataset = dataset
+        if not isinstance(gsm8k_dataset, Gsm8kDataset):
+            raise ValueError("gsm8k dataset selection requires a Gsm8kDataset instance")
+        return gsm8k_dataset.sample(
+            tokenizer,
+            num_requests,
+            input_len=resolved_input_len if input_len is not None else args.gsm8k_input_len,
+            output_len=(
+                resolved_output_len if output_len is not None else args.gsm8k_output_len
+            ),
+            prefix_len=args.gsm8k_round_prefix_len,
+            no_oversample=args.no_oversample,
+            run_id=run_id,
         )
     if dataset_name == "sonnet":
         sonnet_dataset = dataset
@@ -4723,10 +4744,10 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
     if args.seed is not None and (not isinstance(args.seed, int) or isinstance(args.seed, bool)):
         raise BenchmarkConfigError(f"{location}.seed must be an integer when set")
     if args.dataset not in {"text", "random"}:
-        if args.dataset not in {"sonnet", "sharegpt", "burstgpt", "hf"}:
+        if args.dataset not in {"sonnet", "sharegpt", "burstgpt", "hf", "gsm8k"}:
             raise BenchmarkConfigError(
                 f"{location}.dataset must be text, random, sonnet, sharegpt, "
-                "burstgpt or hf"
+                "burstgpt, hf or gsm8k"
             )
         if not isinstance(args.dataset_path, str) or not Path(args.dataset_path).is_file():
             raise BenchmarkConfigError(
@@ -4739,6 +4760,7 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
             "sonnet_output_len",
             "sharegpt_output_len",
             "hf_output_len",
+            "gsm8k_output_len",
         ):
             value = getattr(args, key)
             if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
@@ -4758,6 +4780,24 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
                         " when set" if minimum == 1 else ""
                     )
                 )
+        gsm8k_input_len = getattr(args, "gsm8k_input_len")
+        gsm8k_prefix_len = getattr(args, "gsm8k_round_prefix_len")
+        if (
+            not isinstance(gsm8k_input_len, int)
+            or isinstance(gsm8k_input_len, bool)
+            or gsm8k_input_len < 1
+        ):
+            raise BenchmarkConfigError(
+                f"{location}.gsm8k_input_len must be a positive integer"
+            )
+        if (
+            not isinstance(gsm8k_prefix_len, int)
+            or isinstance(gsm8k_prefix_len, bool)
+            or gsm8k_prefix_len < 0
+        ):
+            raise BenchmarkConfigError(
+                f"{location}.gsm8k_round_prefix_len must be a non-negative integer"
+            )
     for key in ("random_output_len",):
         value = getattr(args, key)
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
@@ -6597,13 +6637,13 @@ def build_parser() -> argparse.ArgumentParser:
              "不填则默认与 --model 相同"
     )
     parser.add_argument(
-        "--dataset", choices=["text", "random", "sonnet", "sharegpt", "burstgpt", "hf"], default=None,
+        "--dataset", choices=["text", "random", "sonnet", "sharegpt", "burstgpt", "hf", "gsm8k"], default=None,
         help="测试数据集：text 使用中文填充文本；random 合成 token；"
-             "sonnet/sharegpt/burstgpt/hf 使用本地移植数据集"
+             "sonnet/sharegpt/burstgpt/hf/gsm8k 使用本地移植数据集"
     )
     parser.add_argument(
         "--dataset-path", default=None,
-        help="[sonnet/sharegpt/burstgpt/hf数据集] 本地 JSON/JSONL/CSV/text 文件路径"
+        help="[sonnet/sharegpt/burstgpt/hf/gsm8k数据集] 本地 JSON/JSONL/CSV/text 文件路径"
     )
     parser.add_argument(
         "--no-oversample", action="store_true",
@@ -6611,7 +6651,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--disable-shuffle", action="store_true",
-        help="[sharegpt/hf数据集] 保留数据源原始顺序（默认：复现随机排序）"
+        help="[sharegpt/hf/gsm8k数据集] 保留数据源原始顺序（默认：复现随机排序）"
+    )
+    parser.add_argument(
+        "--gsm8k-input-len", type=int, default=2048,
+        help="[gsm8k数据集] 抽取题目复制后的目标输入 token 数（默认：2048）"
+    )
+    parser.add_argument(
+        "--gsm8k-output-len", type=int, default=256,
+        help="[gsm8k数据集] 每请求输出 token 上限（默认：256）"
+    )
+    parser.add_argument(
+        "--gsm8k-round-prefix-len", type=int, default=32,
+        help="[gsm8k数据集] 每轮注入的独立随机前缀 token 数（默认：32）"
     )
     parser.add_argument(
         "--sonnet-input-len", type=int, default=550,

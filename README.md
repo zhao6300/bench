@@ -1,6 +1,6 @@
 # LLM Inference Benchmark
 
-面向 **vLLM 离线引擎**和 **OpenAI 兼容推理服务**的 LLM 性能基准工具。它使用可配置的文本或随机 token 工作负载，测量长上下文 Prefill、生成 Decode、流式延迟和 SLO 容量。
+面向 **vLLM 离线引擎**和 **OpenAI 兼容推理服务**的 LLM 性能基准工具。它使用文本、随机 token、移植数据集或 GSM8K 复制工作负载，测量长上下文 Prefill、生成 Decode、流式延迟和 SLO 容量。
 
 所有可运行的基准示例均位于 [`examples/`](examples/)。README 不重复维护手写参数组合：请从真实 JSON 配置复制本地副本、修改部署参数后运行，确保文档与仓库示例保持一致。
 
@@ -530,7 +530,9 @@ uv run --no-project .venv/bin/python -m web.serve
 
 对 `random` 数据集，`random_input_len`、`random_output_len` 和 `random_prefix_len` 是权威参数，分别表示独有输入、输出上限和共享前缀；它们优先于通用的 `context_len`/`max_tokens`。工具会在发送前以本地 tokenizer（不添加 special token）反复 decode/re-encode 并补充非 special token，直到最终 prompt 严格达到目标长度；如果 tokenizer 在有限次修复内无法产生该长度，工具会报错而不会静默发送长度不符的请求。API 服务端仍可因 chat template 或不同 tokenizer 而报告不同的 `usage.prompt_tokens`。`share_prefix` 与 `prefix_ratio` 仅对 `text` 生效。
 
-已移植 vLLM serving benchmark 中的 `sonnet`、`sharegpt`、`burstgpt` 和 `hf` 数据集；它们要求显式设置 `dataset_path`，且默认只读取本地文件，不会触发 Hugging Face 或 API 网络下载。`sonnet` 使用多行纯文本并支持 `sonnet_input_len`、`sonnet_output_len` 和共享的 `sonnet_prefix_len`；`sharegpt` 读取 `conversations[0..1].value` JSON/JSONL，输出默认取第二轮的自然 token 数；`burstgpt` 读取本地 CSV 的 GPT-4 行并从 integer token 字段构造请求；`hf` 是通用离线记录适配器，自动识别 `prompt/input/question` 与 `completion/response/answer` 等常见字段。数据源请求数不足时可继续循环复用，加入 `no_oversample: true` 可返回实际可用请求而非循环；`sharegpt`/`hf` 支持 `disable_shuffle: true` 保留原始顺序。使用该数据集前，先复制 [`benchmark-config-ported-datasets.json`](examples/benchmark-config-ported-datasets.json) 并替换后端、模型与 tokenizer。
+已移植 vLLM serving benchmark 中的 `sonnet`、`sharegpt`、`burstgpt`、`hf` 和 `gsm8k` 数据集；它们要求显式设置 `dataset_path`，且默认只读取本地文件，不会触发 Hugging Face 或 API 网络下载。`sonnet` 使用多行纯文本并支持 `sonnet_input_len`、`sonnet_output_len` 和共享的 `sonnet_prefix_len`；`sharegpt` 读取 `conversations[0..1].value` JSON/JSONL，输出默认取第二轮的自然 token 数；`burstgpt` 读取本地 CSV 的 GPT-4 行并从 integer token 字段构造请求；`hf` 是通用离线记录适配器，自动识别 `prompt/input/question` 与 `completion/response/answer` 等常见字段。数据源请求数不足时可继续循环复用，加入 `no_oversample: true` 可返回实际可用请求而非循环；`sharegpt`/`hf` 支持 `disable_shuffle: true` 保留原始顺序。
+
+`gsm8k` 适合测试 GSM8K 风格文本的复制负载。文本源仍然使用本地 JSON/JSONL/CSV，不联网下载 Hugging Face 数据。参数 `gsm8k_input_len` 控制目标输入 token 数；超过单条题目的部分会重复该题目的 issue/answer 段。`gsm8k_output_len` 设置输出上限，便于观察 DSpark/DFlash2 等投机解码路径的收益。每轮生成前会注入 `gsm8k_round_prefix_len` 的 `run_id` 级随机前缀：同一轮内请求共享该前缀，不同 repeat/sweep 轮使用不同 `run_id`，从而避免前一轮的 KV cache 误判当前轮结果；`run_id` 未提供时会生成随机值，同一 `run_id` 在相同 seed 下可复现。需要精确对比投机解码器时，固定 `seed` 并使用不同 `run_id` 即可复现抽取顺序且保证轮次隔离。使用样例请复制 [`benchmark-config-ported-datasets.json`](examples/benchmark-config-ported-datasets.json) 并替换后端、模型与 tokenizer。
 
 ## 配置说明
 

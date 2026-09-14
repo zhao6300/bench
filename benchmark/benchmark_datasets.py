@@ -804,6 +804,121 @@ class HuggingFaceDataset(BenchmarkDataset):
         return DatasetBatch(requests)
 
 
+class Gsm8kDataset(BenchmarkDataset):
+    """Copy GSM8K problems to target length with round-isolated prompts."""
+
+    DEFAULT_INPUT_LEN = 2048
+    DEFAULT_OUTPUT_LEN = 256
+    DEFAULT_ROUND_PREFIX_LEN = 32
+
+    PROMPT_KEYS = ("question", "question_text", "problem")
+    ANSWER_KEYS = ("answer", "output", "response", "completion")
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        path = self._require_path(self.dataset_path)
+        suffix = Path(path).suffix.lower()
+        if suffix == ".json":
+            self.data = self._load_json_records(path)
+        elif suffix in {".jsonl", ".ndjson"}:
+            self.data = self._load_jsonl_records(path)
+        else:
+            self.data = self._load_dataset_rows(path)
+        if not self.data:
+            raise ValueError("gsm8k dataset_path contains no records")
+
+    @staticmethod
+    def _load_jsonl_records(path: str) -> list[dict[str, Any]]:
+        """Read a small local JSONL file without optional dependencies."""
+        records = []
+        with open(path, encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid JSON on JSONL line {line_number}") from exc
+                if not isinstance(value, dict):
+                    raise ValueError("dataset_path JSONL must contain objects")
+                records.append(value)
+        return records
+
+    @staticmethod
+    def _pick(record: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+        return next(
+            (record[key] for key in keys if key in record and isinstance(record[key], str)),
+            None,
+        )
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        *,
+        input_len: int = DEFAULT_INPUT_LEN,
+        output_len: int | None = None,
+        prefix_len: int = DEFAULT_ROUND_PREFIX_LEN,
+        no_oversample: bool = False,
+        run_id: str = "",
+        **kwargs: Any,
+    ) -> DatasetBatch:
+        if num_requests < 1:
+            raise ValueError("num_requests must be positive")
+        if input_len < 1 or prefix_len < 0:
+            raise ValueError("gsm8k input_len must be positive and prefix_len non-negative")
+        if output_len is not None and output_len < 1:
+            raise ValueError("gsm8k output_len must be positive when set")
+        if prefix_len >= input_len:
+            raise ValueError("gsm8k round prefix must be shorter than input_len")
+
+        round_text = f"【GSM8K-ROUND-{run_id or uuid.uuid4().hex[:8]}】"
+        round_ids = self._tokenizer_sequence(tokenizer, round_text)
+        if prefix_len and len(round_ids) > prefix_len:
+            raise ValueError("gsm8k round prefix is too short for the round marker")
+        prefix_ids = (round_ids * ((prefix_len // len(round_ids)) + 1))[:prefix_len]
+        requests = []
+        rows = self._sample_rows(
+            self.data,
+            num_requests,
+            self.random_seed,
+            no_oversample=no_oversample,
+            disable_shuffle=self.disable_shuffle,
+        )
+        body_target = input_len - len(prefix_ids)
+        for index, record in enumerate(rows):
+            question = self._pick(record, self.PROMPT_KEYS)
+            if not question:
+                raise ValueError("gsm8k records require a question field")
+            answer = self._pick(record, self.ANSWER_KEYS)
+            resolved_output_len = (
+                output_len if output_len is not None else len(tokenizer.encode(answer or "\n"))
+            )
+            source_text = f"Question: {question}\nAnswer: {answer or ''}\n"
+            source_ids = self._tokenizer_sequence(tokenizer, source_text)
+            repeats = max(1, math.ceil(body_target / len(source_ids)))
+            body_ids = (source_ids * repeats)[:body_target]
+            prompt_ids = prefix_ids + body_ids
+            prompt = tokenizer.decode(prompt_ids)
+            actual_ids = self._tokenizer_sequence(tokenizer, prompt)
+            # The text is sent to the backend, so only a decodable prompt is accepted.
+            if len(actual_ids) != len(prompt_ids):
+                prompt_ids = actual_ids
+                prompt_len = len(actual_ids)
+            else:
+                prompt_len = len(prompt_ids)
+            requests.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=prompt_len,
+                    expected_output_len=resolved_output_len,
+                    request_id=f"{request_id_prefix}{index}",
+                )
+            )
+        return DatasetBatch(requests, shared_prefix_len=len(prefix_ids))
+
+
 def create_dataset(
     name: str,
     *,
@@ -829,7 +944,9 @@ def create_dataset(
         return BurstGptDataset(**path_args)
     if name == "hf":
         return HuggingFaceDataset(**path_args)
+    if name == "gsm8k":
+        return Gsm8kDataset(**path_args)
     raise ValueError(
         f"unknown benchmark dataset {name!r}; expected "
-        "'text', 'random', 'sonnet', 'sharegpt', 'burstgpt' or 'hf'"
+        "'text', 'random', 'sonnet', 'sharegpt', 'burstgpt', 'hf' or 'gsm8k'"
     )

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from benchmark.benchmark_datasets import (
     BurstGptDataset,
+    Gsm8kDataset,
     HuggingFaceDataset,
     RandomDataset,
     ShareGptDataset,
@@ -12,6 +14,7 @@ from benchmark.benchmark_datasets import (
     create_dataset,
     parse_range_ratio,
 )
+from benchmark.benchmark import build_request_batch
 
 
 class FakeTokenizer:
@@ -299,3 +302,84 @@ def test_sharegpt_dataset_supports_original_order_and_no_oversample(tmp_path) ->
     batch = dataset.sample(FakeTokenizer(), num_requests=5, no_oversample=True)
 
     assert len(batch.requests) == 3
+
+
+def test_gsm8k_dataset_copies_records_and_isolates_rounds(tmp_path) -> None:
+    path = tmp_path / "gsm8k.jsonl"
+    path.write_text(
+        '{"question":"hello math","answer":"2"}\n'
+        '{"question":"second math","answer":"3"}\n',
+        encoding="utf-8",
+    )
+    dataset = Gsm8kDataset(dataset_path=str(path), random_seed=17)
+
+    first = dataset.sample(
+        FakeTokenizer(),
+        num_requests=1,
+        input_len=64,
+        output_len=128,
+        prefix_len=32,
+        run_id="round-one",
+    )
+    second = dataset.sample(
+        FakeTokenizer(),
+        num_requests=1,
+        input_len=64,
+        output_len=7,
+        prefix_len=32,
+        run_id="round-two",
+    )
+    repeated = dataset.sample(
+        FakeTokenizer(),
+        num_requests=1,
+        input_len=64,
+        output_len=128,
+        prefix_len=32,
+        run_id="round-one",
+    )
+
+    assert first.prompt_lens == [64]
+    assert first.output_lens == [128]
+    assert second.output_lens == [7]
+    assert first.prompts != second.prompts
+    assert first.prompts == repeated.prompts
+    assert first.shared_prefix_len == 32
+
+
+def test_gsm8k_dataset_maps_cli_and_run_id_into_batch(tmp_path) -> None:
+    path = tmp_path / "gsm8k.jsonl"
+    path.write_text(
+        '{"question":"hello math","answer":"2"}\n',
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        dataset="gsm8k",
+        context_len=None,
+        max_tokens=16,
+        random_seed=11,
+        seed=11,
+        dataset_path=str(path),
+        disable_shuffle=False,
+        gsm8k_input_len=64,
+        gsm8k_output_len=16,
+        gsm8k_round_prefix_len=32,
+        no_oversample=True,
+    )
+
+    first = build_request_batch(
+        args,
+        FakeTokenizer(),
+        num_requests=1,
+        run_id="round-one",
+    )
+    second = build_request_batch(
+        args,
+        FakeTokenizer(),
+        num_requests=1,
+        run_id="round-two",
+    )
+
+    assert first.prompt_lens == [64]
+    assert first.output_lens == [16]
+    assert first.prompts != second.prompts
+    assert first.shared_prefix_len == 32
