@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "name": "gsm8k-concurrency-matrix-32k",
+  "description": "GSM8K 32K/2K 并发矩阵：每档正式请求数为并发数两倍；每轮注入 run_id 级随机前缀，避免跨轮 KV cache 污染。",
+  "metadata": {
+    "purpose": "gsm8k-long-input-concurrency-matrix",
+    "workloads": [
+      "32K input / 2K output"
+    ],
+    "requests_per_case": "2 × concurrency",
+    "round_isolation": "run_id prefix + normal benchmark round ID"
+  },
+  "continue_on_error": true,
+  "failure_policy": "stop-current-matrix",
+  "matrix_failure_confirm_rounds": 2,
+  "debug": false,
+  "defaults": {
+    "seed": 42,
+    "mode": "api",
+    "api_base": "http://localhost:8000/v1",
+    "api_transport": "requests",
+    "api_timeout_seconds": 600,
+    "target_rps": null,
+    "rate_schedule": "gamma",
+    "rate_burstiness": 1.0,
+    "rate_ramp_up_strategy": "none",
+    "rate_ramp_up_start_rps": null,
+    "rate_ramp_up_end_rps": null,
+    "rate_overload_policy": "no-catch-up",
+    "model": "your-served-model",
+    "tokenizer": "your-model-or-tokenizer",
+    "dataset": "gsm8k",
+    "dataset_path": "examples/datasets/gsm8k/openai-gsm8k-test.jsonl",
+    "gsm8k_round_prefix_len": 32,
+    "ignore_eos": true,
+    "max_failure_rate": 0.3,
+    "min_goodput_pct": 10.0,
+    "slo_ttft": 200.0,
+    "slo_tpot": 0.2,
+    "warmup": {
+      "enabled": true,
+      "rounds": 1,
+      "requests_per_round": 4
+    }
+  },
+  "report": {
+    "path": "gsm8k-concurrency-matrix-32k-report-{timestamp}.json",
+    "include_request_details": false,
+    "indent": 2
+  },
+  "cases": [
+    {
+      "name": "gsm8k-32k-output-2k",
+      "description": "GSM8K 32K 输入、2K 输出，18 个并发档位。",
+      "enabled": true,
+      "tags": [
+        "decode",
+        "gsm8k",
+        "concurrency-matrix",
+        "input-32k",
+        "output-2k",
+        "speculative-decoding"
+      ],
+      "scenario": "single",
+      "params": {
+        "gsm8k_input_len": 32768,
+        "gsm8k_output_len": 2048
+      },
+      "matrix": {
+        "requests": [
+          {"concurrency": 1, "count": 2},
+          {"concurrency": 4, "count": 8},
+          {"concurrency": 8, "count": 16},
+          {"concurrency": 12, "count": 24},
+          {"concurrency": 16, "count": 32},
+          {"concurrency": 20, "count": 40},
+          {"concurrency": 30, "count": 60},
+          {"concurrency": 40, "count": 80},
+          {"concurrency": 50, "count": 100},
+          {"concurrency": 60, "count": 120},
+          {"concurrency": 70, "count": 140},
+          {"concurrency": 80, "count": 160},
+          {"concurrency": 90, "count": 180},
+          {"concurrency": 100, "count": 200},
+          {"concurrency": 120, "count": 240},
+          {"concurrency": 150, "count": 300},
+          {"concurrency": 180, "count": 360},
+          {"concurrency": 200, "count": 400}
+        ]
+      }
+    }
+  ]
+}
