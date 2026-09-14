@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "name": "ported-dataset-smoke-suite",
+  "description": "校验 sonnet、sharegpt、burstgpt 与 hf 本地数据集接入",
+  "continue_on_error": true,
+  "defaults": {
+    "mode": "api",
+    "api_base": "http://localhost:8000/v1",
+    "api_transport": "requests",
+    "model": "your-served-model",
+    "tokenizer": "your-model-or-tokenizer",
+    "seed": 42
+  },
+  "report": {
+    "include_request_details": false
+  },
+  "cases": [
+    {
+      "name": "sonnet-sample",
+      "tags": ["dataset", "sonnet"],
+      "scenario": "single",
+      "params": {
+        "dataset": "sonnet",
+        "dataset_path": "examples/datasets/sonnet.txt",
+        "sonnet_input_len": 70,
+        "sonnet_output_len": 4,
+        "sonnet_prefix_len": 30,
+        "requests": {"concurrency": 1, "count": 2}
+      }
+    },
+    {
+      "name": "sharegpt-sample",
+      "tags": ["dataset", "sharegpt"],
+      "scenario": "single",
+      "params": {
+        "dataset": "sharegpt",
+        "dataset_path": "examples/datasets/local-sharegpt.json",
+        "requests": {"concurrency": 1, "count": 1}
+      }
+    },
+    {
+      "name": "burstgpt-sample",
+      "tags": ["dataset", "burstgpt"],
+      "scenario": "single",
+      "params": {
+        "dataset": "burstgpt",
+        "dataset_path": "examples/datasets/burstgpt.csv",
+        "requests": {"concurrency": 1, "count": 2}
+      }
+    },
+    {
+      "name": "hf-sample",
+      "tags": ["dataset", "hf"],
+      "scenario": "single",
+      "params": {
+        "dataset": "hf",
+        "dataset_path": "examples/datasets/local-hf.jsonl",
+        "hf_output_len": 1,
+        "requests": {"concurrency": 1, "count": 1}
+      }
+    }
+  ]
+}

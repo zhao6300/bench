@@ -288,7 +288,11 @@ except ImportError:
     # Direct execution: python benchmark/benchmark.py ...
     from benchmark_datasets import (
         BenchmarkDataset,
+        BurstGptDataset,
+        HuggingFaceDataset,
         DatasetBatch,
+        ShareGptDataset,
+        SonnetDataset,
         TextDataset,
         create_dataset,
         parse_range_ratio,
@@ -771,6 +775,66 @@ def build_request_batch(
     dataset_name = args.dataset
     resolved_input_len = input_len if input_len is not None else args.context_len
     resolved_output_len = output_len if output_len is not None else args.max_tokens
+    if dataset_name in {"sonnet", "sharegpt", "burstgpt", "hf"} and dataset is None:
+        dataset = create_dataset(
+            dataset_name,
+            random_seed=args.random_seed if args.random_seed is not None else args.seed,
+            dataset_path=getattr(args, "dataset_path", None),
+            disable_shuffle=getattr(args, "disable_shuffle", False),
+        )
+    if dataset_name == "sonnet":
+        sonnet_dataset = dataset
+        if not isinstance(sonnet_dataset, SonnetDataset):
+            raise ValueError("sonnet dataset selection requires a SonnetDataset instance")
+        return sonnet_dataset.sample(
+            tokenizer,
+            num_requests,
+            prefix_len=args.sonnet_prefix_len,
+            input_len=(
+                resolved_input_len
+                if input_len is not None
+                else args.sonnet_input_len
+            ),
+            output_len=(
+                resolved_output_len
+                if output_len is not None
+                else args.sonnet_output_len
+            ),
+            no_oversample=args.no_oversample,
+        )
+    if dataset_name == "sharegpt":
+        sharegpt_dataset = dataset
+        if not isinstance(sharegpt_dataset, ShareGptDataset):
+            raise ValueError("sharegpt dataset selection requires a ShareGptDataset instance")
+        return sharegpt_dataset.sample(
+            tokenizer,
+            num_requests,
+            output_len=(
+                resolved_output_len if output_len is not None else args.sharegpt_output_len
+            ),
+            no_oversample=args.no_oversample,
+        )
+    if dataset_name == "burstgpt":
+        burstgpt_dataset = dataset
+        if not isinstance(burstgpt_dataset, BurstGptDataset):
+            raise ValueError("burstgpt dataset selection requires a BurstGptDataset instance")
+        return burstgpt_dataset.sample(
+            tokenizer,
+            num_requests,
+            no_oversample=args.no_oversample,
+        )
+    if dataset_name == "hf":
+        hf_dataset = dataset
+        if not isinstance(hf_dataset, HuggingFaceDataset):
+            raise ValueError("hf dataset selection requires a HuggingFaceDataset instance")
+        return hf_dataset.sample(
+            tokenizer,
+            num_requests,
+            output_len=(
+                resolved_output_len if output_len is not None else args.hf_output_len
+            ),
+            no_oversample=args.no_oversample,
+        )
     if dataset_name == "text":
         text_dataset = dataset if dataset is not None else TextDataset(random_seed=args.seed)
         if not isinstance(text_dataset, TextDataset):
@@ -789,6 +853,7 @@ def build_request_batch(
     random_dataset = dataset if dataset is not None else create_dataset(
         dataset_name,
         random_seed=args.random_seed if args.random_seed is not None else args.seed,
+        dataset_path=args.dataset_path,
     )
     random_input_len = input_len if input_len is not None else (
         args.random_input_len if args.random_input_len is not None else resolved_input_len
@@ -2642,6 +2707,8 @@ def run_mixed_benchmark(args):
     dataset_instance = create_dataset(
         args.dataset,
         random_seed=args.random_seed if args.random_seed is not None else args.seed,
+        dataset_path=args.dataset_path,
+        disable_shuffle=args.disable_shuffle,
     )
     batches = [
         build_request_batch(
@@ -2933,7 +3000,12 @@ class ApiConcurrencyProbeRunner:
         )
         # A single instance keeps RandomDataset's cached prefix stable. Its RNG
         # advances in sample(), producing fresh suffixes for every batch.
-        self.dataset = create_dataset(self.args.dataset, random_seed=dataset_seed)
+        self.dataset = create_dataset(
+            self.args.dataset,
+            random_seed=dataset_seed,
+            dataset_path=getattr(self.args, "dataset_path", None),
+            disable_shuffle=getattr(self.args, "disable_shuffle", False),
+        )
 
     def request_count(self, concurrency):
         return self.requests_per_round if self.requests_per_round else max(concurrency * 2, 4)
@@ -4651,7 +4723,41 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
     if args.seed is not None and (not isinstance(args.seed, int) or isinstance(args.seed, bool)):
         raise BenchmarkConfigError(f"{location}.seed must be an integer when set")
     if args.dataset not in {"text", "random"}:
-        raise BenchmarkConfigError(f"{location}.dataset must be text or random")
+        if args.dataset not in {"sonnet", "sharegpt", "burstgpt", "hf"}:
+            raise BenchmarkConfigError(
+                f"{location}.dataset must be text, random, sonnet, sharegpt, "
+                "burstgpt or hf"
+            )
+        if not isinstance(args.dataset_path, str) or not Path(args.dataset_path).is_file():
+            raise BenchmarkConfigError(
+            f"{location}.dataset_path must point to an existing file for "
+                f"{args.dataset} dataset"
+            )
+        if not isinstance(args.disable_shuffle, bool):
+            raise BenchmarkConfigError(f"{location}.disable_shuffle must be true or false")
+        for key in (
+            "sonnet_output_len",
+            "sharegpt_output_len",
+            "hf_output_len",
+        ):
+            value = getattr(args, key)
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
+                raise BenchmarkConfigError(
+                    f"{location}.{key} must be a positive integer when set"
+                )
+        for key in ("sonnet_input_len", "sonnet_prefix_len"):
+            value = getattr(args, key)
+            minimum = 0 if key == "sonnet_prefix_len" else 1
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < minimum
+            ):
+                raise BenchmarkConfigError(
+                    f"{location}.{key} must be a positive integer" + (
+                        " when set" if minimum == 1 else ""
+                    )
+                )
     for key in ("random_output_len",):
         value = getattr(args, key)
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
@@ -6491,8 +6597,41 @@ def build_parser() -> argparse.ArgumentParser:
              "不填则默认与 --model 相同"
     )
     parser.add_argument(
-        "--dataset", choices=["text", "random"], default=None,
-        help="测试数据集：text 使用原有中文填充文本；random 使用可复现的合成 token 序列"
+        "--dataset", choices=["text", "random", "sonnet", "sharegpt", "burstgpt", "hf"], default=None,
+        help="测试数据集：text 使用中文填充文本；random 合成 token；"
+             "sonnet/sharegpt/burstgpt/hf 使用本地移植数据集"
+    )
+    parser.add_argument(
+        "--dataset-path", default=None,
+        help="[sonnet/sharegpt/burstgpt/hf数据集] 本地 JSON/JSONL/CSV/text 文件路径"
+    )
+    parser.add_argument(
+        "--no-oversample", action="store_true",
+        help="[移植数据集] 数据源不足请求量时不再循环补充"
+    )
+    parser.add_argument(
+        "--disable-shuffle", action="store_true",
+        help="[sharegpt/hf数据集] 保留数据源原始顺序（默认：复现随机排序）"
+    )
+    parser.add_argument(
+        "--sonnet-input-len", type=int, default=550,
+        help="[sonnet数据集] 每请求目标输入 token 数（默认：550）"
+    )
+    parser.add_argument(
+        "--sonnet-output-len", type=int, default=150,
+        help="[sonnet数据集] 每请求输出 token 上限（默认：150）"
+    )
+    parser.add_argument(
+        "--sonnet-prefix-len", type=int, default=200,
+        help="[sonnet数据集] 所有请求共享的诗句前缀长度（默认：200）"
+    )
+    parser.add_argument(
+        "--sharegpt-output-len", type=int, default=None,
+        help="[sharegpt数据集] 覆盖对话第二轮自然输出长度（默认：使用本地值）"
+    )
+    parser.add_argument(
+        "--hf-output-len", type=int, default=None,
+        help="[hf数据集] 覆盖 completion token 输出长度（默认：使用本地值）"
     )
     parser.add_argument(
         "--random-input-len", type=int, default=None,
