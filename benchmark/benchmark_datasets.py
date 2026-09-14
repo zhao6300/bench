@@ -7,8 +7,12 @@ change how inputs are generated without changing request execution or metrics.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import csv
 from dataclasses import dataclass
+import json
 import math
+import random as random_module
+from pathlib import Path
 from typing import Any, Protocol, Sequence
 import uuid
 
@@ -65,8 +69,16 @@ class DatasetBatch:
 class BenchmarkDataset(ABC):
     """Base class for prompt generators used by benchmark scenarios."""
 
-    def __init__(self, *, random_seed: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        random_seed: int | None = None,
+        dataset_path: str | None = None,
+        disable_shuffle: bool = False,
+    ) -> None:
         self.random_seed = random_seed
+        self.dataset_path = dataset_path
+        self.disable_shuffle = disable_shuffle
 
     @abstractmethod
     def sample(
@@ -77,6 +89,82 @@ class BenchmarkDataset(ABC):
         **kwargs: Any,
     ) -> DatasetBatch:
         """Generate a batch of requests for one benchmark round."""
+
+    @staticmethod
+    def _require_path(dataset_name: str | None) -> str:
+        """Validate that a local data source is declared."""
+        if not dataset_name:
+            raise ValueError("dataset_path must be provided")
+        return dataset_name
+
+    @staticmethod
+    def _tokenizer_sequence(tokenizer: TokenizerLike, text: str) -> list[int]:
+        """Encode a non-empty prompt and reject unusable tokenizers."""
+        tokens = tokenizer.encode(text)
+        if not tokens:
+            raise ValueError("tokenizer produced no tokens for a dataset request")
+        return tokens
+
+    @staticmethod
+    def _sample_rows(
+        rows: Sequence[Any],
+        num_requests: int,
+        seed: int | None,
+        no_oversample: bool = False,
+        disable_shuffle: bool = False,
+    ) -> list[Any]:
+        """Sample rows reproducibly, cycling when the source is smaller."""
+        if num_requests < 1:
+            raise ValueError("num_requests must be positive")
+        if not rows:
+            return []
+        rng = random_module.Random(seed)
+        indexes = list(range(len(rows)))
+        if not disable_shuffle:
+            rng.shuffle(indexes)
+        if len(indexes) >= num_requests:
+            selected = indexes[:num_requests]
+        elif no_oversample:
+            selected = indexes
+        else:
+            selected = list(range(num_requests))
+            rng.shuffle(selected)
+        return [rows[index] for index in selected]
+
+    @staticmethod
+    def _shared_token_prefix(tokenizer: TokenizerLike, prompts: Sequence[str]) -> int:
+        """Return the token prefix shared by the first two sampled prompts."""
+        if len(prompts) < 2:
+            return 0
+        first = BenchmarkDataset._tokenizer_sequence(tokenizer, prompts[0])
+        second = BenchmarkDataset._tokenizer_sequence(tokenizer, prompts[1])
+        limit = min(len(first), len(second))
+        for index in range(limit):
+            if first[index] != second[index]:
+                return index
+        return limit
+
+    @staticmethod
+    def _load_json_records(path: str) -> list[dict[str, Any]]:
+        """Read a small local JSON/JSONL file as a list of dictionaries."""
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+        if isinstance(value, dict):
+            value = value.get("data", value.get("items", value.get("records", [])))
+        if not isinstance(value, list) or not all(
+            isinstance(item, dict) for item in value
+        ):
+            raise ValueError("dataset_path must contain a JSON array of objects")
+        return value
+
+    @staticmethod
+    def _load_dataset_rows(path: str) -> list[dict[str, str]]:
+        """Read CSV headers into string records without an optional dependency."""
+        with open(path, encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if not reader.fieldnames:
+                raise ValueError("dataset_path CSV has no header row")
+            return [dict(row) for row in reader]
 
 
 class TextDataset(BenchmarkDataset):
@@ -434,10 +522,314 @@ class RandomDataset(BenchmarkDataset):
             return tokenizer.encode(prompt)
 
 
-def create_dataset(name: str, *, random_seed: int | None = None) -> BenchmarkDataset:
+class SonnetDataset(BenchmarkDataset):
+    """Port of the vLLM line-selection Sonnet workload."""
+    DEFAULT_PREFIX_LEN = 200
+    DEFAULT_INPUT_LEN = 550
+    DEFAULT_OUTPUT_LEN = 150
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        path = self._require_path(self.dataset_path)
+        with open(path, encoding="utf-8") as handle:
+            self.data = [line for line in handle.readlines() if line.strip()]
+        if not self.data:
+            raise ValueError("sonnet dataset_path contains no non-empty lines")
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        *,
+        prefix_len: int = DEFAULT_PREFIX_LEN,
+        input_len: int = DEFAULT_INPUT_LEN,
+        output_len: int = DEFAULT_OUTPUT_LEN,
+        no_oversample: bool = False,
+        **kwargs: Any,
+    ) -> DatasetBatch:
+        del no_oversample
+        if num_requests < 1:
+            raise ValueError("num_requests must be positive")
+        if prefix_len < 0 or input_len < 1 or output_len < 1:
+            raise ValueError("sonnet lengths must be non-negative and positive where required")
+        tokenized_lines = [
+            self._tokenizer_sequence(tokenizer, line) for line in self.data
+        ]
+        average_len = sum(len(tokens) for tokens in tokenized_lines) / len(tokenized_lines)
+        base_prompt = "Pick as many lines as you can from these poem lines:\n"
+        base_offset = len(self._tokenizer_sequence(tokenizer, base_prompt))
+        if input_len <= base_offset:
+            raise ValueError(
+                "sonnet input_len must be higher than the base prompt length"
+            )
+        num_input_lines = max(round((input_len - base_offset) / average_len), 1)
+        num_prefix_lines = max(round((prefix_len - base_offset) / average_len), 0)
+        prefix_lines = self.data[:num_prefix_lines]
+        rng = random_module.Random(self.random_seed)
+        requests = []
+        attempts = 0
+        request_index = 0
+        while len(requests) < num_requests:
+            extra_count = max(num_input_lines - num_prefix_lines, 1)
+            extra_lines = [rng.choice(self.data) for _ in range(extra_count)]
+            prompt = base_prompt
+            for line in prefix_lines + extra_lines:
+                prompt += line if line.endswith("\n") else f"{line}\n"
+            prompt_len = len(self._tokenizer_sequence(tokenizer, prompt))
+            if prompt_len <= input_len:
+                requests.append(
+                    SampleRequest(
+                        prompt=prompt,
+                        prompt_len=prompt_len,
+                        expected_output_len=output_len,
+                        request_id=f"{request_id_prefix}{request_index}",
+                    )
+                )
+                request_index += 1
+            attempts += 1
+            if attempts > 64 * num_requests + 64:
+                break
+        if not requests:
+            raise ValueError("sonnet tokenizer could not reach the requested input length")
+        common_len = self._shared_token_prefix(
+            tokenizer, prompts=[request.prompt for request in requests]
+        ) if prefix_lines else 0
+        return DatasetBatch(requests, shared_prefix_len=common_len)
+
+
+def _conversation_parts(entry: dict[str, Any]) -> tuple[str, str]:
+    """Read the first two conversation turns from a ShareGPT record."""
+    conversations = entry.get("conversations", [])
+    if not isinstance(conversations, list) or len(conversations) < 2:
+        raise ValueError("sharegpt records must contain at least two turns")
+    prompt = conversations[0].get("value")
+    completion = conversations[1].get("value")
+    if not isinstance(prompt, str) or not isinstance(completion, str) or not prompt:
+        raise ValueError("sharegpt conversation turns must be non-empty strings")
+    return prompt, completion
+
+
+class ShareGptDataset(BenchmarkDataset):
+    """Local adapter for ShareGPT-style JSON and JSONL conversation files."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        path = self._require_path(self.dataset_path)
+        self.data = self._load_json_records(path)
+        self.data = [
+            entry for entry in self.data
+            if "conversations" in entry and len(entry["conversations"]) >= 2
+        ]
+        if self.data and not self.disable_shuffle:
+            random_module.Random(self.random_seed).shuffle(self.data)
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        *,
+        output_len: int | None = None,
+        no_oversample: bool = False,
+        **kwargs: Any,
+    ) -> DatasetBatch:
+        if output_len is not None and output_len < 1:
+            raise ValueError("sharegpt output_len must be positive when set")
+        rows = self._sample_rows(
+            self.data,
+            num_requests,
+            self.random_seed,
+            no_oversample=no_oversample,
+            disable_shuffle=self.disable_shuffle,
+        )
+        requests = []
+        for index, entry in enumerate(rows):
+            prompt, completion = _conversation_parts(entry)
+            prompt_len = len(self._tokenizer_sequence(tokenizer, prompt))
+            native_output_len = len(tokenizer.encode(completion))
+            resolved_output_len = output_len if output_len is not None else native_output_len
+            requests.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=prompt_len,
+                    expected_output_len=resolved_output_len,
+                    request_id=f"{request_id_prefix}{index}",
+                )
+            )
+        return DatasetBatch(requests)
+
+
+class BurstGptDataset(BenchmarkDataset):
+    """Local trace adapter for the GPT-4 subset of BurstGPT."""
+    INPUT_KEYS = ("Request tokens", "Input tokens", "input_tokens", "input_length")
+    OUTPUT_KEYS = ("Response tokens", "Output tokens", "output_tokens", "output_length")
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        path = self._require_path(self.dataset_path)
+        rows = self._load_dataset_rows(path)
+        filtered = []
+        for row in rows:
+            if row.get("Model") != "GPT-4":
+                continue
+            input_len = self._numeric(row, self.INPUT_KEYS)
+            output_len = self._numeric(row, self.OUTPUT_KEYS)
+            if input_len < 0 or output_len < 1:
+                continue
+            filtered.append((input_len, output_len))
+        self.data = filtered
+
+    @staticmethod
+    def _numeric(row: dict[str, str], keys: tuple[str, ...]) -> int | None:
+        for key in keys:
+            value = row.get(key)
+            if value:
+                try:
+                    return int(value)
+                except ValueError as exc:
+                    raise ValueError(f"burstgpt {key!r} must contain integers") from exc
+        return None
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        *,
+        no_oversample: bool = False,
+        **kwargs: Any,
+    ) -> DatasetBatch:
+        rows = self._sample_rows(
+            self.data,
+            num_requests,
+            self.random_seed,
+            no_oversample=no_oversample,
+            disable_shuffle=self.disable_shuffle,
+        )
+        requests = []
+        for index, (input_len, output_len) in enumerate(rows):
+            token_ids = [(index + offset) % tokenizer.vocab_size for offset in range(input_len)]
+            requests.append(
+                SampleRequest(
+                    prompt=tokenizer.decode(token_ids),
+                    prompt_len=input_len,
+                    expected_output_len=output_len,
+                    request_id=f"{request_id_prefix}{index}",
+                )
+            )
+        return DatasetBatch(requests)
+
+
+class HuggingFaceDataset(BenchmarkDataset):
+    """Offline adapter for a locally exported HuggingFace records file."""
+
+    PROMPT_KEYS = ("prompt", "input", "question", "query")
+    OUTPUT_KEYS = ("completion", "response", "answer", "output")
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        path = self._require_path(self.dataset_path)
+        suffix = Path(path).suffix.lower()
+        if suffix == ".json":
+            self.data = self._load_json_records(path)
+        elif suffix in {".jsonl", ".ndjson"}:
+            self.data = self._load_jsonl_records(path)
+        else:
+            self.data = self._load_dataset_rows(path)
+
+    @staticmethod
+    def _load_jsonl_records(path: str) -> list[dict[str, Any]]:
+        records = []
+        with open(path, encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid JSON on JSONL line {line_number}") from exc
+                if not isinstance(value, dict):
+                    raise ValueError("dataset_path JSONL must contain objects")
+                records.append(value)
+        return records
+
+    @staticmethod
+    def _pick(record: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+        return next(
+            (record[key] for key in keys if key in record and isinstance(record[key], str)),
+            None,
+        )
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        *,
+        output_len: int | None = None,
+        no_oversample: bool = False,
+        **kwargs: Any,
+    ) -> DatasetBatch:
+        if output_len is not None and output_len < 1:
+            raise ValueError("hf output_len must be positive when set")
+        rows = self._sample_rows(
+            self.data,
+            num_requests,
+            self.random_seed,
+            no_oversample=no_oversample,
+            disable_shuffle=self.disable_shuffle,
+        )
+        requests = []
+        for index, record in enumerate(rows):
+            prompt = self._pick(record, self.PROMPT_KEYS)
+            completion = self._pick(record, self.OUTPUT_KEYS)
+            if not prompt:
+                raise ValueError("hf records require a text prompt field")
+            if output_len is None:
+                if not completion:
+                    raise ValueError("hf records require a text completion field")
+                native_output_len = len(tokenizer.encode(completion))
+                resolved_output_len = native_output_len
+            else:
+                resolved_output_len = output_len
+            requests.append(
+                SampleRequest(
+                    prompt=prompt,
+                    prompt_len=len(tokenizer.encode(prompt)),
+                    expected_output_len=resolved_output_len,
+                    request_id=f"{request_id_prefix}{index}",
+                )
+            )
+        return DatasetBatch(requests)
+
+
+def create_dataset(
+    name: str,
+    *,
+    random_seed: int | None = None,
+    dataset_path: str | None = None,
+    disable_shuffle: bool = False,
+) -> BenchmarkDataset:
     """Create a named dataset without coupling generators to argparse."""
+    path_args = {
+        "random_seed": random_seed,
+        "dataset_path": dataset_path,
+        "disable_shuffle": disable_shuffle,
+    }
     if name == "text":
         return TextDataset(random_seed=random_seed)
     if name == "random":
         return RandomDataset(random_seed=random_seed)
-    raise ValueError(f"unknown benchmark dataset {name!r}; expected 'text' or 'random'")
+    if name == "sonnet":
+        return SonnetDataset(**path_args)
+    if name == "sharegpt":
+        return ShareGptDataset(**path_args)
+    if name == "burstgpt":
+        return BurstGptDataset(**path_args)
+    if name == "hf":
+        return HuggingFaceDataset(**path_args)
+    raise ValueError(
+        f"unknown benchmark dataset {name!r}; expected "
+        "'text', 'random', 'sonnet', 'sharegpt', 'burstgpt' or 'hf'"
+    )

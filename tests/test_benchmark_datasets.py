@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from benchmark.benchmark_datasets import (
+    BurstGptDataset,
+    HuggingFaceDataset,
     RandomDataset,
+    ShareGptDataset,
+    SonnetDataset,
     TextDataset,
     create_dataset,
     parse_range_ratio,
@@ -45,6 +49,14 @@ class EmptyTokenizer(FakeTokenizer):
     def encode(self, text: str, **kwargs: object) -> list[int]:
         del text, kwargs
         return []
+
+
+class LineTokenizer(FakeTokenizer):
+    """Tokenizer that emits one token per text line for Sonnet length tests."""
+
+    def encode(self, text: str, **kwargs: object) -> list[int]:
+        del kwargs
+        return list(range(len(text.splitlines())))
 
 
 @pytest.mark.parametrize(
@@ -163,3 +175,127 @@ def test_random_dataset_rejects_unrepairable_tokenizer_length() -> None:
 def test_create_dataset_rejects_unknown_name() -> None:
     with pytest.raises(ValueError, match="unknown benchmark dataset"):
         create_dataset("unsupported")
+
+
+def test_sonnet_dataset_port_uses_prefix_and_native_lengths(tmp_path) -> None:
+    path = tmp_path / "sonnet.txt"
+    path.write_text("one\n", encoding="utf-8")
+    dataset = SonnetDataset(dataset_path=str(path), random_seed=9)
+
+    batch = dataset.sample(
+        LineTokenizer(),
+        num_requests=2,
+        request_id_prefix="sonnet-",
+        prefix_len=60,
+        input_len=70,
+        output_len=4,
+    )
+
+    assert batch.prompt_lens == [12, 12]
+    assert batch.output_lens == [4, 4]
+    assert batch.requests[0].request_id == "sonnet-0"
+    assert batch.prompts[0] == batch.prompts[1]
+    assert batch.prompts[0].startswith("Pick as many lines as you can")
+    assert batch.shared_prefix_len == 12
+
+
+def test_create_dataset_builds_local_ported_datasets(tmp_path) -> None:
+    sonnet_path = tmp_path / "sonnet.txt"
+    sonnet_path.write_text("line\n", encoding="utf-8")
+    sharegpt_path = tmp_path / "sharegpt.json"
+    sharegpt_path.write_text(
+        '[{"conversations":[{"value":"hello"},{"value":"answer"}]}]',
+        encoding="utf-8",
+    )
+    burst_path = tmp_path / "burstgpt.csv"
+    burst_path.write_text(
+        "Model,Request tokens,Response tokens\nGPT-4,7,2\nGPT-5,5,1\n",
+        encoding="utf-8",
+    )
+    hf_path = tmp_path / "records.jsonl"
+    hf_path.write_text('{"question":"question","answer":"answers"}\n', encoding="utf-8")
+
+    assert isinstance(create_dataset("sonnet", dataset_path=str(sonnet_path)), SonnetDataset)
+    assert isinstance(
+        create_dataset("sharegpt", dataset_path=str(sharegpt_path)), ShareGptDataset
+    )
+    assert isinstance(
+        create_dataset("burstgpt", dataset_path=str(burst_path)), BurstGptDataset
+    )
+    assert isinstance(
+        create_dataset("hf", dataset_path=str(hf_path)), HuggingFaceDataset
+    )
+
+
+def test_sharegpt_dataset_uses_completion_length_in_hierarchy(tmp_path) -> None:
+    path = tmp_path / "sharegpt.json"
+    path.write_text(
+        '[{"conversations":[{"value":"hello"},{"value":"answers"}]}]',
+        encoding="utf-8",
+    )
+
+    batch = ShareGptDataset(dataset_path=str(path), disable_shuffle=True).sample(
+        FakeTokenizer(),
+        num_requests=1,
+        request_id_prefix="sharegpt-",
+    )
+
+    assert batch.prompt_lens == [5]
+    assert batch.output_lens == [7]
+    assert batch.requests[0].request_id == "sharegpt-0"
+
+
+def test_burstgpt_dataset_filters_rows_and_synthesizes_tokens(tmp_path) -> None:
+    path = tmp_path / "burstgpt.csv"
+    path.write_text(
+        "Model,Request tokens,Response tokens\nGPT-4,6,3\nGPT-4,0,1\n",
+        encoding="utf-8",
+    )
+
+    batch = BurstGptDataset(dataset_path=str(path), random_seed=3).sample(
+        FakeTokenizer(),
+        num_requests=2,
+        request_id_prefix="burstgpt-",
+    )
+
+    assert len(batch.requests) == 2
+    assert sorted(batch.output_lens) == [1, 3]
+    assert all(request.request_id.startswith("burstgpt-") for request in batch.requests)
+
+
+def test_hf_dataset_reads_offline_records_and_output_override(tmp_path) -> None:
+    path = tmp_path / "records.jsonl"
+    path.write_text(
+        '{"prompt":"hello","completion":"answers"}\n'
+        '{"question":"world","answer":"answers"}\n',
+        encoding="utf-8",
+    )
+    dataset = HuggingFaceDataset(dataset_path=str(path), disable_shuffle=True)
+
+    batch = dataset.sample(
+        FakeTokenizer(),
+        num_requests=2,
+        request_id_prefix="hf-",
+        output_len=1,
+    )
+
+    assert batch.prompt_lens == [5, 5]
+    assert batch.output_lens == [1, 1]
+
+
+def test_sharegpt_dataset_supports_original_order_and_no_oversample(tmp_path) -> None:
+    path = tmp_path / "sharegpt.json"
+    path.write_text(
+        "[" + ",".join(
+            '{'
+            '"conversations":[{"value":"prompt"},{"value":"answer"}]'
+            '}'
+            for _ in range(3)
+        ) + "]",
+        encoding="utf-8",
+    )
+    dataset = ShareGptDataset(dataset_path=str(path), disable_shuffle=True)
+
+    batch = dataset.sample(FakeTokenizer(), num_requests=5, no_oversample=True)
+
+    assert len(batch.requests) == 3
