@@ -654,11 +654,12 @@ class ShareGptDataset(BenchmarkDataset):
     ) -> DatasetBatch:
         if output_len is not None and output_len < 1:
             raise ValueError("sharegpt output_len must be positive when set")
-        rows = self._sample_contiguous_rows(
+        rows = self._sample_rows(
             self.data,
             num_requests,
             self.random_seed,
             no_oversample=no_oversample,
+            disable_shuffle=self.disable_shuffle,
         )
         requests = []
         for index, entry in enumerate(rows):
