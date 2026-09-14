@@ -277,7 +277,7 @@ export BENCHMARK_HOST_PORT=8000
 | 256K 并发阶梯 | [`benchmark-config-concurrency-staircase-256k.json`](examples/benchmark-config-concurrency-staircase-256k.json) | 固定 256K 请求形状的多档并发测试。 |
 | 64K / 128K / 240K 并发矩阵 | [`benchmark-config-concurrency-matrix-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-64k-128k-240k.json) | 多上下文长度和并发组合。 |
 | 32K / 64K / 128K / 240K 并发矩阵 | [`benchmark-config-concurrency-matrix-32k-64k-128k-240k.json`](examples/benchmark-config-concurrency-matrix-32k-64k-128k-240k.json) | 2K / 4K / 8K / 16K 输出；每组覆盖 18 个指定并发档位，70% 共享前缀，正式请求数为并发两倍；默认启用，失败时停止当前长度组的剩余档位。 |
-| GSM8K 32K / 2K 并发矩阵 | [`benchmark-config-gsm8k-32k.json`](examples/benchmark-config-gsm8k-32k.json) | 使用本地 GSM8K test split 的 32K/2K 并发矩阵，覆盖 18 个并发档位，并按 run_id 注入轮次前缀。 |
+| GSM8K 32K / 64K / 128K / 240K 并发矩阵 | [`benchmark-config-gsm8k-32k.json`](examples/benchmark-config-gsm8k-32k.json) | 使用本地 GSM8K test split，覆盖原矩阵的 4 个长度组和 18 个并发档位，并按 run_id 注入轮次前缀。 |
 | 128K / 2K P/D 分离评估 | [`benchmark-config-pd-ratio-128k-2k.json`](examples/benchmark-config-pd-ratio-128k-2k.json) | 分别测量单实例 Prefill/Decode 并给出 P:D 实例比例和调度参数建议；默认禁用。 |
 | 混合负载 API 压测 | [`benchmark-config-mixed-workload.json`](examples/benchmark-config-mixed-workload.json) | 随机混合短入长出、中等请求与长入短出；默认禁用。 |
 

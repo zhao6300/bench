@@ -1,11 +1,14 @@
 {
   "version": 1,
-  "name": "gsm8k-concurrency-matrix-32k",
-  "description": "GSM8K 32K/2K 并发矩阵：每档正式请求数为并发数两倍；每轮注入 run_id 级随机前缀，避免跨轮 KV cache 污染。",
+  "name": "gsm8k-concurrency-matrix",
+  "description": "GSM8K 32K/2K、64K/4K、128K/8K、240K/16K 并发矩阵；每档正式请求数为并发数两倍，每轮注入 run_id 级随机前缀，避免跨轮 KV cache 污染。",
   "metadata": {
     "purpose": "gsm8k-long-input-concurrency-matrix",
     "workloads": [
-      "32K input / 2K output"
+      "32K input / 2K output",
+      "64K input / 4K output",
+      "128K input / 8K output",
+      "240K input / 16K output"
     ],
     "requests_per_case": "2 × concurrency",
     "round_isolation": "run_id prefix + normal benchmark round ID"
@@ -44,7 +47,7 @@
     }
   },
   "report": {
-    "path": "gsm8k-concurrency-matrix-32k-report-{timestamp}.json",
+    "path": "gsm8k-concurrency-matrix-report-{timestamp}.json",
     "include_request_details": false,
     "indent": 2
   },
@@ -65,6 +68,126 @@
       "params": {
         "gsm8k_input_len": 32768,
         "gsm8k_output_len": 2048
+      },
+      "matrix": {
+        "requests": [
+          {"concurrency": 1, "count": 2},
+          {"concurrency": 4, "count": 8},
+          {"concurrency": 8, "count": 16},
+          {"concurrency": 12, "count": 24},
+          {"concurrency": 16, "count": 32},
+          {"concurrency": 20, "count": 40},
+          {"concurrency": 30, "count": 60},
+          {"concurrency": 40, "count": 80},
+          {"concurrency": 50, "count": 100},
+          {"concurrency": 60, "count": 120},
+          {"concurrency": 70, "count": 140},
+          {"concurrency": 80, "count": 160},
+          {"concurrency": 90, "count": 180},
+          {"concurrency": 100, "count": 200},
+          {"concurrency": 120, "count": 240},
+          {"concurrency": 150, "count": 300},
+          {"concurrency": 180, "count": 360},
+          {"concurrency": 200, "count": 400}
+        ]
+      }
+    },
+    {
+      "name": "gsm8k-64k-output-4k",
+      "description": "GSM8K 64K 输入、4K 输出，18 个并发档位。",
+      "enabled": true,
+      "tags": [
+        "decode",
+        "gsm8k",
+        "concurrency-matrix",
+        "input-64k",
+        "output-4k",
+        "speculative-decoding"
+      ],
+      "scenario": "single",
+      "params": {
+        "gsm8k_input_len": 65536,
+        "gsm8k_output_len": 4096
+      },
+      "matrix": {
+        "requests": [
+          {"concurrency": 1, "count": 2},
+          {"concurrency": 4, "count": 8},
+          {"concurrency": 8, "count": 16},
+          {"concurrency": 12, "count": 24},
+          {"concurrency": 16, "count": 32},
+          {"concurrency": 20, "count": 40},
+          {"concurrency": 30, "count": 60},
+          {"concurrency": 40, "count": 80},
+          {"concurrency": 50, "count": 100},
+          {"concurrency": 60, "count": 120},
+          {"concurrency": 70, "count": 140},
+          {"concurrency": 80, "count": 160},
+          {"concurrency": 90, "count": 180},
+          {"concurrency": 100, "count": 200},
+          {"concurrency": 120, "count": 240},
+          {"concurrency": 150, "count": 300},
+          {"concurrency": 180, "count": 360},
+          {"concurrency": 200, "count": 400}
+        ]
+      }
+    },
+    {
+      "name": "gsm8k-128k-output-8k",
+      "description": "GSM8K 128K 输入、8K 输出，18 个并发档位。",
+      "enabled": true,
+      "tags": [
+        "decode",
+        "gsm8k",
+        "concurrency-matrix",
+        "input-128k",
+        "output-8k",
+        "speculative-decoding"
+      ],
+      "scenario": "single",
+      "params": {
+        "gsm8k_input_len": 131072,
+        "gsm8k_output_len": 8192
+      },
+      "matrix": {
+        "requests": [
+          {"concurrency": 1, "count": 2},
+          {"concurrency": 4, "count": 8},
+          {"concurrency": 8, "count": 16},
+          {"concurrency": 12, "count": 24},
+          {"concurrency": 16, "count": 32},
+          {"concurrency": 20, "count": 40},
+          {"concurrency": 30, "count": 60},
+          {"concurrency": 40, "count": 80},
+          {"concurrency": 50, "count": 100},
+          {"concurrency": 60, "count": 120},
+          {"concurrency": 70, "count": 140},
+          {"concurrency": 80, "count": 160},
+          {"concurrency": 90, "count": 180},
+          {"concurrency": 100, "count": 200},
+          {"concurrency": 120, "count": 240},
+          {"concurrency": 150, "count": 300},
+          {"concurrency": 180, "count": 360},
+          {"concurrency": 200, "count": 400}
+        ]
+      }
+    },
+    {
+      "name": "gsm8k-240k-output-16k",
+      "description": "GSM8K 240K 输入、16K 输出，18 个并发档位。",
+      "enabled": true,
+      "tags": [
+        "decode",
+        "gsm8k",
+        "concurrency-matrix",
+        "input-240k",
+        "output-16k",
+        "speculative-decoding"
+      ],
+      "scenario": "single",
+      "params": {
+        "gsm8k_input_len": 245760,
+        "gsm8k_output_len": 16384
       },
       "matrix": {
         "requests": [
