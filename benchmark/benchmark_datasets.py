@@ -720,11 +720,22 @@ class SonnetDataset(BenchmarkDataset):
 
 def _conversation_parts(entry: dict[str, Any]) -> tuple[str, str]:
     """Read the first two conversation turns from a ShareGPT record."""
-    conversations = entry.get("conversations", [])
-    if not isinstance(conversations, list) or len(conversations) < 2:
+    conversations = entry.get("conversations")
+    if not isinstance(conversations, list):
+        conversations = entry.get("conversation")
+    if (
+        not isinstance(conversations, list)
+        or len(conversations) < 1
+        or not isinstance(conversations[0], dict)
+    ):
         raise ValueError("sharegpt records must contain at least two turns")
-    prompt = conversations[0].get("value")
-    completion = conversations[1].get("value")
+    first_turn = conversations[0]
+    if len(conversations) > 1 and isinstance(conversations[1], dict):
+        prompt = first_turn.get("value") or first_turn.get("human")
+        completion = conversations[1].get("value") or conversations[1].get("assistant")
+    else:
+        prompt = first_turn.get("human")
+        completion = first_turn.get("assistant")
     if not isinstance(prompt, str) or not isinstance(completion, str) or not prompt:
         raise ValueError("sharegpt conversation turns must be non-empty strings")
     return prompt, completion
@@ -740,7 +751,7 @@ class ShareGptDataset(BenchmarkDataset):
         self.data = [
             entry
             for entry in self.data
-            if "conversations" in entry and len(entry["conversations"]) >= 2
+            if any(field in entry and entry.get(field) for field in ("conversations", "conversation"))
         ]
         if self.data and not self.disable_shuffle:
             random_module.Random(self.random_seed).shuffle(self.data)

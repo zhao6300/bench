@@ -550,10 +550,11 @@ uv run --no-project .venv/bin/python -m web.serve
 
 | 数据集 | 内容 | 本地规模 / 长度分布 | 适配方式 | 适用压测场景 |
 | --- | --- | --- | --- | --- |
-| `sonnet` | 多行诗句样本。 | 1 条记录，14 字符；等长复制样本。 | 参数 `sonnet_input_len`、`sonnet_output_len`、`sonnet_prefix_len` 控制 | 诗歌文本短请求、prefix cache 校准 |
-| `sharegpt` | 首轮提问 + 第二轮答案的多轮对话。 | 1 条本地示例记录。 | 读 `conversations` 前 2 轮，输出默认使用第二轮自然长度。 | 多轮对话短中等任务 |
-| `burstgpt` | 本地 CSV 中的 GPT-4 记录。 | 2 条记录；请求/响应 token 分别为 6/3、1/2。 | 从整数字段构造请求。 | token 混合型短请求 |
+| `sonnet` | 多行诗句样本。 | 518 条；平均 43 字符，p50 43，p95 50，max 59。 | 参数 `sonnet_input_len`、`sonnet_output_len`、`sonnet_prefix_len` 控制 | 诗歌文本短请求、prefix cache 校准 |
+| `sharegpt` | 首轮提问 + 第二轮答案的多轮对话。 | 20692 条；prompt 平均 326 字符，p50 108，max 5852；completion 平均 1207 字符，p50 1106，max 5971。 | 支持 `conversations` 和 `conversation`(human/assistant)，输出默认使用第二轮自然长度。 | 多轮对话短中长任务 |
+| `burstgpt` | 本地 CSV 中的 GPT-4 记录。 | 1404294 条；request token 平均 622，p50 262，p95 2466，max 29665；response token 平均 126，p50 36，p95 466，max 7315。 | 从整数字段构造请求。 | token 混合型请求和长尾吞吐压测 |
 | `hf` | 通用 Hugging Face 离线记录样本。 | 1 条记录；prompt 5 字符，completion 7 字符。 | 识别 `prompt`、`input`、`question` 和 `completion`、`response`、`answer`。 | 通用 prompt/completion 压测 |
+| `gsm8k` | 数学应用题。 | 1319 条 test、7473 条 train；复制后可用于受控长度压测。 | 读 `question` / `answer`，复制到目标长度并加轮次隔离前缀。 | 可控长度的推理复制负载、投机解码路径 |
 | `humaneval` | HumanEval 函数补全任务。 | 164 条；prompt 中位数 396 字符，p95 926，max 1360；canonical_solution 中位数 149，p95 437，max 864 字符。 | 从 `prompt` 构造请求，输出默认使用 `canonical_solution` 自然长度。 | 短代码任务、函数补全 |
 | `instructcoder` | 代码编辑指令任务。 | 5708 条；input 中位数 375 字符，instruction 中位数 101，output 中位数 538；output p95 1309，max 2576 字符。 | 从输入和编辑指令构造代码编辑请求。 | 中等长度代码编辑工作负载 |
 | `blazedit` | 整文件代码改写。 | 两个文件共 186 条：5K 文件 code 中位数 5514 字符，10K 文件 code 中位数 10433 字符。 | 长文件 + 独立 code 改写请求。 | 长上下文代码改写、中高输入/输出长度 |
@@ -567,6 +568,9 @@ uv run --no-project .venv/bin/python -m web.serve
 
 若数据源请求数不足，默认会按顺序循环复用；设置 `no_oversample: true` 时改为返回实际可用请求。`disable_shuffle: true` 对以上每个数据集都生效，用于保留源文件顺序。`blazedit_min_distance` / `blazedit_max_distance` 只选择对应 norm_distance 范围内的记录；`bfcl_categories` 可以传入 `simple`、`live_simple` 或 `multiple` 的逗号组合。
 
+`sonnet`、`sharegpt` 和 `burstgpt` 的来源、revision、许可证、行数与 SHA256 见
+`examples/datasets/_source.json`；`sonnet` 源数据来自 vLLM 仓库。
+
 coding / work 数据集的本地文件和来源清单位于 `examples/datasets/coding-work/`；详细的用途和文件对照见 `examples/datasets/coding-work/README.md`。
 
 当前 `swe_bench` 使用 `princeton-nlp/SWE-bench` 的全量 test split；每条记录保存 `repo`、
@@ -574,36 +578,20 @@ coding / work 数据集的本地文件和来源清单位于 `examples/datasets/c
 `patch` 的自然 token 长度；设置后会统一覆盖。完整来源、行数和 SHA256 见
 `examples/datasets/coding-work/_source.json`。
 
-### GSM8K
+### 通用数据集使用方式
 
-GSM8K 适合测试 GSM8K 风格文本的复制负载，便于观察 DSpark / DFlash2 等投机解码路径的收益。
+所有本地数据集都通过 `--dataset <name>` 选择，并通过 `--dataset-path` 指向本地文件。它们只读取本地数据，不会触发 Hugging Face 或 API 网络下载。`dataset_input_len` 与 `dataset_output_len` 可以统一覆盖多数本地离线数据集的长度；`no_oversample` 与 `disable_shuffle` 分别控制数据不足时是否循环复用、是否保留源文件顺序。
 
-- `gsm8k_input_len`：目标输入 token 数。
-- `gsm8k_output_len`：输出 token 上限。
-- `gsm8k_round_prefix_len`：轮次隔离前缀 token 数；设为 `0` 可关闭轮次标记。
-- `gsm8k_shared_prefix_ratio`：共享前缀占比；例如 `0.7` 表示约 70% 输入为共享前缀。
-- `seed`：在源数据中推导出起始偏移；同样 seed 和数据集会生成相同相邻序列，`num_requests` 不影响起始偏移。
-- `run_id`：每轮生成轮次前缀；同一轮共享，跨轮变化。
+GSM8K 是一个例外；由于它需要复制到目标长度，所以要使用专门的 `gsm8k_input_len`、`gsm8k_output_len`、`gsm8k_round_prefix_len` 和 `gsm8k_shared_prefix_ratio`，而不是 `dataset_input_len` / `dataset_output_len`。
 
-#### GSM8K 构造方法
-
-每个 GSM8K 请求由三段 token 组成：
-
-1. **轮次隔离前缀**：`gsm8k_round_prefix_len` 个 token 的 `【GSM8K-ROUND-{run_id}】` 标记；同一轮内请求共享，避免跨轮 KV cache 误命中。
-2. **共享前缀主体**：来自本轮第一条选中记录的 `Question:` 与 `Answer:` 段；与轮次前缀合计占 70% 或所配置共享比例。
-3. **每请求独有尾部**：来自每条请求自身对应记录的 `Question:` 与 `Answer:` 段；若单条不足，会循环补齐，保持目标输入长度。
-
-完整 test split 已整理到 `examples/datasets/gsm8k/openai-gsm8k-test.jsonl`，共 1319 条；完整 train split 位于 `examples/datasets/gsm8k/openai-gsm8k-train.jsonl`。源数据、revision、许可证与原始 parquet SHA256 见 `examples/datasets/gsm8k/_source.json`。
-
-### GSM8K CLI 示例
-
-不使用 JSON 配置时，也可以用单条 CLI 命令直接评估 GSM8K，例如：
+一个通用的本地数据集 CLI 模板如下：
 
 ```zsh
-llm-benchmark --mode api --dataset gsm8k --dataset-path examples/datasets/gsm8k/openai-gsm8k-test.jsonl --gsm8k-input-len 4096 --gsm8k-output-len 32 --gsm8k-round-prefix-len 32 --gsm8k-shared-prefix-ratio 0.7 --seed 42 --concurrency 8 --num-prompts 32 --model replace-with-served-model --tokenizer /path/to/local/tokenizer --api-base http://localhost:8001/v1
+llm-benchmark --mode api --dataset <dataset> --dataset-path <dataset-path> --model <served-model> --tokenizer <tokenizer-dir> --api-base http://localhost:8001/v1
 ```
 
-这条命令会发送真实请求；请先把 `model`、`tokenizer` 和 `api-base` 替换为当前服务的启动参数。
+这条命令会发送真实请求。`model`、`tokenizer` 和 `api-base` 必须先替换为当前服务的实际启动参数。
+
 
 ## 配置说明
 

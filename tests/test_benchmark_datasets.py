@@ -358,6 +358,26 @@ def test_sharegpt_dataset_uses_completion_length_in_hierarchy(tmp_path) -> None:
     assert batch.requests[0].request_id == "sharegpt-0"
 
 
+def test_sharegpt_dataset_reads_shareai_conversation_schema(tmp_path) -> None:
+    path = tmp_path / "sharegpt.json"
+    path.write_text(
+        '[{"conversation_id":"vtu3ZfW",'
+        '"conversation":[{"human":"hello","assistant":"answers"}]}]',
+        encoding="utf-8",
+    )
+
+    batch = ShareGptDataset(dataset_path=str(path), disable_shuffle=True).sample(
+        FakeTokenizer(),
+        num_requests=1,
+        request_id_prefix="sharegpt-",
+        output_len=7,
+    )
+
+    assert batch.prompt_lens == [5]
+    assert batch.output_lens == [7]
+    assert batch.prompts[0] == "hello"
+
+
 def test_humaneval_dataset_uses_prompt_and_native_output_length(tmp_path) -> None:
     path = tmp_path / "humaneval.jsonl"
     path.write_text(

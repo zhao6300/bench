@@ -1,0 +1,37 @@
+{
+  "datasets": [
+    {
+      "name": "sonnet",
+      "source": "vllm-project/vllm",
+      "revision": "main",
+      "license": "Apache-2.0",
+      "source_file": "benchmarks/sonnet.txt",
+      "output_file": "sonnet.txt",
+      "sha256": "05999988918d1b9279789819c02b96c21ad7ea4cebea4face541c2210f7788e9"
+    },
+    {
+      "name": "sharegpt",
+      "source": "shareAI/ShareGPT-Chinese-English-90k",
+      "revision": "3d4c1c60b786129304a952f78b27b2d74e1f87c2",
+      "license": "Apache-2.0",
+      "config": "default",
+      "split": "computer_en_26k",
+      "source_file": "shareGPT/computer_en_26k.jsonl",
+      "output_file": "local-sharegpt.json",
+      "records": 20692,
+      "sha256": "c0fb7136f6d00432d528a269614a29a2fb23f8937a30c1e40b56c43ea5ab9d06"
+    },
+    {
+      "name": "burstgpt",
+      "source": "lzzmm/BurstGPT",
+      "revision": "46208e6e8f710e67660d98d986e31276f623678b",
+      "license": null,
+      "config": "default",
+      "split": "without_fails_1",
+      "source_file": "data/BurstGPT_without_fails_1.csv",
+      "output_file": "burstgpt.csv",
+      "records": 1404294,
+      "sha256": "fcdb2af0c81cdb10340345615d80a6cc736416f4e52d75430aee02b47d51b15e"
+    }
+  ]
+}
