@@ -629,6 +629,10 @@ llm-benchmark --mode api --dataset <dataset> --dataset-path <dataset-path> --mod
 
 阶段活动窗口包含客户端可观测的排队与网络延迟，不等同于服务端 scheduler 的纯 GPU 计算时间。若输出 token 数无法通过服务端 usage 或本地 tokenizer 可靠确定，依赖该计数的指标会被省略而非估算。
 
+### 投机解码接受率
+
+若 vLLM 已设置 `--per-request-spec-decode-metrics summary`，流式最终 usage chunk 会携带 `metrics.speculative_decoding`。工具会按请求保留原始指标，并在 round 指标中写入 `speculative_decoding`：`draft_acceptance_rate` 是接受/提案 token 比例，`mean_acceptance_length` 是每 step 平均接受长度，另含请求覆盖数、步数、draft/proposal/accepted token 总数和接受直方图。若服务未开启该功能，报告会省略该字段而不会估算。
+
 ### 服务端 KV Cache 命中率
 
 API round 会通过与 chat-completions 相同鉴权头访问服务端 `/metrics`；正式流式请求使用 `aiohttp` 时，该 Prometheus 采样仍使用 `requests`。对 SGLang 暴露的 `sglang:cache_hit_rate`，报告保留测试窗口内活跃快照的 min/avg/max 与分位数；该指标是服务端直接导出的 gauge，缺少原始 hit/query counter 时不能正确换算为 rate。

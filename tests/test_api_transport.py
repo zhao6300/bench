@@ -15,6 +15,7 @@ from benchmark import benchmark as benchmark_module
 from benchmark.api_transport import finalize_stream_result
 from benchmark.benchmark import (
     BenchmarkConfigError,
+    _aggregate_spec_decode_metrics,
     _build_case_args,
     build_parser,
     load_suite_config,
@@ -68,6 +69,82 @@ class _FakeAsyncSession:
     def post(self, url: str, **kwargs: Any) -> _FakeAsyncRequestContext:
         self.calls.append({"url": url, **kwargs})
         return _FakeAsyncRequestContext(self._response)
+
+
+def test_aiohttp_request_collects_speculative_decoding_metrics() -> None:
+    """Per-request speculative metrics survive stream finalization."""
+    speculative_metrics: dict[str, object] = {
+        "mean_acceptance_length": 2.0,
+        "draft_acceptance_rate": 0.5,
+        "acceptance_histogram": [1, 0, 1],
+        "num_spec_steps": 2,
+        "num_accepted_draft_tokens": 1,
+        "num_draft_tokens": 2,
+        "num_spec_tokens": 2,
+    }
+    response = _FakeAsyncResponse([
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+        (
+            'data: {"usage":{"completion_tokens":1,"prompt_tokens":2},'
+            f'"metrics":{{"speculative_decoding":{json.dumps(speculative_metrics)}}}}}\n\n'
+        ).encode("utf-8"),
+        b"data: [DONE]",
+    ])
+    session = _FakeAsyncSession(response)
+
+    result = _run(api_transport.send_aiohttp_chat_request(
+        0,
+        "prompt",
+        "http://localhost:8000/v1/chat/completions",
+        {},
+        "model",
+        4,
+        session,
+    ))
+    finalize_stream_result(result, None)
+
+    assert result["speculative_metrics"] == speculative_metrics
+
+
+def test_spec_decode_metrics_aggregate_sum_and_rates() -> None:
+    """Round metrics sum per-request counters and derive acceptance rates."""
+    metrics = _aggregate_spec_decode_metrics(
+        [
+            {
+                "speculative_metrics": {
+                    "num_spec_steps": 2,
+                    "num_accepted_draft_tokens": 1,
+                    "num_draft_tokens": 3,
+                    "num_spec_tokens": 3,
+                    "acceptance_histogram": [1, 0, 1],
+                },
+            },
+            {
+                "speculative_metrics": {
+                    "num_spec_steps": 3,
+                    "num_accepted_draft_tokens": 2,
+                    "num_draft_tokens": 3,
+                    "num_spec_tokens": 3,
+                    "acceptance_histogram": [0, 2, 0],
+                },
+            },
+        ],
+        successful_count=2,
+    )
+
+    assert metrics == {
+        "source": "vllm_metrics.speculative_decoding",
+        "aggregation": "sum",
+        "request_count": 2,
+        "missing_request_count": 0,
+        "num_spec_steps": 5,
+        "num_draft_tokens": 6,
+        "num_accepted_draft_tokens": 3,
+        "num_spec_tokens": 3,
+        "draft_acceptance_rate": 0.5,
+        "mean_acceptance_length": 0.6,
+        "acceptance_histogram": [1, 2, 1],
+    }
 
 
 class _FallbackTokenizer:

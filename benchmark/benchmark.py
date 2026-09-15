@@ -1804,6 +1804,86 @@ def _request_meets_slo(result, slo_ttft, slo_tpot):
     return _is_finite_number(tpot) and tpot <= slo_tpot
 
 
+def _aggregate_spec_decode_metrics(results, successful_count: int):
+    """Aggregate per-request vLLM speculative decoding metrics.
+
+    The source object is experimental per vLLM docs, so invalid or absent
+    request metrics must not make the whole benchmark round fail.
+
+    Args:
+        results: Completed request records for one benchmark round.
+        successful_count: Number of successful requests in ``results``.
+
+    Returns:
+        A summed acceptance summary, or ``None`` when no request reports one.
+    """
+    counters = (
+        ("num_spec_steps", int),
+        ("num_draft_tokens", int),
+        ("num_accepted_draft_tokens", int),
+        ("num_spec_tokens", int),
+    )
+    totals: dict[str, int] = {name: 0 for name, _ in counters}
+    histograms: list[list[int]] = []
+    request_count = 0
+    max_spec_tokens: int | None = None
+    for result in results:
+        speculative_metrics = result.get("speculative_metrics")
+        if not isinstance(speculative_metrics, dict):
+            continue
+        values: list[int] = []
+        for name, expected_type in counters:
+            value = speculative_metrics.get(name)
+            if isinstance(value, bool) or not isinstance(value, expected_type):
+                values.append(-1)
+                continue
+            values.append(value)
+        if any(value < 0 for value in values):
+            continue
+        histogram = speculative_metrics.get("acceptance_histogram")
+        histogram_valid = (
+            isinstance(histogram, list)
+            and all(
+                isinstance(value, int) and not isinstance(value, bool)
+                and value >= 0
+                for value in histogram
+            )
+        )
+        if histogram_valid:
+            histograms.append(list(histogram))
+        request_count += 1
+        for name, value in zip(
+            (name for name, _ in counters),
+            values,
+            strict=True,
+        ):
+            totals[name] += value
+        max_spec_tokens = max(max_spec_tokens or 0, values[3])
+
+    if not request_count:
+        return None
+    accepted = max(totals["num_accepted_draft_tokens"], 0)
+    drafts = max(totals["num_draft_tokens"], 0)
+    steps = max(totals["num_spec_steps"], 0)
+    summary: dict[str, Any] = {
+        "source": "vllm_metrics.speculative_decoding",
+        "aggregation": "sum",
+        "request_count": request_count,
+        "missing_request_count": max(0, successful_count - request_count),
+        "num_spec_steps": steps,
+        "num_draft_tokens": drafts,
+        "num_accepted_draft_tokens": accepted,
+        "num_spec_tokens": max_spec_tokens,
+        "draft_acceptance_rate": accepted / drafts if drafts > 0 else None,
+        "mean_acceptance_length": accepted / steps if steps > 0 else None,
+    }
+    if histograms and len({len(histogram) for histogram in histograms}) == 1:
+        summary["acceptance_histogram"] = [
+            sum(values) for values in zip(*histograms, strict=True)
+        ]
+    return summary
+
+
 def _summarize_pacing(
     target_rps: float | None,
     admissions: list[dict[str, float]],
@@ -2068,6 +2148,9 @@ def _aggregate_api_round_metrics(
             if output_token_count_complete else None
         ),
         "avg_prompt_len": total_prompt_tokens / successful_count if successful_count else None,
+        "speculative_decoding": _aggregate_spec_decode_metrics(
+            results, successful_count
+        ),
         "server_metrics": server_metrics,
         "server_metrics_peak": server_metrics,
         "earliest_token_request_id": (
@@ -2581,6 +2664,30 @@ def print_benchmark_metrics(metrics, workload):
 
     # ── GPU / KV Cache Utilization ──
     _print_server_metrics(m.get("server_metrics", m.get("server_metrics_peak", {})))
+    speculative_decoding = m.get("speculative_decoding")
+    if speculative_decoding:
+        print("\n  ── 投机解码接受率 ──")
+        print(
+            f"    覆盖请求 / 成功请求      : "
+            f"{speculative_decoding['request_count']} / {m['successful']}"
+        )
+        print(
+            f"    Draft 接受率             : "
+            f"{speculative_decoding['draft_acceptance_rate'] * 100:.1f}%"
+        )
+        print(
+            f"    平均接受长度             : "
+            f"{speculative_decoding['mean_acceptance_length']:.3f} draft token/step"
+        )
+        print(
+            f"    接受 / 提案 / 步数       : "
+            f"{speculative_decoding['num_accepted_draft_tokens']} / "
+            f"{speculative_decoding['num_draft_tokens']} / "
+            f"{speculative_decoding['num_spec_steps']}"
+        )
+        histogram = speculative_decoding.get("acceptance_histogram")
+        if histogram:
+            print(f"    接受直方图               : {histogram}")
 
     first_result = min(
         (result for result in m["results"] if result.get("first_token_timestamp") is not None),

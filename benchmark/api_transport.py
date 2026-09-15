@@ -92,6 +92,7 @@ class _StreamRecordBuilder:
         self.full_text = ""
         self.usage_completion_tokens: int | None = None
         self.usage_prompt_tokens: int | None = None
+        self.request_metrics: dict[str, Any] = {}
 
     def consume(self, data: str) -> None:
         """Consume one SSE data payload without blocking on tokenizer work.
@@ -110,6 +111,10 @@ class _StreamRecordBuilder:
                 self.usage_completion_tokens = usage["completion_tokens"]
             if usage.get("prompt_tokens") is not None:
                 self.usage_prompt_tokens = usage["prompt_tokens"]
+
+        metrics = chunk.get("metrics")
+        if isinstance(metrics, dict):
+            self.request_metrics = metrics
 
         choices = chunk.get("choices", [])
         if not choices:
@@ -164,6 +169,7 @@ class _StreamRecordBuilder:
             "_stream_content_events": self.content_events,
             "_stream_full_text": self.full_text,
             "_stream_usage_completion_tokens": self.usage_completion_tokens,
+            "_stream_request_metrics": self.request_metrics,
         }
 
 
@@ -193,6 +199,7 @@ def finalize_stream_result(result: RequestResult, tokenizer: Any | None) -> None
     content_events = result.pop("_stream_content_events", None)
     full_text = result.pop("_stream_full_text", "")
     usage_completion_tokens = result.pop("_stream_usage_completion_tokens", None)
+    request_metrics = result.pop("_stream_request_metrics", None)
     if not content_events:
         return
 
@@ -231,6 +238,10 @@ def finalize_stream_result(result: RequestResult, tokenizer: Any | None) -> None
     result["output_token_source"] = output_token_source
     result["tpot"] = tpot
     result["estimated_itl_samples"] = estimated_itl_samples
+    result["speculative_metrics"] = (
+        request_metrics.get("speculative_decoding")
+        if isinstance(request_metrics, dict) else None
+    )
 
 
 def finalize_stream_results(results: list[RequestResult], tokenizer: Any | None) -> None:
