@@ -556,6 +556,7 @@ uv run --no-project .venv/bin/python -m web.serve
 - `instructcoder`：读取输入与编辑指令并格式化为代码改写请求；默认输出上限 200。
 - `blazedit`：读取整文件代码、改写请求和改写距离；默认输出上限 4000。
 - `bfcl`：读取 BFCL 聊天首turn与 function schema，转换为包含工具说明的纯文本压测负载；默认输出上限 512。
+- `swe_bench`：读取 SWE-bench `problem_statement` 与 `patch`，构造 issue 风格编码工作负载。
 
 这些数据集共用 `dataset_input_len` 统一覆盖输入 token 长度，也支持 `dataset_output_len`
 统一覆盖输出上限，并可以继续使用 `share_prefix` 与 `prefix_ratio` 控制 KV-cache
@@ -565,6 +566,11 @@ uv run --no-project .venv/bin/python -m web.serve
 若数据源请求数不足，默认会按顺序循环复用；设置 `no_oversample: true` 时改为返回实际可用请求。`disable_shuffle: true` 对以上每个数据集都生效，用于保留源文件顺序。`blazedit_min_distance` / `blazedit_max_distance` 只选择对应 norm_distance 范围内的记录；`bfcl_categories` 可以传入 `simple`、`live_simple` 或 `multiple` 的逗号组合。
 
 coding / work 数据集的本地文件和来源清单位于 `examples/datasets/coding-work/`；详细的用途和文件对照见 `examples/datasets/coding-work/README.md`。
+
+当前 `swe_bench` 使用 `princeton-nlp/SWE-bench` 的全量 test split；每条记录保存 `repo`、
+`instance_id`、`problem_statement` 和 `patch`。若未设置 `dataset_output_len`，默认使用
+`patch` 的自然 token 长度；设置后会统一覆盖。完整来源、行数和 SHA256 见
+`examples/datasets/coding-work/_source.json`。
 
 ### GSM8K
 

@@ -259,6 +259,7 @@ try:
         InstructCoderDataset,
         ShareGptDataset,
         SonnetDataset,
+        SweBenchDataset,
         TextDataset,
         create_dataset,
         parse_range_ratio,
@@ -314,6 +315,7 @@ except ImportError:
         InstructCoderDataset,
         ShareGptDataset,
         SonnetDataset,
+        SweBenchDataset,
         TextDataset,
         create_dataset,
         parse_range_ratio,
@@ -806,6 +808,7 @@ def build_request_batch(
             "instructcoder",
             "blazedit",
             "bfcl",
+            "swe_bench",
         }
         and dataset is None
     ):
@@ -970,6 +973,27 @@ def build_request_batch(
             share_prefix=args.share_prefix if share_prefix is None else share_prefix,
             prefix_ratio=args.prefix_ratio,
             categories=args.bfcl_categories,
+        )
+    if dataset_name == "swe_bench":
+        swe_bench_dataset = dataset
+        if not isinstance(swe_bench_dataset, SweBenchDataset):
+            raise ValueError("swe_bench dataset selection requires a SweBenchDataset instance")
+        return swe_bench_dataset.sample(
+            tokenizer,
+            num_requests,
+            input_len=(
+                specific_input_len
+                if specific_input_len is not None
+                else unified_input_len
+            ),
+            output_len=(
+                resolved_output_len
+                if output_len is not None
+                else specific_output_len if specific_output_len is not None else unified_output_len
+            ),
+            no_oversample=args.no_oversample,
+            share_prefix=args.share_prefix if share_prefix is None else share_prefix,
+            prefix_ratio=args.prefix_ratio,
         )
     if dataset_name == "text":
         text_dataset = dataset if dataset is not None else TextDataset(random_seed=args.seed)
@@ -4865,10 +4889,12 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
             "instructcoder",
             "blazedit",
             "bfcl",
+            "swe_bench",
         }:
             raise BenchmarkConfigError(
                 f"{location}.dataset must be text, random, sonnet, sharegpt, "
-                "burstgpt, hf, gsm8k, humaneval, instructcoder, blazedit or bfcl"
+                "burstgpt, hf, gsm8k, humaneval, instructcoder, blazedit, bfcl "
+                "or swe_bench"
             )
         if not isinstance(args.dataset_path, str) or not Path(args.dataset_path).is_file():
             raise BenchmarkConfigError(
@@ -6803,15 +6829,15 @@ def build_parser() -> argparse.ArgumentParser:
              "不填则默认与 --model 相同"
     )
     parser.add_argument(
-        "--dataset", choices=["text", "random", "sonnet", "sharegpt", "burstgpt", "hf", "gsm8k"], default=None,
+        "--dataset", choices=["text", "random", "sonnet", "sharegpt", "burstgpt", "hf", "gsm8k", "swe_bench"], default=None,
         help="测试数据集：text 使用中文填充文本；random 合成 token；"
              "sonnet/sharegpt/burstgpt/hf/gsm8k/humaneval/instructcoder/"
-             "blazedit/bfcl 使用本地移植数据集"
+             "blazedit/bfcl/swe_bench 使用本地移植数据集"
     )
     parser.add_argument(
         "--dataset-path", default=None,
         help="[sonnet/sharegpt/burstgpt/hf/gsm8k/humaneval/instructcoder/"
-             "blazedit/bfcl数据集] 本地 JSON/JSONL/CSV/text 文件路径"
+             "blazedit/bfcl/swe_bench数据集] 本地 JSON/JSONL/CSV/text 文件路径"
     )
     parser.add_argument(
         "--no-oversample", action="store_true",

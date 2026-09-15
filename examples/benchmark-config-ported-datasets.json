@@ -119,6 +119,18 @@
         "dataset_output_len": 8,
         "requests": {"concurrency": 1, "count": 1}
       }
+    },
+    {
+      "name": "swe_bench-sample",
+      "tags": ["dataset", "swe-bench", "coding"],
+      "scenario": "single",
+      "enabled": false,
+      "params": {
+        "dataset": "swe_bench",
+        "dataset_path": "examples/datasets/coding-work/princeton-swe-bench-test.jsonl",
+        "dataset_output_len": 32,
+        "requests": {"concurrency": 1, "count": 1}
+      }
     }
   ]
 }

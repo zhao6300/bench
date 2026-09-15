@@ -53,6 +53,16 @@
         "live_simple": "b398743e6c0dfd2a87cee97a3bc1b9b90b81edc228c3153a820a93b51186fc00",
         "multiple": "aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a"
       }
+    },
+    {
+      "source": "princeton-nlp/SWE-bench",
+      "revision": "e48e2bd1e9fecd5bbd641e9414ac59da9f2e69f6",
+      "license": null,
+      "config": "default",
+      "split": "test",
+      "records": 2294,
+      "output_file": "princeton-swe-bench-test.jsonl",
+      "sha256": "11cc8c4b4d5e7fbd50d91e622e9ae7c539723ecd79c97c8a048faba0854fbf10"
     }
   ]
 }

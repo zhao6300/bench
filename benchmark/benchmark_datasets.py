@@ -1011,6 +1011,13 @@ class HumanEvalDataset(BenchmarkDataset):
         return DatasetBatch(requests)
 
 
+class SweBenchDataset(HumanEvalDataset):
+    """Offline adapter for the full SWE-bench issue-to-patch workload."""
+
+    PROMPT_KEYS = ("problem_statement",)
+    OUTPUT_KEYS = ("patch",)
+
+
 class InstructCoderDataset(BenchmarkDataset):
     """Offline adapter for the InstructCoder validation editing workload."""
 
@@ -1511,8 +1518,10 @@ def create_dataset(
         return BlazeditDataset(**path_args)
     if name == "bfcl":
         return BfclDataset(**path_args)
+    if name == "swe_bench":
+        return SweBenchDataset(**path_args)
     raise ValueError(
         f"unknown benchmark dataset {name!r}; expected "
         "'text', 'random', 'sonnet', 'sharegpt', 'burstgpt', 'hf', 'gsm8k', "
-        "'humaneval', 'instructcoder', 'blazedit' or 'bfcl'"
+        "'humaneval', 'instructcoder', 'blazedit', 'bfcl' or 'swe_bench'"
     )

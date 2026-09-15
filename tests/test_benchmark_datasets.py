@@ -17,6 +17,7 @@ from benchmark.benchmark_datasets import (
     RandomDataset,
     ShareGptDataset,
     SonnetDataset,
+    SweBenchDataset,
     TextDataset,
     create_dataset,
     parse_range_ratio,
@@ -315,6 +316,9 @@ def test_create_dataset_builds_local_ported_datasets(tmp_path) -> None:
     assert isinstance(
         create_dataset("bfcl", dataset_path=str(local_port_path)), BfclDataset
     )
+    assert isinstance(
+        create_dataset("swe_bench", dataset_path=str(local_port_path)), SweBenchDataset
+    )
 
 
 def test_humaneval_dataset_expands_prompt_to_requested_input_length(tmp_path) -> None:
@@ -429,6 +433,24 @@ def test_bfcl_dataset_translates_function_schema(tmp_path) -> None:
     assert batch.output_lens == [9]
     assert "Find area" in batch.prompts[0][0]
     assert '"type":"object"' in batch.prompts[0][0]
+
+
+def test_swe_bench_dataset_uses_issue_and_patch_lengths(tmp_path) -> None:
+    path = tmp_path / "swe-bench.jsonl"
+    path.write_text(
+        '{"problem_statement":"fix the bug","patch":"diff"}\n',
+        encoding="utf-8",
+    )
+
+    batch = SweBenchDataset(dataset_path=str(path), disable_shuffle=True).sample(
+        FakeTokenizer(),
+        num_requests=1,
+        request_id_prefix="swebench-",
+    )
+
+    assert batch.prompt_lens == [11]
+    assert batch.output_lens == [4]
+    assert batch.prompts[0][0] == "fix the bug"
 
 
 def test_burstgpt_dataset_filters_rows_and_synthesizes_tokens(tmp_path) -> None:
