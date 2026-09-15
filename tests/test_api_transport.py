@@ -182,18 +182,93 @@ def test_spec_decode_metrics_aggregates_detailed_per_position_rates() -> None:
     ]
 
 
-def test_spec_decode_metrics_derives_per_position_for_full_draft_summary() -> None:
-    """A full-draft summary can exactly derive position acceptance counters."""
+def test_spec_decode_metrics_position_count_follows_each_server_method() -> None:
+    """MTP and DSpark positions are inferred from their own reported arrays."""
     metrics = _aggregate_spec_decode_metrics(
         [
             {
                 "speculative_metrics": {
                     "num_spec_steps": 2,
-                    "num_accepted_draft_tokens": 2,
-                    "num_draft_tokens": 3,
+                    "num_accepted_draft_tokens": 3,
+                    "num_draft_tokens": 6,
                     "num_spec_tokens": 3,
-                    "per_step_accepted": [2, 0, 0],
-                    "per_step_drafted": [3, 2, 0],
+                    "per_step_accepted": [2, 1, 0],
+                    "per_step_drafted": [2, 2, 2],
+                },
+            },
+            {
+                "speculative_metrics": {
+                    "num_spec_steps": 1,
+                    "num_accepted_draft_tokens": 1,
+                    "num_draft_tokens": 7,
+                    "num_spec_tokens": 7,
+                    "per_step_accepted": [1, 0, 0, 0, 0, 0, 0],
+                    "per_step_drafted": [7, 7, 7, 7, 7, 7, 7],
+                },
+            },
+        ],
+        successful_count=2,
+    )
+
+    assert metrics["num_spec_tokens"] == 7
+    assert metrics["per_position_request_count"] == 2
+    assert metrics["per_position"] == [
+        {
+            "position": 1,
+            "num_accepted_draft_tokens": 3,
+            "num_draft_tokens": 10,
+            "draft_acceptance_rate": 0.3,
+        },
+        {
+            "position": 2,
+            "num_accepted_draft_tokens": 1,
+            "num_draft_tokens": 10,
+            "draft_acceptance_rate": 0.1,
+        },
+        {
+            "position": 3,
+            "num_accepted_draft_tokens": 0,
+            "num_draft_tokens": 7,
+            "draft_acceptance_rate": 0.0,
+        },
+        {
+            "position": 4,
+            "num_accepted_draft_tokens": 0,
+            "num_draft_tokens": 7,
+            "draft_acceptance_rate": 0.0,
+        },
+        {
+            "position": 5,
+            "num_accepted_draft_tokens": 0,
+            "num_draft_tokens": 7,
+            "draft_acceptance_rate": 0.0,
+        },
+        {
+            "position": 6,
+            "num_accepted_draft_tokens": 0,
+            "num_draft_tokens": 7,
+            "draft_acceptance_rate": 0.0,
+        },
+        {
+            "position": 7,
+            "num_accepted_draft_tokens": 0,
+            "num_draft_tokens": 7,
+            "draft_acceptance_rate": 0.0,
+        },
+    ]
+
+
+def test_spec_decode_metrics_derives_per_position_for_full_draft_summary() -> None:
+    """A full-draft summary exposes every server-reported position exactly."""
+    metrics = _aggregate_spec_decode_metrics(
+        [
+            {
+                "speculative_metrics": {
+                    "num_spec_steps": 2,
+                    "num_accepted_draft_tokens": 12,
+                    "num_draft_tokens": 14,
+                    "num_spec_tokens": 7,
+                    "acceptance_histogram": [0, 0, 0, 0, 0, 0, 2, 0],
                 },
             },
         ],
@@ -202,23 +277,12 @@ def test_spec_decode_metrics_derives_per_position_for_full_draft_summary() -> No
 
     assert metrics["per_position"] == [
         {
-            "position": 1,
-            "num_accepted_draft_tokens": 1,
+            "position": position,
+            "num_accepted_draft_tokens": 2 if position < 7 else 0,
             "num_draft_tokens": 2,
-            "draft_acceptance_rate": 0.5,
-        },
-        {
-            "position": 2,
-            "num_accepted_draft_tokens": 1,
-            "num_draft_tokens": 2,
-            "draft_acceptance_rate": 0.5,
-        },
-        {
-            "position": 3,
-            "num_accepted_draft_tokens": 0,
-            "num_draft_tokens": 1,
-            "draft_acceptance_rate": 0.0,
-        },
+            "draft_acceptance_rate": 1.0 if position < 7 else 0.0,
+        }
+        for position in range(1, 8)
     ]
 
 

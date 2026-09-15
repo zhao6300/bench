@@ -1860,14 +1860,12 @@ def _aggregate_spec_decode_metrics(results, successful_count: int):
         position_counters = _parse_spec_decode_per_step_metrics(
             per_step_accepted,
             per_step_drafted,
-            values[3],
         )
-        if position_counters is None and values[3] > 0 and histogram_valid:
+        if position_counters is None and histogram_valid:
             position_counters = _position_metrics_from_histogram(
                 histogram,
                 values[0],
                 values[1],
-                values[3],
             )
         if position_counters is not None:
             position_metrics_count += 1
@@ -1929,15 +1927,12 @@ def _aggregate_spec_decode_metrics(results, successful_count: int):
 def _parse_spec_decode_per_step_metrics(
     per_step_accepted: Any,
     per_step_drafted: Any,
-    num_spec_tokens: int,
 ) -> list[tuple[int, int]] | None:
     """Validate detailed speculative metrics and project them by position.
 
     Args:
         per_step_accepted: vLLM ordered accepted draft count for every step.
         per_step_drafted: vLLM ordered drafted token count for every step.
-        num_spec_tokens: Maximum speculative token position count.
-
     Returns:
         A list indexed from position 1 with ``(drafted, accepted)`` counters,
         or ``None`` when the detailed payload is absent or invalid.
@@ -1963,15 +1958,10 @@ def _parse_spec_decode_per_step_metrics(
         )
     ):
         return None
-    if num_spec_tokens < max(
-        per_step_drafted,
-        default=0,
-    ):
+    position_count = max(per_step_drafted, default=0)
+    if position_count <= 0:
         return None
-
-    positions: list[tuple[int, int]] = [
-        (0, 0) for _ in range(num_spec_tokens)
-    ]
+    positions: list[tuple[int, int]] = [(0, 0) for _ in range(position_count)]
     for accepted, drafted in zip(
         per_step_accepted,
         per_step_drafted,
@@ -1990,7 +1980,6 @@ def _position_metrics_from_histogram(
     histogram: list[int],
     num_spec_steps: int,
     num_draft_tokens: int,
-    num_spec_tokens: int,
 ) -> list[tuple[int, int]] | None:
     """Derive position metrics only when every step drafted all positions.
 
@@ -1998,12 +1987,11 @@ def _position_metrics_from_histogram(
         histogram: Dense histogram indexed by accepted draft-token count.
         num_spec_steps: Number of verification steps.
         num_draft_tokens: Total drafted tokens reported by vLLM.
-        num_spec_tokens: Maximum speculative token position count.
-
     Returns:
         Position counters indexed from position 1, or ``None`` when the
         summary alone cannot determine whether every position was proposed.
     """
+    num_spec_tokens = len(histogram) - 1
     if num_spec_tokens <= 0 or num_spec_steps <= 0:
         return None
     if len(histogram) != num_spec_tokens + 1:
