@@ -7,9 +7,13 @@ import pytest
 from benchmark.benchmark import build_request_batch
 from benchmark.benchmark_datasets import (
     BenchmarkDataset,
+    BfclDataset,
+    BlazeditDataset,
     BurstGptDataset,
     Gsm8kDataset,
     HuggingFaceDataset,
+    HumanEvalDataset,
+    InstructCoderDataset,
     RandomDataset,
     ShareGptDataset,
     SonnetDataset,
@@ -28,7 +32,9 @@ class FakeTokenizer:
     def encode(self, text: str, **kwargs: object) -> list[int]:
         del kwargs
         return [
-            ord(char) - 0xE000 if 0xE000 <= ord(char) < 0xE000 + self.vocab_size else ord(char)
+            ord(char) - 0xE000
+            if 0xE000 <= ord(char) < 0xE000 + self.vocab_size
+            else ord(char)
             for char in text
         ]
 
@@ -73,7 +79,9 @@ class LineTokenizer(FakeTokenizer):
         ((0.3, 0.4), (0.3, 0.4)),
     ],
 )
-def test_parse_range_ratio_accepts_single_and_pair_values(value: object, expected: tuple[float, float]) -> None:
+def test_parse_range_ratio_accepts_single_and_pair_values(
+    value: object, expected: tuple[float, float]
+) -> None:
     assert parse_range_ratio(value) == expected
 
 
@@ -113,7 +121,9 @@ def test_text_dataset_validates_lengths_and_prefix_ratio() -> None:
     with pytest.raises(ValueError, match="output_len"):
         dataset.sample(tokenizer, num_requests=1, input_len=1, output_len=0)
     with pytest.raises(ValueError, match="prefix_ratio"):
-        dataset.sample(tokenizer, num_requests=1, input_len=1, output_len=1, prefix_ratio=1.1)
+        dataset.sample(
+            tokenizer, num_requests=1, input_len=1, output_len=1, prefix_ratio=1.1
+        )
 
 
 def test_random_dataset_preserves_cached_shared_prefix_and_lengths() -> None:
@@ -143,8 +153,14 @@ def test_random_dataset_preserves_cached_shared_prefix_and_lengths() -> None:
     assert first_batch.output_lens == [3, 3]
     assert first_batch.shared_prefix_len == 4
     assert second_batch.shared_prefix_len == 4
-    assert tokenizer.encode(first_batch.prompts[0])[:4] == tokenizer.encode(second_batch.prompts[0])[:4]
-    assert [request.request_id for request in first_batch.requests] == ["first-0", "first-1"]
+    assert (
+        tokenizer.encode(first_batch.prompts[0])[:4]
+        == tokenizer.encode(second_batch.prompts[0])[:4]
+    )
+    assert [request.request_id for request in first_batch.requests] == [
+        "first-0",
+        "first-1",
+    ]
 
 
 def test_random_dataset_repairs_non_reversible_tokenizer_lengths() -> None:
@@ -161,7 +177,8 @@ def test_random_dataset_repairs_non_reversible_tokenizer_lengths() -> None:
     assert batch.prompt_lens == [8, 8]
     assert batch.shared_prefix_len == 2
     assert all(
-        len(tokenizer.encode(request.prompt, add_special_tokens=False)) == request.prompt_len
+        len(tokenizer.encode(request.prompt, add_special_tokens=False))
+        == request.prompt_len
         for request in batch.requests
     )
 
@@ -180,6 +197,57 @@ def test_random_dataset_rejects_unrepairable_tokenizer_length() -> None:
 def test_create_dataset_rejects_unknown_name() -> None:
     with pytest.raises(ValueError, match="unknown benchmark dataset"):
         create_dataset("unsupported")
+
+
+def test_dataset_output_len_applies_to_new_local_datasets(tmp_path) -> None:
+    path = tmp_path / "humaneval.jsonl"
+    path.write_text(
+        '{"prompt":"write code","canonical_solution":"solution"}\n',
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        dataset="humaneval",
+        dataset_path=str(path),
+        context_len=128,
+        max_tokens=128,
+        random_seed=None,
+        seed=1,
+        no_oversample=False,
+        disable_shuffle=True,
+        dataset_output_len=3,
+        share_prefix=False,
+        prefix_ratio=1.0,
+    )
+
+    batch = build_request_batch(args, FakeTokenizer(), num_requests=1)
+
+    assert batch.output_lens == [3]
+
+
+def test_dataset_specific_output_len_stays_backward_compatible(tmp_path) -> None:
+    path = tmp_path / "humaneval.jsonl"
+    path.write_text(
+        '{"prompt":"write code","canonical_solution":"solution"}\n',
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        dataset="humaneval",
+        dataset_path=str(path),
+        context_len=128,
+        max_tokens=128,
+        random_seed=None,
+        seed=1,
+        no_oversample=False,
+        disable_shuffle=True,
+        dataset_output_len=3,
+        humaneval_output_len=5,
+        share_prefix=False,
+        prefix_ratio=1.0,
+    )
+
+    batch = build_request_batch(args, FakeTokenizer(), num_requests=1)
+
+    assert batch.output_lens == [5]
 
 
 def test_sonnet_dataset_port_uses_prefix_and_native_lengths(tmp_path) -> None:
@@ -219,8 +287,12 @@ def test_create_dataset_builds_local_ported_datasets(tmp_path) -> None:
     )
     hf_path = tmp_path / "records.jsonl"
     hf_path.write_text('{"question":"question","answer":"answers"}\n', encoding="utf-8")
+    local_port_path = tmp_path / "records.ndjson"
+    local_port_path.write_text('{"prompt":"code"}\n', encoding="utf-8")
 
-    assert isinstance(create_dataset("sonnet", dataset_path=str(sonnet_path)), SonnetDataset)
+    assert isinstance(
+        create_dataset("sonnet", dataset_path=str(sonnet_path)), SonnetDataset
+    )
     assert isinstance(
         create_dataset("sharegpt", dataset_path=str(sharegpt_path)), ShareGptDataset
     )
@@ -230,6 +302,38 @@ def test_create_dataset_builds_local_ported_datasets(tmp_path) -> None:
     assert isinstance(
         create_dataset("hf", dataset_path=str(hf_path)), HuggingFaceDataset
     )
+    assert isinstance(
+        create_dataset("humaneval", dataset_path=str(local_port_path)), HumanEvalDataset
+    )
+    assert isinstance(
+        create_dataset("instructcoder", dataset_path=str(local_port_path)),
+        InstructCoderDataset,
+    )
+    assert isinstance(
+        create_dataset("blazedit", dataset_path=str(local_port_path)), BlazeditDataset
+    )
+    assert isinstance(
+        create_dataset("bfcl", dataset_path=str(local_port_path)), BfclDataset
+    )
+
+
+def test_humaneval_dataset_expands_prompt_to_requested_input_length(tmp_path) -> None:
+    """Humaneval adapter can pad prompts to fixed input token length."""
+    path = tmp_path / "humaneval.jsonl"
+    path.write_text(
+        '{"prompt":"write code","canonical_solution":"solution"}\n',
+        encoding="utf-8",
+    )
+
+    batch = HumanEvalDataset(dataset_path=str(path), disable_shuffle=True).sample(
+        FakeTokenizer(),
+        num_requests=1,
+        input_len=12,
+        output_len=8,
+    )
+
+    assert batch.prompt_lens == [12]
+    assert batch.output_lens == [8]
 
 
 def test_sharegpt_dataset_uses_completion_length_in_hierarchy(tmp_path) -> None:
@@ -248,6 +352,83 @@ def test_sharegpt_dataset_uses_completion_length_in_hierarchy(tmp_path) -> None:
     assert batch.prompt_lens == [5]
     assert batch.output_lens == [7]
     assert batch.requests[0].request_id == "sharegpt-0"
+
+
+def test_humaneval_dataset_uses_prompt_and_native_output_length(tmp_path) -> None:
+    path = tmp_path / "humaneval.jsonl"
+    path.write_text(
+        '{"prompt":"solve this","canonical_solution":"solution"}\n',
+        encoding="utf-8",
+    )
+
+    batch = HumanEvalDataset(dataset_path=str(path), disable_shuffle=True).sample(
+        FakeTokenizer(),
+        num_requests=1,
+        request_id_prefix="humaneval-",
+    )
+
+    assert batch.prompt_lens == [10]
+    assert batch.output_lens == [8]
+    assert batch.requests[0].request_id == "humaneval-0"
+    assert batch.prompts[0][0] == "solve this"
+
+
+def test_instructcoder_dataset_formats_editing_prompt(tmp_path) -> None:
+    path = tmp_path / "instructcoder.jsonl"
+    path.write_text(
+        '{"input":"original code","instruction":"add tests"}\n',
+        encoding="utf-8",
+    )
+
+    batch = InstructCoderDataset(dataset_path=str(path), disable_shuffle=True).sample(
+        FakeTokenizer(),
+        num_requests=1,
+        output_len=7,
+    )
+
+    assert batch.prompt_lens == [78]
+    assert batch.output_lens == [7]
+    assert "original code" in batch.prompts[0][0]
+    assert "add tests" in batch.prompts[0][0]
+
+
+def test_blazedit_dataset_filters_edit_distance(tmp_path) -> None:
+    path = tmp_path / "blazedit.jsonl"
+    path.write_text(
+        '{"code":"file body","change_request":"rename old","norm_distance":0.5}\n',
+        encoding="utf-8",
+    )
+
+    batch = BlazeditDataset(dataset_path=str(path), disable_shuffle=True).sample(
+        FakeTokenizer(),
+        num_requests=1,
+        output_len=11,
+        min_distance=0.4,
+        max_distance=0.6,
+    )
+
+    assert batch.output_lens == [11]
+    assert "file body" in batch.prompts[0][0]
+    assert "rename old" in batch.prompts[0][0]
+
+
+def test_bfcl_dataset_translates_function_schema(tmp_path) -> None:
+    path = tmp_path / "bfcl.jsonl"
+    path.write_text(
+        '{"question":[[{"role":"user","content":"Find area"}]],'
+        '"function":[{"name":"circle_area","parameters":{"type":"dict"}}]}',
+        encoding="utf-8",
+    )
+
+    batch = BfclDataset(dataset_path=str(path), disable_shuffle=True).sample(
+        FakeTokenizer(),
+        num_requests=1,
+        output_len=9,
+    )
+
+    assert batch.output_lens == [9]
+    assert "Find area" in batch.prompts[0][0]
+    assert '"type":"object"' in batch.prompts[0][0]
 
 
 def test_burstgpt_dataset_filters_rows_and_synthesizes_tokens(tmp_path) -> None:
@@ -291,12 +472,12 @@ def test_hf_dataset_reads_offline_records_and_output_override(tmp_path) -> None:
 def test_sharegpt_dataset_supports_original_order_and_no_oversample(tmp_path) -> None:
     path = tmp_path / "sharegpt.json"
     path.write_text(
-        "[" + ",".join(
-            '{'
-            '"conversations":[{"value":"prompt"},{"value":"answer"}]'
-            '}'
+        "["
+        + ",".join(
+            '{"conversations":[{"value":"prompt"},{"value":"answer"}]}'
             for _ in range(3)
-        ) + "]",
+        )
+        + "]",
         encoding="utf-8",
     )
     dataset = ShareGptDataset(dataset_path=str(path), disable_shuffle=True)
@@ -418,9 +599,7 @@ def test_gsm8k_dataset_seed_selects_contiguous_repeatable_offset(tmp_path) -> No
     path = tmp_path / "gsm8k.jsonl"
     path.write_text(
         "\n".join(
-            '{"question":"q' f"{index}"
-            '","answer":"' f"{index}"
-            '"}' for index in range(12)
+            f'{{"question":"q{index}","answer":"{index}"}}' for index in range(12)
         ),
         encoding="utf-8",
     )

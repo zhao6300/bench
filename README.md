@@ -552,8 +552,19 @@ uv run --no-project .venv/bin/python -m web.serve
 - `sharegpt`：读取 `conversations[0..1].value`，输出长度默认使用第二轮自然 token 数。
 - `burstgpt`：读取本地 CSV 中的 GPT-4 行，并从整数 token 字段构造请求。
 - `hf`：通用离线记录适配器，可识别 `prompt`、`input`、`question` 与 `completion`、`response`、`answer` 等常见字段。
+- `humaneval`：读取 HumanEval `prompt`，默认以 `canonical_solution` 的自然 token 数作为输出上限。
+- `instructcoder`：读取输入与编辑指令并格式化为代码改写请求；默认输出上限 200。
+- `blazedit`：读取整文件代码、改写请求和改写距离；默认输出上限 4000。
+- `bfcl`：读取 BFCL 聊天首turn与 function schema，转换为包含工具说明的纯文本压测负载；默认输出上限 512。
 
-若数据源请求数不足，默认会按顺序循环复用；设置 `no_oversample: true` 时改为返回实际可用请求。`disable_shuffle: true` 对 `sharegpt` 和 `hf` 生效，用于保留源文件顺序。
+这些数据集共用 `dataset_input_len` 统一覆盖输入 token 长度，也支持 `dataset_output_len`
+统一覆盖输出上限，并可以继续使用 `share_prefix` 与 `prefix_ratio` 控制 KV-cache
+共享前缀。若同时设置旧的 `*_output_len`、`*_input_len` 和新的通用字段，具体字段优先。
+已清理 InstructCoder 本地数据中的非公开 Slack 凭据和测试 API key，替换为脱敏占位符。
+
+若数据源请求数不足，默认会按顺序循环复用；设置 `no_oversample: true` 时改为返回实际可用请求。`disable_shuffle: true` 对以上每个数据集都生效，用于保留源文件顺序。`blazedit_min_distance` / `blazedit_max_distance` 只选择对应 norm_distance 范围内的记录；`bfcl_categories` 可以传入 `simple`、`live_simple` 或 `multiple` 的逗号组合。
+
+coding / work 数据集的本地文件和来源清单位于 `examples/datasets/coding-work/`；详细的用途和文件对照见 `examples/datasets/coding-work/README.md`。
 
 ### GSM8K
 

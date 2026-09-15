@@ -249,10 +249,14 @@ try:
     )
     from .benchmark_datasets import (
         BenchmarkDataset,
+        BfclDataset,
+        BlazeditDataset,
         BurstGptDataset,
         DatasetBatch,
         Gsm8kDataset,
         HuggingFaceDataset,
+        HumanEvalDataset,
+        InstructCoderDataset,
         ShareGptDataset,
         SonnetDataset,
         TextDataset,
@@ -300,10 +304,14 @@ except ImportError:
     )
     from benchmark_datasets import (
         BenchmarkDataset,
+        BfclDataset,
+        BlazeditDataset,
         BurstGptDataset,
         DatasetBatch,
         Gsm8kDataset,
         HuggingFaceDataset,
+        HumanEvalDataset,
+        InstructCoderDataset,
         ShareGptDataset,
         SonnetDataset,
         TextDataset,
@@ -783,7 +791,24 @@ def build_request_batch(
     dataset_name = args.dataset
     resolved_input_len = input_len if input_len is not None else args.context_len
     resolved_output_len = output_len if output_len is not None else args.max_tokens
-    if dataset_name in {"sonnet", "sharegpt", "burstgpt", "hf", "gsm8k"} and dataset is None:
+    specific_input_len = getattr(args, f"{dataset_name}_input_len", None)
+    unified_input_len = getattr(args, "dataset_input_len", None)
+    specific_output_len = getattr(args, f"{dataset_name}_output_len", None)
+    unified_output_len = getattr(args, "dataset_output_len", None)
+    if (
+        dataset_name in {
+            "sonnet",
+            "sharegpt",
+            "burstgpt",
+            "hf",
+            "gsm8k",
+            "humaneval",
+            "instructcoder",
+            "blazedit",
+            "bfcl",
+        }
+        and dataset is None
+    ):
         dataset = create_dataset(
             dataset_name,
             random_seed=args.random_seed if args.random_seed is not None else args.seed,
@@ -858,6 +883,93 @@ def build_request_batch(
                 resolved_output_len if output_len is not None else args.hf_output_len
             ),
             no_oversample=args.no_oversample,
+        )
+    if dataset_name == "humaneval":
+        humaneval_dataset = dataset
+        if not isinstance(humaneval_dataset, HumanEvalDataset):
+            raise ValueError("humaneval dataset selection requires a HumanEvalDataset instance")
+        return humaneval_dataset.sample(
+            tokenizer,
+            num_requests,
+            input_len=(
+                specific_input_len
+                if specific_input_len is not None
+                else unified_input_len
+            ),
+            output_len=(
+                resolved_output_len
+                if output_len is not None
+                else specific_output_len if specific_output_len is not None else unified_output_len
+            ),
+            no_oversample=args.no_oversample,
+            share_prefix=args.share_prefix if share_prefix is None else share_prefix,
+            prefix_ratio=args.prefix_ratio,
+        )
+    if dataset_name == "instructcoder":
+        instructcoder_dataset = dataset
+        if not isinstance(instructcoder_dataset, InstructCoderDataset):
+            raise ValueError("instructcoder dataset selection requires an InstructCoderDataset instance")
+        return instructcoder_dataset.sample(
+            tokenizer,
+            num_requests,
+            input_len=(
+                specific_input_len
+                if specific_input_len is not None
+                else unified_input_len
+            ),
+            output_len=(
+                resolved_output_len
+                if output_len is not None
+                else specific_output_len if specific_output_len is not None else unified_output_len
+            ),
+            no_oversample=args.no_oversample,
+            share_prefix=args.share_prefix if share_prefix is None else share_prefix,
+            prefix_ratio=args.prefix_ratio,
+        )
+    if dataset_name == "blazedit":
+        blazedit_dataset = dataset
+        if not isinstance(blazedit_dataset, BlazeditDataset):
+            raise ValueError("blazedit dataset selection requires a BlazeditDataset instance")
+        return blazedit_dataset.sample(
+            tokenizer,
+            num_requests,
+            input_len=(
+                specific_input_len
+                if specific_input_len is not None
+                else unified_input_len
+            ),
+            output_len=(
+                resolved_output_len
+                if output_len is not None
+                else specific_output_len if specific_output_len is not None else unified_output_len
+            ),
+            no_oversample=args.no_oversample,
+            share_prefix=args.share_prefix if share_prefix is None else share_prefix,
+            prefix_ratio=args.prefix_ratio,
+            min_distance=args.blazedit_min_distance,
+            max_distance=args.blazedit_max_distance,
+        )
+    if dataset_name == "bfcl":
+        bfcl_dataset = dataset
+        if not isinstance(bfcl_dataset, BfclDataset):
+            raise ValueError("bfcl dataset selection requires a BfclDataset instance")
+        return bfcl_dataset.sample(
+            tokenizer,
+            num_requests,
+            input_len=(
+                specific_input_len
+                if specific_input_len is not None
+                else unified_input_len
+            ),
+            output_len=(
+                resolved_output_len
+                if output_len is not None
+                else specific_output_len if specific_output_len is not None else unified_output_len
+            ),
+            no_oversample=args.no_oversample,
+            share_prefix=args.share_prefix if share_prefix is None else share_prefix,
+            prefix_ratio=args.prefix_ratio,
+            categories=args.bfcl_categories,
         )
     if dataset_name == "text":
         text_dataset = dataset if dataset is not None else TextDataset(random_seed=args.seed)
@@ -4743,10 +4855,20 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
     if args.seed is not None and (not isinstance(args.seed, int) or isinstance(args.seed, bool)):
         raise BenchmarkConfigError(f"{location}.seed must be an integer when set")
     if args.dataset not in {"text", "random"}:
-        if args.dataset not in {"sonnet", "sharegpt", "burstgpt", "hf", "gsm8k"}:
+        if args.dataset not in {
+            "sonnet",
+            "sharegpt",
+            "burstgpt",
+            "hf",
+            "gsm8k",
+            "humaneval",
+            "instructcoder",
+            "blazedit",
+            "bfcl",
+        }:
             raise BenchmarkConfigError(
                 f"{location}.dataset must be text, random, sonnet, sharegpt, "
-                "burstgpt, hf or gsm8k"
+                "burstgpt, hf, gsm8k, humaneval, instructcoder, blazedit or bfcl"
             )
         if not isinstance(args.dataset_path, str) or not Path(args.dataset_path).is_file():
             raise BenchmarkConfigError(
@@ -4756,10 +4878,15 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
         if not isinstance(args.disable_shuffle, bool):
             raise BenchmarkConfigError(f"{location}.disable_shuffle must be true or false")
         for key in (
+            "dataset_output_len",
             "sonnet_output_len",
             "sharegpt_output_len",
             "hf_output_len",
             "gsm8k_output_len",
+            "humaneval_output_len",
+            "instructcoder_output_len",
+            "blazedit_output_len",
+            "bfcl_output_len",
         ):
             value = getattr(args, key)
             if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
@@ -4807,6 +4934,28 @@ def _validate_effective_args(args, scenario: str, location: str) -> None:
             raise BenchmarkConfigError(
                 f"{location}.gsm8k_shared_prefix_ratio must be between 0 and 1"
             )
+        for key in ("blazedit_min_distance", "blazedit_max_distance"):
+            value = getattr(args, key)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise BenchmarkConfigError(f"{location}.{key} must be between 0 and 1")
+        if args.blazedit_min_distance > args.blazedit_max_distance:
+            raise BenchmarkConfigError(
+                f"{location}.blazedit_min_distance must not exceed blazedit_max_distance"
+            )
+        if args.bfcl_categories is not None:
+            if not isinstance(args.bfcl_categories, str):
+                raise BenchmarkConfigError(f"{location}.bfcl_categories must be a string when set")
+            selected = {name.strip() for name in args.bfcl_categories.split(",") if name.strip()}
+            unknown = selected - {"simple", "live_simple", "multiple"}
+            if unknown:
+                raise BenchmarkConfigError(
+                    f"{location}.bfcl_categories must only use simple, live_simple or multiple"
+                )
     for key in ("random_output_len",):
         value = getattr(args, key)
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
@@ -6574,6 +6723,14 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=build_preset_epilog(),
     )
     parser.add_argument(
+        "--dataset-output-len", type=int, default=None,
+        help="[ported datasets] 统一覆盖输出 token 上限；data set-specific 参数优先"
+    )
+    parser.add_argument(
+        "--dataset-input-len", type=int, default=None,
+        help="[ported datasets] 统一覆盖输入 token 长度；data set-specific 参数优先"
+    )
+    parser.add_argument(
         "--config", default=None,
         help="JSON benchmark suite 配置文件；启用后按 cases/matrix/repeat 执行并输出 JSON 报告"
     )
@@ -6648,11 +6805,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset", choices=["text", "random", "sonnet", "sharegpt", "burstgpt", "hf", "gsm8k"], default=None,
         help="测试数据集：text 使用中文填充文本；random 合成 token；"
-             "sonnet/sharegpt/burstgpt/hf/gsm8k 使用本地移植数据集"
+             "sonnet/sharegpt/burstgpt/hf/gsm8k/humaneval/instructcoder/"
+             "blazedit/bfcl 使用本地移植数据集"
     )
     parser.add_argument(
         "--dataset-path", default=None,
-        help="[sonnet/sharegpt/burstgpt/hf/gsm8k数据集] 本地 JSON/JSONL/CSV/text 文件路径"
+        help="[sonnet/sharegpt/burstgpt/hf/gsm8k/humaneval/instructcoder/"
+             "blazedit/bfcl数据集] 本地 JSON/JSONL/CSV/text 文件路径"
     )
     parser.add_argument(
         "--no-oversample", action="store_true",
@@ -6697,6 +6856,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hf-output-len", type=int, default=None,
         help="[hf数据集] 覆盖 completion token 输出长度（默认：使用本地值）"
+    )
+    parser.add_argument(
+        "--humaneval-output-len", type=int, default=None,
+        help="[humaneval数据集] 兼容别名；覆盖 canonical_solution 输出长度（默认：使用通用或本地值）"
+    )
+    parser.add_argument(
+        "--instructcoder-output-len", type=int, default=200,
+        help="[instructcoder数据集] 兼容别名；每请求输出 token 上限（默认：200）"
+    )
+    parser.add_argument(
+        "--blazedit-output-len", type=int, default=4000,
+        help="[blazedit数据集] 兼容别名；每请求输出 token 上限（默认：4000）"
+    )
+    parser.add_argument(
+        "--blazedit-min-distance", type=float, default=0.0,
+        help="[blazedit数据集] 最小 norm_distance（0~1，默认：0）"
+    )
+    parser.add_argument(
+        "--blazedit-max-distance", type=float, default=1.0,
+        help="[blazedit数据集] 最大 norm_distance（0~1，默认：1）"
+    )
+    parser.add_argument(
+        "--bfcl-output-len", type=int, default=512,
+        help="[bfcl数据集] 兼容别名；每请求输出 token 上限（默认：512）"
+    )
+    parser.add_argument(
+        "--bfcl-categories", default=None,
+        help="[bfcl数据集] 逗号分隔类别过滤；可选 simple、live_simple、multiple"
     )
     parser.add_argument(
         "--random-input-len", type=int, default=None,

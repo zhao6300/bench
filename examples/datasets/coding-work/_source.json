@@ -1,0 +1,58 @@
+{
+  "datasets": [
+    {
+      "source": "openai/openai_humaneval",
+      "revision": "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544",
+      "license": "MIT",
+      "config": "openai_humaneval",
+      "split": "test",
+      "records": 164,
+      "output_file": "openai-humaneval-test.jsonl",
+      "sha256": "b9c662ee4f74fd25ac4640f07d6a77962970da18383c51372a40714b7fef5e6e"
+    },
+    {
+      "source": "likaixin/InstructCoder",
+      "revision": "6a778a720284d6520b56bd03d5c3070930d41071",
+      "license": null,
+      "config": "default",
+      "split": "validation",
+      "records": 5708,
+      "output_file": "likaixin-instructcoder-validation.jsonl",
+      "sha256": "5399c157558d52f3028c4688882c3ed90c67da7e1bf5577f120b47c926d21c4f"
+    },
+    {
+      "source": "vdaita/edit_5k_char",
+      "revision": "c00060332eb3f60ae7b2cd448caa45a83f25f1c3",
+      "license": null,
+      "config": "default",
+      "split": "train",
+      "records": 96,
+      "output_file": "blazedit-5k-char-train.jsonl",
+      "sha256": "000d9f8cc4fa4be000fe4a53836fae6f37f627e6cb8610902af43273f4580f68"
+    },
+    {
+      "source": "vdaita/edit_10k_char",
+      "revision": "b40263c19af242bdebe597aeca465b465ed605f3",
+      "license": null,
+      "config": "default",
+      "split": "train",
+      "records": 90,
+      "output_file": "blazedit-10k-char-train.jsonl",
+      "sha256": "a4a7654e26440b9536eaa0338db35b4c181963e36e593e7ae440f3054a6e56e3"
+    },
+    {
+      "source": "gorilla-llm/Berkeley-Function-Calling-Leaderboard",
+      "revision": "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda",
+      "license": "Apache-2.0",
+      "categories": ["simple", "live_simple", "multiple"],
+      "records": 858,
+      "output_file": "bfcl-v3-simple-live_simple-multiple.jsonl",
+      "sha256": "7558c73fc2407d060693f3f85388247a12d11980cd756cde97efb963addef3ef",
+      "category_sha256": {
+        "simple": "fbc37b2ad252bf9af985582e0e07b456173fe627d957491472ea9cef5fb83158",
+        "live_simple": "b398743e6c0dfd2a87cee97a3bc1b9b90b81edc228c3153a820a93b51186fc00",
+        "multiple": "aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a"
+      }
+    }
+  ]
+}

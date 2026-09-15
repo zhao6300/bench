@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "ported-dataset-smoke-suite",
-  "description": "校验 sonnet、sharegpt、burstgpt、hf 与 gsm8k 本地数据集接入",
+  "description": "校验 sonnet、sharegpt、burstgpt、hf、gsm8k 与 coding/work 本地数据集接入",
   "continue_on_error": true,
   "defaults": {
     "mode": "api",
@@ -70,6 +70,54 @@
         "gsm8k_output_len": 64,
         "gsm8k_round_prefix_len": 32,
         "requests": {"concurrency": 1, "count": 2}
+      }
+    },
+    {
+      "name": "humaneval-sample",
+      "tags": ["dataset", "humaneval", "coding"],
+      "scenario": "single",
+      "enabled": false,
+      "params": {
+        "dataset": "humaneval",
+        "dataset_path": "examples/datasets/coding-work/openai-humaneval-test.jsonl",
+        "dataset_output_len": 8,
+        "requests": {"concurrency": 1, "count": 1}
+      }
+    },
+    {
+      "name": "instructcoder-sample",
+      "tags": ["dataset", "instructcoder", "coding"],
+      "scenario": "single",
+      "enabled": false,
+      "params": {
+        "dataset": "instructcoder",
+        "dataset_path": "examples/datasets/coding-work/likaixin-instructcoder-validation.jsonl",
+        "dataset_output_len": 8,
+        "requests": {"concurrency": 1, "count": 1}
+      }
+    },
+    {
+      "name": "blazedit-sample",
+      "tags": ["dataset", "blazedit", "coding"],
+      "scenario": "single",
+      "enabled": false,
+      "params": {
+        "dataset": "blazedit",
+        "dataset_path": "examples/datasets/coding-work/blazedit-5k-char-train.jsonl",
+        "dataset_output_len": 8,
+        "requests": {"concurrency": 1, "count": 1}
+      }
+    },
+    {
+      "name": "bfcl-sample",
+      "tags": ["dataset", "bfcl", "work"],
+      "scenario": "single",
+      "enabled": false,
+      "params": {
+        "dataset": "bfcl",
+        "dataset_path": "examples/datasets/coding-work/bfcl-v3-simple-live_simple-multiple.jsonl",
+        "dataset_output_len": 8,
+        "requests": {"concurrency": 1, "count": 1}
       }
     }
   ]

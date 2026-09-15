@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 
 class TokenizerLike(Protocol):
@@ -151,6 +151,69 @@ class BenchmarkDataset(ABC):
         return [rows[index] for index in indexes]
 
     @staticmethod
+    def _format_padding(
+        tokenizer: TokenizerLike,
+        prompt: str,
+        target_len: int | None,
+        *,
+        fallback_prompt: str,
+    ) -> str:
+        """Pad a prompt by repeated source text to the requested token length."""
+        if target_len is None:
+            return prompt
+        if target_len < 1:
+            raise ValueError("padded target_len must be positive when set")
+        source_ids = tokenizer.encode(prompt)
+        repeats = max(1, math.ceil(target_len / max(1, len(source_ids))))
+        padded_ids = (source_ids * repeats)[:target_len]
+        padded_prompt = tokenizer.decode(padded_ids)
+        actual_ids = tokenizer.encode(padded_prompt)
+        if len(actual_ids) != target_len:
+            # Some tokenizers drop trailing whitespace/repeated separators. If
+            # the tokenizer after decode does not preserve requested length,
+            # we prefer a stable natural prompt over silent length drift.
+            return fallback_prompt
+        return padded_prompt
+
+    @staticmethod
+    def _build_prefix_prompt(
+        tokenizer: TokenizerLike,
+        prompt: str,
+        target_tokens: int | None,
+        *,
+        prefix_ratio: float,
+        share_prefix: bool,
+        request_index: int,
+        run_id: str = "",
+    ) -> tuple[str, int, int]:
+        """Build a prompt with optional shared prefix and cached unique tail."""
+        if target_tokens is None:
+            return prompt, len(tokenizer.encode(prompt)), 0
+        if not 0.0 <= prefix_ratio <= 1.0:
+            raise ValueError("prefix_ratio must be between 0 and 1")
+        prompt_ids = tokenizer.encode(prompt)
+        if not share_prefix or prefix_ratio <= 0.0:
+            token_ids = (
+                prompt_ids * max(1, math.ceil(target_tokens / max(1, len(prompt_ids))))
+            )[:target_tokens]
+            return tokenizer.decode(token_ids), len(token_ids), 0
+        shared_tokens_count = int(target_tokens * prefix_ratio)
+        unique_tokens_count = target_tokens - shared_tokens_count
+        shared_ids = tokenizer.encode(
+            f"【公共固定前缀-{run_id}】" if run_id else "【公共固定前缀】"
+        )
+        unique_ids = (
+            prompt_ids
+            * max(1, math.ceil(unique_tokens_count / max(1, len(prompt_ids))))
+        )[
+            # Preserve a stable record shape while still allowing cache reuse
+            # from the shared leading region.
+            :unique_tokens_count
+        ]
+        token_ids = (shared_ids + unique_ids)[:target_tokens]
+        return tokenizer.decode(token_ids), len(token_ids), shared_tokens_count
+
+    @staticmethod
     def _shared_token_prefix(tokenizer: TokenizerLike, prompts: Sequence[str]) -> int:
         """Return the token prefix shared by the first two sampled prompts."""
         if len(prompts) < 2:
@@ -258,7 +321,9 @@ class TextDataset(BenchmarkDataset):
         if not share_prefix or prefix_ratio <= 0.0:
             random_prefix = f"【测试唯一标识-{uuid.uuid4().hex[:6]}-{request_index}】"
             prefix_ids = tokenizer.encode(random_prefix)
-            body_ids = self._filler_token_ids(tokenizer, target_tokens - len(prefix_ids))
+            body_ids = self._filler_token_ids(
+                tokenizer, target_tokens - len(prefix_ids)
+            )
             token_ids = (prefix_ids + body_ids)[:target_tokens]
             return tokenizer.decode(token_ids), len(token_ids), 0, len(token_ids)
 
@@ -271,29 +336,42 @@ class TextDataset(BenchmarkDataset):
                 else "【公共固定前缀-Qwen36-Prefill-Bench】"
             )
             shared_ids = tokenizer.encode(shared_label)
-            shared_part = (shared_ids + self._filler_token_ids(
-                tokenizer, shared_tokens_count - len(shared_ids)
-            ))[:shared_tokens_count]
+            shared_part = (
+                shared_ids
+                + self._filler_token_ids(
+                    tokenizer, shared_tokens_count - len(shared_ids)
+                )
+            )[:shared_tokens_count]
         else:
             shared_part = []
         if unique_tokens_count:
             unique_ids = tokenizer.encode(
                 f"【独特请求后缀-{uuid.uuid4().hex[:6]}-{request_index}】"
             )
-            unique_part = (unique_ids + self._filler_token_ids(
-                tokenizer, unique_tokens_count - len(unique_ids)
-            ))[:unique_tokens_count]
+            unique_part = (
+                unique_ids
+                + self._filler_token_ids(
+                    tokenizer, unique_tokens_count - len(unique_ids)
+                )
+            )[:unique_tokens_count]
         else:
             unique_part = []
         token_ids = (shared_part + unique_part)[:target_tokens]
-        return tokenizer.decode(token_ids), len(token_ids), len(shared_part), len(unique_part)
+        return (
+            tokenizer.decode(token_ids),
+            len(token_ids),
+            len(shared_part),
+            len(unique_part),
+        )
 
     def _filler_token_ids(self, tokenizer: TokenizerLike, needed_len: int) -> list[int]:
         if needed_len <= 0:
             return []
         paragraph_ids = tokenizer.encode(self._FILLER_TEXT)
         if not paragraph_ids:
-            raise ValueError("tokenizer produced no tokens for the text benchmark filler")
+            raise ValueError(
+                "tokenizer produced no tokens for the text benchmark filler"
+            )
         repeats = math.ceil(needed_len / len(paragraph_ids))
         # Re-tokenize the repeated text, matching the original implementation
         # and preserving tokenization at paragraph boundaries.
@@ -313,7 +391,9 @@ def parse_range_ratio(value: str | float | tuple[float, float]) -> tuple[float, 
         elif len(parts) == 2:
             ratios = (float(parts[0]), float(parts[1]))
         else:
-            raise ValueError("range_ratio must be one number or input_ratio,output_ratio")
+            raise ValueError(
+                "range_ratio must be one number or input_ratio,output_ratio"
+            )
     if any(not 0.0 <= ratio <= 1.0 for ratio in ratios):
         raise ValueError("range_ratio values must be between 0 and 1")
     return float(ratios[0]), float(ratios[1])
@@ -331,7 +411,9 @@ def get_sampling_params(
     if num_requests < 1:
         raise ValueError("num_requests must be positive")
     if input_len < 0 or output_len < 1:
-        raise ValueError("input_len must be non-negative and output_len must be positive")
+        raise ValueError(
+            "input_len must be non-negative and output_len must be positive"
+        )
     input_ratio, output_ratio = parse_range_ratio(range_ratio)
     special_tokens = int(tokenizer.num_special_tokens_to_add())
     real_input_len = max(0, input_len - special_tokens)
@@ -401,7 +483,9 @@ class RandomDataset(BenchmarkDataset):
         input_ratio, _ = parse_range_ratio(range_ratio)
         num_special = int(tokenizer.num_special_tokens_to_add())
         real_input_len = max(0, int(input_len) - num_special)
-        min_total_input = int(prefix_len) + math.floor(real_input_len * (1.0 - input_ratio))
+        min_total_input = int(prefix_len) + math.floor(
+            real_input_len * (1.0 - input_ratio)
+        )
         if min_total_input < 1:
             raise ValueError(
                 "--random-input-len is too small: with tokenizer special tokens "
@@ -411,7 +495,9 @@ class RandomDataset(BenchmarkDataset):
                 "decrease --random-range-ratio."
             )
         if batchsize != 1:
-            raise ValueError("batched random dataset requests are not supported by this benchmark")
+            raise ValueError(
+                "batched random dataset requests are not supported by this benchmark"
+            )
 
         vocab_size = int(tokenizer.vocab_size)
         prohibited_tokens = {int(token) for token in tokenizer.all_special_ids}
@@ -450,7 +536,9 @@ class RandomDataset(BenchmarkDataset):
             )
         return DatasetBatch(requests, shared_prefix_len=len(prefix_token_ids))
 
-    def get_prefix(self, tokenizer: TokenizerLike, allowed_tokens: Any, prefix_len: int) -> list[int]:
+    def get_prefix(
+        self, tokenizer: TokenizerLike, allowed_tokens: Any, prefix_len: int
+    ) -> list[int]:
         if prefix_len <= 0:
             return []
         cached_prefix = self._prefix_cache.get(prefix_len)
@@ -520,9 +608,9 @@ class RandomDataset(BenchmarkDataset):
                 continue
 
             padding_len = -token_delta
-            padding_indices = (
-                padding_offset + self._np.arange(padding_len)
-            ) % len(allowed_tokens)
+            padding_indices = (padding_offset + self._np.arange(padding_len)) % len(
+                allowed_tokens
+            )
             candidate_tokens.extend(allowed_tokens[padding_indices].tolist())
             padding_offset += padding_len
 
@@ -533,7 +621,9 @@ class RandomDataset(BenchmarkDataset):
         )
 
     @staticmethod
-    def _encode_without_special_tokens(tokenizer: TokenizerLike, prompt: str) -> list[int]:
+    def _encode_without_special_tokens(
+        tokenizer: TokenizerLike, prompt: str
+    ) -> list[int]:
         """Encode prompt text without adding special tokens when supported."""
         try:
             return tokenizer.encode(prompt, add_special_tokens=False)
@@ -543,6 +633,7 @@ class RandomDataset(BenchmarkDataset):
 
 class SonnetDataset(BenchmarkDataset):
     """Port of the vLLM line-selection Sonnet workload."""
+
     DEFAULT_PREFIX_LEN = 200
     DEFAULT_INPUT_LEN = 550
     DEFAULT_OUTPUT_LEN = 150
@@ -571,11 +662,15 @@ class SonnetDataset(BenchmarkDataset):
         if num_requests < 1:
             raise ValueError("num_requests must be positive")
         if prefix_len < 0 or input_len < 1 or output_len < 1:
-            raise ValueError("sonnet lengths must be non-negative and positive where required")
+            raise ValueError(
+                "sonnet lengths must be non-negative and positive where required"
+            )
         tokenized_lines = [
             self._tokenizer_sequence(tokenizer, line) for line in self.data
         ]
-        average_len = sum(len(tokens) for tokens in tokenized_lines) / len(tokenized_lines)
+        average_len = sum(len(tokens) for tokens in tokenized_lines) / len(
+            tokenized_lines
+        )
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
         base_offset = len(self._tokenizer_sequence(tokenizer, base_prompt))
         if input_len <= base_offset:
@@ -610,10 +705,16 @@ class SonnetDataset(BenchmarkDataset):
             if attempts > 64 * num_requests + 64:
                 break
         if not requests:
-            raise ValueError("sonnet tokenizer could not reach the requested input length")
-        common_len = self._shared_token_prefix(
-            tokenizer, prompts=[request.prompt for request in requests]
-        ) if prefix_lines else 0
+            raise ValueError(
+                "sonnet tokenizer could not reach the requested input length"
+            )
+        common_len = (
+            self._shared_token_prefix(
+                tokenizer, prompts=[request.prompt for request in requests]
+            )
+            if prefix_lines
+            else 0
+        )
         return DatasetBatch(requests, shared_prefix_len=common_len)
 
 
@@ -637,7 +738,8 @@ class ShareGptDataset(BenchmarkDataset):
         path = self._require_path(self.dataset_path)
         self.data = self._load_json_records(path)
         self.data = [
-            entry for entry in self.data
+            entry
+            for entry in self.data
             if "conversations" in entry and len(entry["conversations"]) >= 2
         ]
         if self.data and not self.disable_shuffle:
@@ -667,7 +769,9 @@ class ShareGptDataset(BenchmarkDataset):
             prompt, completion = _conversation_parts(entry)
             prompt_len = len(self._tokenizer_sequence(tokenizer, prompt))
             native_output_len = len(tokenizer.encode(completion))
-            resolved_output_len = output_len if output_len is not None else native_output_len
+            resolved_output_len = (
+                output_len if output_len is not None else native_output_len
+            )
             requests.append(
                 SampleRequest(
                     prompt=prompt,
@@ -681,6 +785,7 @@ class ShareGptDataset(BenchmarkDataset):
 
 class BurstGptDataset(BenchmarkDataset):
     """Local trace adapter for the GPT-4 subset of BurstGPT."""
+
     INPUT_KEYS = ("Request tokens", "Input tokens", "input_tokens", "input_length")
     OUTPUT_KEYS = ("Response tokens", "Output tokens", "output_tokens", "output_length")
 
@@ -728,7 +833,9 @@ class BurstGptDataset(BenchmarkDataset):
         )
         requests = []
         for index, (input_len, output_len) in enumerate(rows):
-            token_ids = [(index + offset) % tokenizer.vocab_size for offset in range(input_len)]
+            token_ids = [
+                (index + offset) % tokenizer.vocab_size for offset in range(input_len)
+            ]
             requests.append(
                 SampleRequest(
                     prompt=tokenizer.decode(token_ids),
@@ -767,7 +874,9 @@ class HuggingFaceDataset(BenchmarkDataset):
                 try:
                     value = json.loads(line)
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"invalid JSON on JSONL line {line_number}") from exc
+                    raise ValueError(
+                        f"invalid JSON on JSONL line {line_number}"
+                    ) from exc
                 if not isinstance(value, dict):
                     raise ValueError("dataset_path JSONL must contain objects")
                 records.append(value)
@@ -776,7 +885,11 @@ class HuggingFaceDataset(BenchmarkDataset):
     @staticmethod
     def _pick(record: dict[str, Any], keys: tuple[str, ...]) -> str | None:
         return next(
-            (record[key] for key in keys if key in record and isinstance(record[key], str)),
+            (
+                record[key]
+                for key in keys
+                if key in record and isinstance(record[key], str)
+            ),
             None,
         )
 
@@ -823,6 +936,377 @@ class HuggingFaceDataset(BenchmarkDataset):
         return DatasetBatch(requests)
 
 
+class HumanEvalDataset(BenchmarkDataset):
+    """Offline adapter for the OpenAI HumanEval single-turn coding workload."""
+
+    PROMPT_KEYS = ("prompt", "question", "problem")
+    OUTPUT_KEYS = ("canonical_solution", "completion", "answer")
+    DEFAULT_INPUT_LEN = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        path = self._require_path(self.dataset_path)
+        self.data = self._load_local_records(path)
+
+    @classmethod
+    def _load_local_records(cls, path: str) -> list[dict[str, Any]]:
+        records = (
+            HuggingFaceDataset._load_jsonl_records(path)
+            if path.lower().endswith((".jsonl", ".ndjson"))
+            else HuggingFaceDataset._load_json_records(path)
+        )
+        return records
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        *,
+        input_len: int | None = None,
+        output_len: int | None = None,
+        no_oversample: bool = False,
+        share_prefix: bool = False,
+        prefix_ratio: float = 1.0,
+        **kwargs: Any,
+    ) -> DatasetBatch:
+        if output_len is not None and output_len < 1:
+            raise ValueError("humaneval output_len must be positive when set")
+        rows = self._sample_rows(
+            self.data,
+            num_requests,
+            self.random_seed,
+            no_oversample=no_oversample,
+            disable_shuffle=self.disable_shuffle,
+        )
+        requests = []
+        for index, record in enumerate(rows):
+            prompt = HuggingFaceDataset._pick(record, self.PROMPT_KEYS)
+            completion = HuggingFaceDataset._pick(record, self.OUTPUT_KEYS)
+            if not prompt:
+                raise ValueError("humaneval records require a prompt field")
+            resolved_input_len = (
+                input_len if input_len is not None else self.DEFAULT_INPUT_LEN
+            )
+            resolved_output_len = (
+                output_len
+                if output_len is not None
+                else len(tokenizer.encode(completion or "\n"))
+            )
+            requests.append(
+                SampleRequest(
+                    prompt=self._build_prefix_prompt(
+                        tokenizer,
+                        prompt,
+                        resolved_input_len,
+                        prefix_ratio=prefix_ratio,
+                        share_prefix=share_prefix,
+                        request_index=index,
+                    ),
+                    prompt_len=resolved_input_len or len(tokenizer.encode(prompt)),
+                    expected_output_len=resolved_output_len,
+                    request_id=f"{request_id_prefix}{index}",
+                )
+            )
+        return DatasetBatch(requests)
+
+
+class InstructCoderDataset(BenchmarkDataset):
+    """Offline adapter for the InstructCoder validation editing workload."""
+
+    DEFAULT_OUTPUT_LEN = 200
+    DEFAULT_INPUT_LEN = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        path = self._require_path(self.dataset_path)
+        self.data = HumanEvalDataset._load_local_records(path)
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        *,
+        input_len: int | None = None,
+        output_len: int | None = None,
+        no_oversample: bool = False,
+        share_prefix: bool = False,
+        prefix_ratio: float = 1.0,
+        **kwargs: Any,
+    ) -> DatasetBatch:
+        if output_len is None or output_len < 1:
+            raise ValueError("instructcoder output_len must be positive")
+        resolved_output_len = (
+            output_len if output_len is not None else self.DEFAULT_OUTPUT_LEN
+        )
+        rows = self._sample_rows(
+            self.data,
+            num_requests,
+            self.random_seed,
+            no_oversample=no_oversample,
+            disable_shuffle=self.disable_shuffle,
+        )
+        requests = []
+        for index, record in enumerate(rows):
+            instruction = record.get("instruction")
+            input_text = record.get("input")
+            if not isinstance(instruction, str) or not instruction:
+                raise ValueError("instructcoder records require an instruction field")
+            if not isinstance(input_text, str) or not input_text:
+                raise ValueError("instructcoder records require an input field")
+            prompt = (
+                f"{input_text}\n\n{instruction} Just output "
+                "the code, do not include any explanation."
+            )
+            resolved_input_len = (
+                input_len if input_len is not None else self.DEFAULT_INPUT_LEN
+            )
+            requests.append(
+                SampleRequest(
+                    prompt=self._build_prefix_prompt(
+                        tokenizer,
+                        prompt,
+                        resolved_input_len,
+                        prefix_ratio=prefix_ratio,
+                        share_prefix=share_prefix,
+                        request_index=index,
+                    ),
+                    prompt_len=resolved_input_len or len(tokenizer.encode(prompt)),
+                    expected_output_len=resolved_output_len,
+                    request_id=f"{request_id_prefix}{index}",
+                )
+            )
+        return DatasetBatch(requests)
+
+
+class BlazeditDataset(BenchmarkDataset):
+    """Offline adapter for long-form code editing workloads."""
+
+    DEFAULT_OUTPUT_LEN = 4000
+    DEFAULT_INPUT_LEN = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        path = self._require_path(self.dataset_path)
+        self.data = HumanEvalDataset._load_local_records(path)
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        *,
+        input_len: int | None = None,
+        output_len: int | None = None,
+        no_oversample: bool = False,
+        share_prefix: bool = False,
+        prefix_ratio: float = 1.0,
+        min_distance: float = 0.0,
+        max_distance: float = 1.0,
+        **kwargs: Any,
+    ) -> DatasetBatch:
+        if output_len is None or output_len < 1:
+            raise ValueError("blazedit output_len must be positive")
+        resolved_output_len = (
+            output_len if output_len is not None else self.DEFAULT_OUTPUT_LEN
+        )
+        if (
+            not isinstance(min_distance, (int, float))
+            or isinstance(min_distance, bool)
+            or not math.isfinite(min_distance)
+            or min_distance < 0
+        ):
+            raise ValueError("blazedit min_distance must be between 0 and 1")
+        if (
+            not isinstance(max_distance, (int, float))
+            or isinstance(max_distance, bool)
+            or not math.isfinite(max_distance)
+            or not 0 <= max_distance <= 1
+        ):
+            raise ValueError("blazedit max_distance must be between 0 and 1")
+        if min_distance > max_distance:
+            raise ValueError("blazedit min_distance must not exceed max_distance")
+        rows = [
+            record
+            for record in self.data
+            if min_distance <= record.get("norm_distance", 0) <= max_distance
+        ]
+        selected = self._sample_rows(
+            rows,
+            num_requests,
+            self.random_seed,
+            no_oversample=no_oversample,
+            disable_shuffle=self.disable_shuffle,
+        )
+        requests = []
+        for index, record in enumerate(selected):
+            code = record.get("code")
+            change_request = record.get("change_request")
+            if not isinstance(code, str) or not code:
+                raise ValueError("blazedit records require a code field")
+            if not isinstance(change_request, str) or not change_request:
+                raise ValueError("blazedit records require a change_request field")
+            prompt = (
+                "Given a code file, please apply the change requests and "
+                "generate the new file.\n\nOriginal file:\n```python\n"
+                f"{code}\n```\n\nChange request:\n{change_request}\n\n"
+                'Please generate the new code file in a "New file" section below.'
+            )
+            resolved_input_len = (
+                input_len if input_len is not None else self.DEFAULT_INPUT_LEN
+            )
+            requests.append(
+                SampleRequest(
+                    prompt=self._build_prefix_prompt(
+                        tokenizer,
+                        prompt,
+                        resolved_input_len,
+                        prefix_ratio=prefix_ratio,
+                        share_prefix=share_prefix,
+                        request_index=index,
+                    ),
+                    prompt_len=resolved_input_len or len(tokenizer.encode(prompt)),
+                    expected_output_len=resolved_output_len,
+                    request_id=f"{request_id_prefix}{index}",
+                )
+            )
+        return DatasetBatch(requests)
+
+
+class BfclDataset(BenchmarkDataset):
+    """Offline adapter for function-calling and tool-selection workloads."""
+
+    DEFAULT_OUTPUT_LEN = 512
+    DEFAULT_INPUT_LEN = None
+    SUPPORTED_CATEGORIES: ClassVar[set[str]] = {
+        "simple",
+        "live_simple",
+        "multiple",
+    }
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        path = self._require_path(self.dataset_path)
+        self.data = HumanEvalDataset._load_local_records(path)
+
+    @classmethod
+    def _translate_schema(cls, value: Any) -> Any:
+        """Translate BFCL primitive type names to JSON Schema equivalents."""
+        if isinstance(value, dict):
+            translated = {
+                key: cls._translate_schema(item) for key, item in value.items()
+            }
+            if translated.get("type") in {"dict", "float", "tuple", "any"}:
+                translated["type"] = {
+                    "dict": "object",
+                    "float": "number",
+                    "tuple": "array",
+                    "any": "string",
+                }[translated["type"]]
+            return translated
+        if isinstance(value, list):
+            return [cls._translate_schema(item) for item in value]
+        return value
+
+    @classmethod
+    def _to_openai_tools(cls, functions: Any) -> list[dict[str, Any]]:
+        if not isinstance(functions, list):
+            functions = [functions]
+        if not functions:
+            raise ValueError("bfcl records require at least one function")
+        return [
+            {"type": "function", "function": cls._translate_schema(function)}
+            for function in functions
+        ]
+
+    def sample(
+        self,
+        tokenizer: TokenizerLike,
+        num_requests: int,
+        request_id_prefix: str = "",
+        *,
+        input_len: int | None = None,
+        output_len: int | None = None,
+        no_oversample: bool = False,
+        share_prefix: bool = False,
+        prefix_ratio: float = 1.0,
+        categories: str | None = None,
+        **kwargs: Any,
+    ) -> DatasetBatch:
+        if output_len is None or output_len < 1:
+            raise ValueError("bfcl output_len must be positive")
+        resolved_output_len = (
+            output_len if output_len is not None else self.DEFAULT_OUTPUT_LEN
+        )
+        selected_categories = None
+        if categories:
+            names = [name.strip() for name in categories.split(",") if name.strip()]
+            unknown = set(names) - self.SUPPORTED_CATEGORIES
+            if unknown:
+                supported = ", ".join(sorted(self.SUPPORTED_CATEGORIES))
+                raise ValueError(
+                    f"bfcl categories not supported: {', '.join(sorted(unknown))}; expected {supported}"
+                )
+            selected_categories = set(names)
+        rows = [
+            record
+            for record in self.data
+            if selected_categories is None
+            or record.get("category") in selected_categories
+        ]
+        selected = self._sample_rows(
+            rows,
+            num_requests,
+            self.random_seed,
+            no_oversample=no_oversample,
+            disable_shuffle=self.disable_shuffle,
+        )
+        requests = []
+        for index, record in enumerate(selected):
+            question = record.get("question")
+            functions = self._to_openai_tools(record.get("function"))
+            if (
+                not isinstance(question, list)
+                or not question
+                or not isinstance(question[0], list)
+                or not question[0]
+            ):
+                raise ValueError("bfcl records require a first-turn chat question")
+            user_messages = [
+                message for message in question[0] if message.get("role") == "user"
+            ]
+            if not user_messages:
+                raise ValueError("bfcl first turn requires a user message")
+            tools_text = "\n".join(
+                json.dumps(function, ensure_ascii=False, separators=(",", ":"))
+                for function in functions
+            )
+            prompt = (
+                "You are an assistant with access to the following tools:\n"
+                f"{tools_text}\n\nUser request:\n{user_messages[-1].get('content', '')}"
+            )
+            resolved_input_len = (
+                input_len if input_len is not None else self.DEFAULT_INPUT_LEN
+            )
+            requests.append(
+                SampleRequest(
+                    prompt=self._build_prefix_prompt(
+                        tokenizer,
+                        prompt,
+                        resolved_input_len,
+                        prefix_ratio=prefix_ratio,
+                        share_prefix=share_prefix,
+                        request_index=index,
+                    ),
+                    prompt_len=resolved_input_len or len(tokenizer.encode(prompt)),
+                    expected_output_len=resolved_output_len,
+                    request_id=f"{request_id_prefix}{index}",
+                )
+            )
+        return DatasetBatch(requests)
+
+
 class Gsm8kDataset(BenchmarkDataset):
     """Copy GSM8K problems to target length with round-isolated prompts."""
 
@@ -858,7 +1342,9 @@ class Gsm8kDataset(BenchmarkDataset):
                 try:
                     value = json.loads(line)
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"invalid JSON on JSONL line {line_number}") from exc
+                    raise ValueError(
+                        f"invalid JSON on JSONL line {line_number}"
+                    ) from exc
                 if not isinstance(value, dict):
                     raise ValueError("dataset_path JSONL must contain objects")
                 records.append(value)
@@ -867,7 +1353,11 @@ class Gsm8kDataset(BenchmarkDataset):
     @staticmethod
     def _pick(record: dict[str, Any], keys: tuple[str, ...]) -> str | None:
         return next(
-            (record[key] for key in keys if key in record and isinstance(record[key], str)),
+            (
+                record[key]
+                for key in keys
+                if key in record and isinstance(record[key], str)
+            ),
             None,
         )
 
@@ -888,13 +1378,13 @@ class Gsm8kDataset(BenchmarkDataset):
         if num_requests < 1:
             raise ValueError("num_requests must be positive")
         if input_len < 1 or prefix_len < 0:
-            raise ValueError("gsm8k input_len must be positive and prefix_len non-negative")
+            raise ValueError(
+                "gsm8k input_len must be positive and prefix_len non-negative"
+            )
         if output_len is not None and output_len < 1:
             raise ValueError("gsm8k output_len must be positive when set")
         if not 0.0 <= shared_prefix_ratio <= 1.0:
-            raise ValueError(
-                "gsm8k shared_prefix_ratio must be between 0 and 1"
-            )
+            raise ValueError("gsm8k shared_prefix_ratio must be between 0 and 1")
         if shared_prefix_ratio:
             shared_prefix_len = int(input_len * shared_prefix_ratio)
         else:
@@ -904,9 +1394,7 @@ class Gsm8kDataset(BenchmarkDataset):
                 "gsm8k shared prefix must leave room for a unique prompt tail"
             )
         if prefix_len > shared_prefix_len:
-            raise ValueError(
-                "gsm8k round prefix must not exceed the shared prefix"
-            )
+            raise ValueError("gsm8k round prefix must not exceed the shared prefix")
         unique_length = input_len - shared_prefix_len
 
         round_text = f"【GSM8K-ROUND-{run_id or uuid.uuid4().hex[:8]}】"
@@ -924,7 +1412,9 @@ class Gsm8kDataset(BenchmarkDataset):
         if not shared_prompt_text:
             raise ValueError("gsm8k shared prefix record requires a question field")
         shared_answer_text = self._pick(shared_record, self.ANSWER_KEYS)
-        shared_text = f"Question: {shared_prompt_text}\nAnswer: {shared_answer_text or ''}\n"
+        shared_text = (
+            f"Question: {shared_prompt_text}\nAnswer: {shared_answer_text or ''}\n"
+        )
         shared_source_ids = self._tokenizer_sequence(tokenizer, shared_text)
         round_ids = self._tokenizer_sequence(tokenizer, round_text)
         round_prefix_ids = (
@@ -935,11 +1425,12 @@ class Gsm8kDataset(BenchmarkDataset):
         shared_body_target = shared_prefix_len - len(round_prefix_ids)
         shared_source_repeats = max(
             1,
-            math.ceil(len(round_prefix_ids) + shared_body_target) // len(shared_source_ids),
+            math.ceil(len(round_prefix_ids) + shared_body_target)
+            // len(shared_source_ids),
         )
-        shared_body_ids = (
-            shared_source_ids * shared_source_repeats
-        )[:shared_body_target]
+        shared_body_ids = (shared_source_ids * shared_source_repeats)[
+            :shared_body_target
+        ]
         if len(round_prefix_ids) + len(shared_body_ids) != shared_prefix_len:
             raise ValueError(
                 "gsm8k shared prefix could not be built from the source text"
@@ -957,7 +1448,9 @@ class Gsm8kDataset(BenchmarkDataset):
                 raise ValueError("gsm8k records require a question field")
             answer = self._pick(record, self.ANSWER_KEYS)
             resolved_output_len = (
-                output_len if output_len is not None else len(tokenizer.encode(answer or "\n"))
+                output_len
+                if output_len is not None
+                else len(tokenizer.encode(answer or "\n"))
             )
             source_text = f"Question: {question}\nAnswer: {answer or ''}\n"
             source_ids = self._tokenizer_sequence(tokenizer, source_text)
@@ -1010,7 +1503,16 @@ def create_dataset(
         return HuggingFaceDataset(**path_args)
     if name == "gsm8k":
         return Gsm8kDataset(**path_args)
+    if name == "humaneval":
+        return HumanEvalDataset(**path_args)
+    if name == "instructcoder":
+        return InstructCoderDataset(**path_args)
+    if name == "blazedit":
+        return BlazeditDataset(**path_args)
+    if name == "bfcl":
+        return BfclDataset(**path_args)
     raise ValueError(
         f"unknown benchmark dataset {name!r}; expected "
-        "'text', 'random', 'sonnet', 'sharegpt', 'burstgpt', 'hf' or 'gsm8k'"
+        "'text', 'random', 'sonnet', 'sharegpt', 'burstgpt', 'hf', 'gsm8k', "
+        "'humaneval', 'instructcoder', 'blazedit' or 'bfcl'"
     )

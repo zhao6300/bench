@@ -154,6 +154,22 @@
           "total_gpus": 8
         }
       }
+    },
+    {
+      "name": "coding-work-dataset-sample",
+      "description": "演示 HumanEval coding / work 本地数据集接入",
+      "tags": ["dataset", "humaneval", "coding"],
+      "enabled": false,
+      "scenario": "single",
+      "params": {
+        "dataset": "humaneval",
+        "dataset_path": "examples/datasets/coding-work/openai-humaneval-test.jsonl",
+        "dataset_output_len": 32,
+        "requests": {
+          "concurrency": 1,
+          "count": 2
+        }
+      }
     }
   ]
 }
