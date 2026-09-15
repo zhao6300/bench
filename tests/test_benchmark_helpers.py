@@ -15,6 +15,7 @@ from benchmark.benchmark import (
     _peak_server_metrics,
     _request_meets_slo,
     _slo_capacity_round_passes,
+    _vllm_spec_decode_server_metrics,
     _vllm_prefix_cache_counter_rate,
     parse_workload_mix,
     query_gpu_metrics,
@@ -172,25 +173,45 @@ def test_vllm_prefix_cache_counter_rate_excludes_resets_and_zero_queries() -> No
             "sources": {"hits": ["vllm:prefix_cache_hits"], "queries": ["vllm:prefix_cache_queries"]},
         }
     }
+
+
+def test_vllm_spec_decode_counters_compute_round_delta() -> None:
+    """Pair Prometheus spec-decode counters into a single round summary."""
+    start = {
+        "_vllm_spec_decode_counters": {
+            "drafts": {"{engine=\"0\"}": 4},
+            "draft_tokens": {"{engine=\"0\"}": 8},
+            "accepted_tokens": {"{engine=\"0\"}": 2},
+            "accepted_positions": {
+                "{engine=\"0\",position=\"0\"}": 3,
+                "{engine=\"0\",position=\"1\"}": 1,
+                "{engine=\"0\",position=\"2\"}": 0,
+            },
+        }
+    }
     end = {
-        "_vllm_prefix_cache_counters": {
-            "hits": {"{model_name=\"reset\"}": 2, "{model_name=\"idle\"}": 3},
-            "queries": {"{model_name=\"reset\"}": 4, "{model_name=\"idle\"}": 5},
-            "sources": {"hits": ["vllm:prefix_cache_hits"], "queries": ["vllm:prefix_cache_queries"]},
+        "_vllm_spec_decode_counters": {
+            "drafts": {"{engine=\"0\"}": 6},
+            "draft_tokens": {"{engine=\"0\"}": 14},
+            "accepted_tokens": {"{engine=\"0\"}": 10},
+            "accepted_positions": {
+                "{engine=\"0\",position=\"0\"}": 8,
+                "{engine=\"0\",position=\"1\"}": 4,
+                "{engine=\"0\",position=\"2\"}": 1,
+            },
         }
     }
 
-    assert _vllm_prefix_cache_counter_rate(start, end, 2.0) == {
-        "hit_rate": None,
-        "window_seconds": 2.0,
-        "hit_delta": 0.0,
-        "query_delta": 0.0,
-        "hit_rate_per_second": 0.0,
-        "query_rate_per_second": 0.0,
-        "paired_series_count": 2,
-        "reset_series_count": 1,
-        "zero_query_series_count": 1,
-        "source": "vllm:prefix_cache_hits / vllm:prefix_cache_queries counter rate",
+    summary = _vllm_spec_decode_server_metrics(start, end)
+
+    assert summary == {
+        "source": "vllm_prometheus.spec_decode",
+        "aggregation": "round_counter_delta",
+        "num_spec_steps": 2,
+        "num_draft_tokens": 6,
+        "num_accepted_draft_tokens": 8,
+        "num_spec_tokens": 3,
+        "num_accepted_draft_tokens_per_position": {0: 5, 1: 3, 2: 1},
     }
 
 

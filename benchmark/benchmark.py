@@ -1309,6 +1309,25 @@ VLLM_PREFIX_CACHE_QUERY_COUNTER_METRICS = {
     "vllm_prefix_cache_queries_total",
 }
 
+VLLM_SPEC_DECODE_COUNTER_METRICS = {
+    "drafts": {
+        "vllm:spec_decode_num_drafts",
+        "vllm:spec_decode_num_drafts_total",
+    },
+    "draft_tokens": {
+        "vllm:spec_decode_num_draft_tokens",
+        "vllm:spec_decode_num_draft_tokens_total",
+    },
+    "accepted_tokens": {
+        "vllm:spec_decode_num_accepted_tokens",
+        "vllm:spec_decode_num_accepted_tokens_total",
+    },
+    "accepted_positions": {
+        "vllm:spec_decode_num_accepted_tokens_per_pos",
+        "vllm:spec_decode_num_accepted_tokens_per_pos_total",
+    },
+}
+
 
 def _parse_prometheus_series_sample(line):
     """Return a metric name, raw label series, and value from one sample.
@@ -1382,6 +1401,94 @@ def _record_vllm_prefix_cache_counter(
     counters[kind][label_series] = value
     if metric_name not in counters["sources"][kind]:
         counters["sources"][kind].append(metric_name)
+
+
+def _vllm_spec_decode_counter_delta(
+    start_series: dict[str, float],
+    end_series: dict[str, float],
+) -> float:
+    """Sum positive deltas over the same Prometheus label series."""
+    delta = 0.0
+    for series, end_value in end_series.items():
+        start_value = start_series.get(series)
+        if not isinstance(start_value, (int, float)) or isinstance(
+            start_value,
+            bool,
+        ):
+            continue
+        if not isinstance(end_value, (int, float)) or isinstance(
+            end_value,
+            bool,
+        ):
+            continue
+        delta += max(0.0, end_value - start_value)
+    return delta
+
+
+def _vllm_spec_decode_server_metrics(
+    start_snapshot: Any,
+    end_snapshot: Any,
+) -> dict[str, Any] | None:
+    """Sum server-side vLLM spec-decode counter deltas for one round.
+
+    Args:
+        start_snapshot: Prometheus snapshot taken before the round.
+        end_snapshot: Prometheus snapshot taken after the round.
+
+    Returns:
+        A round-window aggregate, or ``None`` when no relevant counters are
+        paired across both snapshots. Per-position acceptance counts are used
+        only when vLLM already exposes them.
+    """
+    start_snapshot = start_snapshot if isinstance(start_snapshot, dict) else {}
+    end_snapshot = end_snapshot if isinstance(end_snapshot, dict) else {}
+    start_counters = start_snapshot.get("_vllm_spec_decode_counters", {})
+    end_counters = end_snapshot.get("_vllm_spec_decode_counters", {})
+    if not isinstance(start_counters, dict) or not isinstance(
+        end_counters,
+        dict,
+    ):
+        return None
+
+    deltas = {
+        kind: _vllm_spec_decode_counter_delta(
+            start_counters.get(kind, {}),
+            end_counters.get(kind, {}),
+        )
+        for kind in set(start_counters) | set(end_counters)
+    }
+    if not deltas.get("draft_tokens") and not deltas.get("accepted_tokens"):
+        return None
+
+    start_positions = start_counters.get("accepted_positions", {})
+    end_positions = end_counters.get("accepted_positions", {})
+    accepted_positions: dict[int, int] = {}
+    for label_series in set(start_positions) & set(end_positions):
+        position_match = re.search(r'position="(\d+)"', label_series)
+        if not position_match:
+            continue
+        position = int(position_match.group(1))
+        position_delta = _vllm_spec_decode_counter_delta(
+            {label_series: start_positions[label_series]},
+            {label_series: end_positions[label_series]},
+        )
+        accepted_positions[position] = (
+            accepted_positions.get(position, 0) + int(position_delta)
+        )
+
+    summary = {
+        "source": "vllm_prometheus.spec_decode",
+        "aggregation": "round_counter_delta",
+        "num_spec_steps": int(deltas.get("drafts", 0.0)),
+        "num_draft_tokens": int(deltas.get("draft_tokens", 0.0)),
+        "num_accepted_draft_tokens": int(
+            deltas.get("accepted_tokens", 0.0)
+        ),
+    }
+    if accepted_positions:
+        summary["num_spec_tokens"] = max(accepted_positions) + 1
+        summary["num_accepted_draft_tokens_per_position"] = accepted_positions
+    return summary
 
 
 def _vllm_prefix_cache_counter_rate(
@@ -1551,6 +1658,14 @@ def query_gpu_metrics(api_base, headers=None):
                     info, "queries", metric_name, label_series, value,
                 )
                 continue
+
+            for kind, metric_names in VLLM_SPEC_DECODE_COUNTER_METRICS.items():
+                if metric_name not in metric_names:
+                    continue
+                _record_vllm_spec_decode_counter(
+                    info, kind, label_series, float(value),
+                )
+                break
 
             # vLLM exposes KV cache usage directly. SGLang's documented
             # sglang:token_usage gauge is the equivalent KV token utilization;
@@ -1924,6 +2039,56 @@ def _aggregate_spec_decode_metrics(results, successful_count: int):
     return summary
 
 
+def _spec_decode_server_counter_summary(
+    start_snapshot: Any,
+    end_snapshot: Any,
+) -> dict[str, Any] | None:
+    """Build a fallback spec-decode summary from server counter deltas."""
+    server_counters = _vllm_spec_decode_server_metrics(
+        start_snapshot,
+        end_snapshot,
+    )
+    if server_counters is None:
+        return None
+
+    steps = server_counters.get("num_spec_steps")
+    draft_tokens = server_counters.get("num_draft_tokens")
+    accepted = server_counters.get("num_accepted_draft_tokens")
+    if not isinstance(steps, int) or not isinstance(draft_tokens, int) or not isinstance(accepted, int):
+        return None
+
+    summary: dict[str, Any] = {
+        "source": server_counters.get("source"),
+        "aggregation": server_counters.get("aggregation"),
+        "num_spec_steps": steps,
+        "num_draft_tokens": draft_tokens,
+        "num_accepted_draft_tokens": accepted,
+        "num_spec_tokens": server_counters.get("num_spec_tokens"),
+        "draft_acceptance_rate": (
+            accepted / draft_tokens if draft_tokens > 0 else None
+        ),
+        "mean_acceptance_length": (
+            1 + accepted / steps if steps > 0 else None
+        ),
+    }
+    accepted_positions = server_counters.get(
+        "num_accepted_draft_tokens_per_position"
+    )
+    if isinstance(accepted_positions, dict) and accepted_positions:
+        summary["per_position"] = [
+            {
+                "position": position,
+                "num_accepted_draft_tokens": counter,
+                "num_draft_tokens": steps,
+                "draft_acceptance_rate": (
+                    counter / steps if steps > 0 else None
+                ),
+            }
+            for position, counter in sorted(accepted_positions.items())
+        ]
+    return summary
+
+
 def _parse_spec_decode_per_step_metrics(
     per_step_accepted: Any,
     per_step_drafted: Any,
@@ -2089,6 +2254,7 @@ def _aggregate_api_round_metrics(
     server_metrics, slo_ttft, slo_tpot, target_rps=None, admissions=None,
     rate_schedule="fixed", rate_overload_policy="no-catch-up",
     dropped_requests=0, arrival_plan=None,
+    spec_decode_start=None, spec_decode_end=None,
 ):
     """Aggregate request records using explicit, consistent result populations."""
     total_requests = len(prompt_lens_list)
@@ -2272,8 +2438,10 @@ def _aggregate_api_round_metrics(
             if output_token_count_complete else None
         ),
         "avg_prompt_len": total_prompt_tokens / successful_count if successful_count else None,
-        "speculative_decoding": _aggregate_spec_decode_metrics(
-            results, successful_count
+        "speculative_decoding": _aggregate_spec_decode_metrics(results, successful_count)
+        or _spec_decode_server_counter_summary(
+            spec_decode_start,
+            spec_decode_end,
         ),
         "server_metrics": server_metrics,
         "server_metrics_peak": server_metrics,
@@ -2663,6 +2831,8 @@ def run_api_benchmark_round(
         rate_overload_policy,
         dropped_requests[0],
         arrival_plan,
+        spec_decode_start=prefix_cache_counter_start,
+        spec_decode_end=prefix_cache_counter_end,
     )
 
 
@@ -2791,18 +2961,23 @@ def print_benchmark_metrics(metrics, workload):
     speculative_decoding = m.get("speculative_decoding")
     if speculative_decoding:
         print("\n  ── 投机解码接受率 ──")
-        print(
-            f"    覆盖请求 / 成功请求      : "
-            f"{speculative_decoding['request_count']} / {m['successful']}"
-        )
-        print(
-            f"    Draft 接受率             : "
-            f"{speculative_decoding['draft_acceptance_rate'] * 100:.1f}%"
-        )
-        print(
-            f"    平均接受长度             : "
-            f"{speculative_decoding['mean_acceptance_length']:.3f} draft token/step"
-        )
+        if speculative_decoding.get("aggregation") == "server_counter_delta":
+            print("    覆盖范围                  : 服务器 Prometheus counters（round 换算）")
+        else:
+            print(
+                f"    覆盖请求 / 成功请求      : "
+                f"{speculative_decoding['request_count']} / {m['successful']}"
+            )
+        if speculative_decoding.get("draft_acceptance_rate") is not None:
+            print(
+                f"    Draft 接受率             : "
+                f"{speculative_decoding['draft_acceptance_rate'] * 100:.1f}%"
+            )
+        if speculative_decoding.get("mean_acceptance_length") is not None:
+            print(
+                f"    平均接受长度             : "
+                f"{speculative_decoding['mean_acceptance_length']:.3f} draft token/step"
+            )
         print(
             f"    接受 / 提案 / 步数       : "
             f"{speculative_decoding['num_accepted_draft_tokens']} / "

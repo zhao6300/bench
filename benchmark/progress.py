@@ -550,6 +550,7 @@ class RichProgressReporter(ProgressReporter):
             metrics = result.get("selected_metrics")
         metrics = metrics if isinstance(metrics, dict) else {}
         scenario = str(record.get("scenario") or result.get("scenario") or "-")
+        speculative = self._final_speculative_summary(metrics)
         table = self._Table.grid(expand=True, padding=(0, 1))
         table.add_column(style="cyan", no_wrap=True)
         table.add_column(overflow="fold")
@@ -558,6 +559,7 @@ class RichProgressReporter(ProgressReporter):
         table.add_row("延迟", self._final_latency_summary(metrics))
         table.add_row("性能", self._final_join_lines(self._final_throughput_summary(result, metrics), self._final_qps_goodput_summary(metrics)))
         table.add_row("服务端", self._final_server_summary(metrics))
+        table.add_row("投机解码", speculative)
         table.add_row("场景结果", self._final_scenario_summary(result, scenario))
         table.add_row("说明", self._final_result_message(record))
         title = f"用例详情 · {self._final_selected_case + 1}/{len(records)} · {record.get('name', '-')}"
@@ -739,6 +741,55 @@ class RichProgressReporter(ProgressReporter):
                 "每秒达标请求数", self._format_request_rate(metrics.get("goodput_qps"))
             ),
         )
+
+    def _final_speculative_summary(self, metrics: dict[str, Any]) -> str:
+        """Format available speculative decoding acceptance metrics."""
+        speculative = metrics.get("speculative_decoding")
+        if not isinstance(speculative, dict):
+            return "-"
+
+        accepted = self._format_integer(speculative.get("num_accepted_draft_tokens"))
+        drafted = self._format_integer(speculative.get("num_draft_tokens"))
+        steps = self._format_integer(speculative.get("num_spec_steps"))
+        lines = [
+            self._final_labeled_value(
+                "Draft 接受率",
+                self._format_percent_from_ratio(speculative.get("draft_acceptance_rate")),
+            ),
+            self._final_labeled_value(
+                "平均接受长度",
+                (
+                    f"{speculative['mean_acceptance_length']:.3f} draft token/step"
+                    if self._is_number(speculative.get("mean_acceptance_length"))
+                    else "-"
+                ),
+            ),
+        ]
+        if accepted != "-" or drafted != "-" or steps != "-":
+            lines.append(f"接受 / 提案 / 步数 {accepted} / {drafted} / {steps}")
+
+        per_position = speculative.get("per_position")
+        if isinstance(per_position, list):
+            for position_metrics in per_position:
+                if not isinstance(position_metrics, dict):
+                    continue
+                position = self._format_integer(position_metrics.get("position"))
+                rate = self._format_percent_from_ratio(
+                    position_metrics.get("draft_acceptance_rate")
+                )
+                if position == "-" or rate == "-":
+                    continue
+                position_accepted = self._format_integer(
+                    position_metrics.get("num_accepted_draft_tokens")
+                )
+                position_drafted = self._format_integer(
+                    position_metrics.get("num_draft_tokens")
+                )
+                lines.append(
+                    f"位置 {position} 接受率 {rate} ({position_accepted}/{position_drafted})"
+                )
+
+        return self._final_join_lines(*lines)
 
     def _final_server_summary(self, metrics: dict[str, Any]) -> str:
         """Format cache and queue observations from server metrics."""

@@ -631,7 +631,9 @@ llm-benchmark --mode api --dataset <dataset> --dataset-path <dataset-path> --mod
 
 ### 投机解码接受率
 
-若 vLLM 已启用 `--per-request-spec-decode-metrics summary`，流式最终 usage chunk 会携带 `metrics.speculative_decoding`。按请求保存该对象后，round 指标会生成 `speculative_decoding`：`draft_acceptance_rate` 是接受/提案 token 比例，`mean_acceptance_length` 是每 step 平均接受长度，另含请求覆盖数、步数、draft/proposal/accepted token 总数和接受直方图。
+若 vLLM 已启用 `--per-request-spec-decode-metrics summary`，流式最终 usage chunk 会携带 `metrics.speculative_decoding`。按请求保存该对象后，round 指标会生成 `speculative_decoding`：`draft_acceptance_rate` 是接受/提案 token 比例，`mean_acceptance_length` 是每 step 平均接受长度，另含请求覆盖数、步数、draft/proposal/accepted token 总数和接受直方图。终端汇总和最终结果详情都会显示该字段。
+
+若最终 usage chunk 未携带 per-request 指标，工具会回读 round 前后的 vLLM `/metrics`，使用 `spec_decode_num_drafts`、`spec_decode_num_draft_tokens`、`spec_decode_num_accepted_tokens` 和可选 `spec_decode_num_accepted_tokens_per_pos` 的 round 增量生成汇总。该 fallback 标记为 `aggregation=server_counter_delta`；若服务器同时承载了其他基准流量，counter 增量不只属于当前 round。
 
 控制台还会显示每个 draft token 位置（第 1 个、第 2 个……）的接受率；这里的“位置”是单次 speculative draft 里的第几位，不是请求在报告中的位置。vLLM 的 `detailed` 模式提供 `per_step_accepted` 和 `per_step_drafted`，工具会按真实 proposal 长度逐位置聚合；若只有 `summary`，则仅在满足 `num_draft_tokens == num_spec_steps * num_spec_tokens` 时从 `acceptance_histogram` 精确推导。两种数据都没有时不会构造位置率，但总和统计仍保留。
 

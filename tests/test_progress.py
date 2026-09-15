@@ -659,6 +659,40 @@ def test_rich_final_scenario_labels_are_user_facing() -> None:
     )
 
 
+def test_final_speculative_summary_includes_position_rates() -> None:
+    """Expose per-position speculative acceptance in the final detail view."""
+    from benchmark import progress as progress_module
+
+    reporter = object.__new__(progress_module.RichProgressReporter)
+    summary = reporter._final_speculative_summary({
+        "speculative_decoding": {
+            "draft_acceptance_rate": 0.5,
+            "mean_acceptance_length": 1.8,
+            "num_accepted_draft_tokens": 2,
+            "num_draft_tokens": 4,
+            "num_spec_steps": 2,
+            "per_position": [
+                {
+                    "position": 1,
+                    "draft_acceptance_rate": 1.0,
+                    "num_accepted_draft_tokens": 2,
+                    "num_draft_tokens": 2,
+                },
+                {
+                    "position": 2,
+                    "draft_acceptance_rate": 0.0,
+                    "num_accepted_draft_tokens": 0,
+                    "num_draft_tokens": 2,
+                },
+            ],
+        },
+    })
+
+    assert "Draft 接受率 50.0%" in summary
+    assert "位置 1 接受率 100.0% (2/2)" in summary
+    assert "位置 2 接受率 0.0% (0/2)" in summary
+
+
 def _matrix_suite_config(
     *,
     continue_on_error: bool = True,
