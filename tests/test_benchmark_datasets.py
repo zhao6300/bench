@@ -714,6 +714,29 @@ def test_gsm8k_dataset_repairs_tokenizer_round_trip_changes(tmp_path) -> None:
     assert batch.prompt_lens == [100, 100]
     assert batch.shared_prefix_len == len(tokenizer.encode(batch.prompts[0][:70]))
     assert batch.prompts[0][:batch.shared_prefix_len] == batch.prompts[1][:batch.shared_prefix_len]
+
+
+def test_gsm8k_dataset_reaches_target_length_with_prefix_repetition(tmp_path) -> None:
+    """Repeating the same source is enough to fill any positive GSM8K prefix."""
+    path = tmp_path / "gsm8k.jsonl"
+    path.write_text(
+        '{"question":"hello math","answer":"2"}\n',
+        encoding="utf-8",
+    )
+    dataset = Gsm8kDataset(dataset_path=str(path), random_seed=17)
+
+    batch = dataset.sample(
+        FakeTokenizer(),
+        num_requests=1,
+        input_len=100,
+        output_len=8,
+        prefix_len=32,
+        shared_prefix_ratio=0.7,
+        run_id="stable-round",
+    )
+
+    assert batch.prompt_lens == [100]
+    assert batch.shared_prefix_len == 70
 def test_gsm8k_dataset_maps_cli_and_run_id_into_batch(tmp_path) -> None:
     path = tmp_path / "gsm8k.jsonl"
     path.write_text(

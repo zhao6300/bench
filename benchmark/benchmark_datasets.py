@@ -1512,8 +1512,7 @@ class Gsm8kDataset(BenchmarkDataset):
         shared_body_target = shared_prefix_len - len(round_prefix_ids)
         shared_source_repeats = max(
             1,
-            math.ceil(len(round_prefix_ids) + shared_body_target)
-            // len(shared_source_ids),
+            math.ceil(shared_body_target / len(shared_source_ids)),
         )
         shared_body_ids = (shared_source_ids * shared_source_repeats)[
             :shared_body_target
