@@ -219,6 +219,7 @@ import os
 import platform
 import random
 import re
+from collections import defaultdict
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from itertools import pairwise
 from pathlib import Path
@@ -1825,6 +1826,9 @@ def _aggregate_spec_decode_metrics(results, successful_count: int):
     )
     totals: dict[str, int] = {name: 0 for name, _ in counters}
     histograms: list[list[int]] = []
+    position_drafts: defaultdict[int, int] = defaultdict(int)
+    position_acceptance: defaultdict[int, int] = defaultdict(int)
+    position_metrics_count = 0
     request_count = 0
     max_spec_tokens: int | None = None
     for result in results:
@@ -1851,6 +1855,28 @@ def _aggregate_spec_decode_metrics(results, successful_count: int):
         )
         if histogram_valid:
             histograms.append(list(histogram))
+        per_step_accepted = speculative_metrics.get("per_step_accepted")
+        per_step_drafted = speculative_metrics.get("per_step_drafted")
+        position_counters = _parse_spec_decode_per_step_metrics(
+            per_step_accepted,
+            per_step_drafted,
+            values[3],
+        )
+        if position_counters is None and values[3] > 0 and histogram_valid:
+            position_counters = _position_metrics_from_histogram(
+                histogram,
+                values[0],
+                values[1],
+                values[3],
+            )
+        if position_counters is not None:
+            position_metrics_count += 1
+            for position, (drafts, accepted_tokens) in enumerate(
+                position_counters,
+                start=1,
+            ):
+                position_drafts[position] += drafts
+                position_acceptance[position] += accepted_tokens
         request_count += 1
         for name, value in zip(
             (name for name, _ in counters),
@@ -1881,7 +1907,117 @@ def _aggregate_spec_decode_metrics(results, successful_count: int):
         summary["acceptance_histogram"] = [
             sum(values) for values in zip(*histograms, strict=True)
         ]
+    if position_drafts and position_metrics_count:
+        summary["per_position"] = [
+            {
+                "position": position,
+                "num_accepted_draft_tokens": position_acceptance[position],
+                "num_draft_tokens": position_drafts[position],
+                "draft_acceptance_rate": (
+                    position_acceptance[position] / position_drafts[position]
+                    if position_drafts[position] > 0
+                    else None
+                ),
+            }
+            for position in sorted(position_drafts)
+            if position_drafts[position] > 0
+        ]
+        summary["per_position_request_count"] = position_metrics_count
     return summary
+
+
+def _parse_spec_decode_per_step_metrics(
+    per_step_accepted: Any,
+    per_step_drafted: Any,
+    num_spec_tokens: int,
+) -> list[tuple[int, int]] | None:
+    """Validate detailed speculative metrics and project them by position.
+
+    Args:
+        per_step_accepted: vLLM ordered accepted draft count for every step.
+        per_step_drafted: vLLM ordered drafted token count for every step.
+        num_spec_tokens: Maximum speculative token position count.
+
+    Returns:
+        A list indexed from position 1 with ``(drafted, accepted)`` counters,
+        or ``None`` when the detailed payload is absent or invalid.
+    """
+    if not isinstance(per_step_accepted, list) or not isinstance(
+        per_step_drafted,
+        list,
+    ):
+        return None
+    if len(per_step_accepted) != len(per_step_drafted):
+        return None
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in (*per_step_accepted, *per_step_drafted)
+    ):
+        return None
+    if any(
+        accepted > drafted
+        for accepted, drafted in zip(
+            per_step_accepted,
+            per_step_drafted,
+            strict=True,
+        )
+    ):
+        return None
+    if num_spec_tokens < max(
+        per_step_drafted,
+        default=0,
+    ):
+        return None
+
+    positions: list[tuple[int, int]] = [
+        (0, 0) for _ in range(num_spec_tokens)
+    ]
+    for accepted, drafted in zip(
+        per_step_accepted,
+        per_step_drafted,
+        strict=True,
+    ):
+        for position_index in range(drafted):
+            drafted_position, accepted_position = positions[position_index]
+            positions[position_index] = (
+                drafted_position + 1,
+                accepted_position + (1 if accepted > position_index else 0),
+            )
+    return positions
+
+
+def _position_metrics_from_histogram(
+    histogram: list[int],
+    num_spec_steps: int,
+    num_draft_tokens: int,
+    num_spec_tokens: int,
+) -> list[tuple[int, int]] | None:
+    """Derive position metrics only when every step drafted all positions.
+
+    Args:
+        histogram: Dense histogram indexed by accepted draft-token count.
+        num_spec_steps: Number of verification steps.
+        num_draft_tokens: Total drafted tokens reported by vLLM.
+        num_spec_tokens: Maximum speculative token position count.
+
+    Returns:
+        Position counters indexed from position 1, or ``None`` when the
+        summary alone cannot determine whether every position was proposed.
+    """
+    if num_spec_tokens <= 0 or num_spec_steps <= 0:
+        return None
+    if len(histogram) != num_spec_tokens + 1:
+        return None
+    if sum(histogram) != num_spec_steps:
+        return None
+    if num_draft_tokens != num_spec_steps * num_spec_tokens:
+        return None
+
+    positions: list[tuple[int, int]] = []
+    for position_index in range(num_spec_tokens):
+        accepted = sum(histogram[position_index + 1:])
+        positions.append((num_spec_steps, accepted))
+    return positions
 
 
 def _summarize_pacing(
@@ -2685,6 +2821,15 @@ def print_benchmark_metrics(metrics, workload):
             f"{speculative_decoding['num_draft_tokens']} / "
             f"{speculative_decoding['num_spec_steps']}"
         )
+        per_position = speculative_decoding.get("per_position")
+        if per_position:
+            print("    每位置 Draft 接受率       :")
+            for position_metrics in per_position:
+                rate = position_metrics["draft_acceptance_rate"]
+                print(
+                    f"      位置 {position_metrics['position']}                  : "
+                    f"{rate * 100:.1f}%"
+                )
         histogram = speculative_decoding.get("acceptance_histogram")
         if histogram:
             print(f"    接受直方图               : {histogram}")

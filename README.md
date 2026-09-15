@@ -631,7 +631,9 @@ llm-benchmark --mode api --dataset <dataset> --dataset-path <dataset-path> --mod
 
 ### 投机解码接受率
 
-若 vLLM 已设置 `--per-request-spec-decode-metrics summary`，流式最终 usage chunk 会携带 `metrics.speculative_decoding`。工具会按请求保留原始指标，并在 round 指标中写入 `speculative_decoding`：`draft_acceptance_rate` 是接受/提案 token 比例，`mean_acceptance_length` 是每 step 平均接受长度，另含请求覆盖数、步数、draft/proposal/accepted token 总数和接受直方图。若服务未开启该功能，报告会省略该字段而不会估算。
+若 vLLM 已启用 `--per-request-spec-decode-metrics summary`，流式最终 usage chunk 会携带 `metrics.speculative_decoding`。按请求保存该对象后，round 指标会生成 `speculative_decoding`：`draft_acceptance_rate` 是接受/提案 token 比例，`mean_acceptance_length` 是每 step 平均接受长度，另含请求覆盖数、步数、draft/proposal/accepted token 总数和接受直方图。
+
+控制台还会显示每个 draft token 位置（第 1 个、第 2 个……）的接受率；这里的“位置”是单次 speculative draft 里的第几位，不是请求在报告中的位置。vLLM 的 `detailed` 模式提供 `per_step_accepted` 和 `per_step_drafted`，工具会按真实 proposal 长度逐位置聚合；若只有 `summary`，则仅在满足 `num_draft_tokens == num_spec_steps * num_spec_tokens` 时从 `acceptance_histogram` 精确推导。两种数据都没有时不会构造位置率，但总和统计仍保留。
 
 ### 服务端 KV Cache 命中率
 
