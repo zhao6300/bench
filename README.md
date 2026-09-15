@@ -1,6 +1,6 @@
 # LLM Inference Benchmark
 
-面向 **vLLM 离线引擎**和 **OpenAI 兼容推理服务**的 LLM 性能基准工具。它使用文本、随机 token、移植数据集或 GSM8K 复制工作负载，测量长上下文 Prefill、生成 Decode、流式延迟和 SLO 容量。
+ 面向 **vLLM 离线引擎**和 **OpenAI 兼容推理服务**的 LLM 性能基准工具。它使用文本、随机 token、本地离线数据集或 GSM8K 复制工作负载，测量长上下文 Prefill、生成 Decode、流式延迟和 SLO 容量。
 
 所有可运行的基准示例均位于 [`examples/`](examples/)。README 不重复维护手写参数组合：请从真实 JSON 配置复制本地副本、修改部署参数后运行，确保文档与仓库示例保持一致。
 
@@ -544,19 +544,21 @@ uv run --no-project .venv/bin/python -m web.serve
 
 对 `random` 数据集，`random_input_len`、`random_output_len` 和 `random_prefix_len` 是权威参数，分别表示独有输入、输出上限和共享前缀；它们优先于通用的 `context_len`/`max_tokens`。工具会在发送前以本地 tokenizer（不添加 special token）反复 decode/re-encode 并补充非 special token，直到最终 prompt 严格达到目标长度；如果 tokenizer 在有限次修复内无法产生该长度，工具会报错而不会静默发送长度不符的请求。API 服务端仍可因 chat template 或不同 tokenizer 而报告不同的 `usage.prompt_tokens`。`share_prefix` 与 `prefix_ratio` 仅对 `text` 生效。
 
-### 移植数据集
+### 本地离线数据集
 
-以下 vLLM serving benchmark 数据集已移植，默认只读取本地文件，不会触发 Hugging Face 或 API 网络下载；使用时都必须显式设置 `dataset_path`：
+以下常用 vLLM serving benchmark 数据集整理为本地离线文件，默认只读取本地数据；使用时都必须显式设置 `dataset_path`：
 
-- `sonnet`：多行诗句文本；参数为 `sonnet_input_len`、`sonnet_output_len`、`sonnet_prefix_len`。
-- `sharegpt`：读取 `conversations[0..1].value`，输出长度默认使用第二轮自然 token 数。
-- `burstgpt`：读取本地 CSV 中的 GPT-4 行，并从整数 token 字段构造请求。
-- `hf`：通用离线记录适配器，可识别 `prompt`、`input`、`question` 与 `completion`、`response`、`answer` 等常见字段。
-- `humaneval`：读取 HumanEval `prompt`，默认以 `canonical_solution` 的自然 token 数作为输出上限。
-- `instructcoder`：读取输入与编辑指令并格式化为代码改写请求；默认输出上限 200。
-- `blazedit`：读取整文件代码、改写请求和改写距离；默认输出上限 4000。
-- `bfcl`：读取 BFCL 聊天首turn与 function schema，转换为包含工具说明的纯文本压测负载；默认输出上限 512。
-- `swe_bench`：读取 SWE-bench `problem_statement` 与 `patch`，构造 issue 风格编码工作负载。
+| 数据集 | 内容 | 本地规模 / 长度分布 | 适配方式 | 适用压测场景 |
+| --- | --- | --- | --- | --- |
+| `sonnet` | 多行诗句样本。 | 1 条记录，14 字符；等长复制样本。 | 参数 `sonnet_input_len`、`sonnet_output_len`、`sonnet_prefix_len` 控制 | 诗歌文本短请求、prefix cache 校准 |
+| `sharegpt` | 首轮提问 + 第二轮答案的多轮对话。 | 1 条本地示例记录。 | 读 `conversations` 前 2 轮，输出默认使用第二轮自然长度。 | 多轮对话短中等任务 |
+| `burstgpt` | 本地 CSV 中的 GPT-4 记录。 | 2 条记录；请求/响应 token 分别为 6/3、1/2。 | 从整数字段构造请求。 | token 混合型短请求 |
+| `hf` | 通用 Hugging Face 离线记录样本。 | 1 条记录；prompt 5 字符，completion 7 字符。 | 识别 `prompt`、`input`、`question` 和 `completion`、`response`、`answer`。 | 通用 prompt/completion 压测 |
+| `humaneval` | HumanEval 函数补全任务。 | 164 条；prompt 中位数 396 字符，p95 926，max 1360；canonical_solution 中位数 149，p95 437，max 864 字符。 | 从 `prompt` 构造请求，输出默认使用 `canonical_solution` 自然长度。 | 短代码任务、函数补全 |
+| `instructcoder` | 代码编辑指令任务。 | 5708 条；input 中位数 375 字符，instruction 中位数 101，output 中位数 538；output p95 1309，max 2576 字符。 | 从输入和编辑指令构造代码编辑请求。 | 中等长度代码编辑工作负载 |
+| `blazedit` | 整文件代码改写。 | 两个文件共 186 条：5K 文件 code 中位数 5514 字符，10K 文件 code 中位数 10433 字符。 | 长文件 + 独立 code 改写请求。 | 长上下文代码改写、中高输入/输出长度 |
+| `bfcl` | BFCL 工具选择 / 调用工作负载。 | 858 条：simple 400、live_simple 258、multiple 200。 | 聊天首turn + function schema 转纯文本。 | 工具调用和 agent workflow |
+| `swe_bench` | SWE-bench issue-to-patch 工作负载。 | 2294 条；`problem_statement` 中位数 1117 字符，p95 5150，max 57256；`patch` 中位数 1406 字符，p95 9746，max 251655 字符。 | 从 `problem_statement` 和 `patch` 构造长尾代码任务。 | 长/变长编码任务，接近真实 issue 修复长度分布 |
 
 这些数据集共用 `dataset_input_len` 统一覆盖输入 token 长度，也支持 `dataset_output_len`
 统一覆盖输出上限，并可以继续使用 `share_prefix` 与 `prefix_ratio` 控制 KV-cache
