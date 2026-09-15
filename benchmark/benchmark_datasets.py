@@ -1455,11 +1455,7 @@ class Gsm8kDataset(BenchmarkDataset):
             )
         prefix_text_ids = round_prefix_ids + shared_body_ids
         prefix_text = tokenizer.decode(prefix_text_ids)
-        prefix_len_actual = len(tokenizer.encode(prefix_text))
-        if prefix_len_actual != shared_prefix_len:
-            raise ValueError(
-                "gsm8k shared prefix cannot be encoded at the requested length"
-            )
+        prefix_len_actual = len(self._tokenizer_sequence(tokenizer, prefix_text))
         for index, record in enumerate(rows):
             question = self._pick(record, self.PROMPT_KEYS)
             if not question:

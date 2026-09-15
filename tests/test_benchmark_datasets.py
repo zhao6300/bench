@@ -596,6 +596,26 @@ def test_gsm8k_dataset_supports_shared_prefix_ratio(tmp_path) -> None:
     assert batch.prompts[0][70:] != batch.prompts[1][70:]
 
 
+def test_gsm8k_dataset_accepts_tokenizer_round_trip_changes(tmp_path) -> None:
+    """Verify GSM8K prompts remain usable when a tokenizer re-encodes text differently."""
+    path = tmp_path / "gsm8k.jsonl"
+    path.write_text('{"question":"hello math","answer":"2"}\n', encoding="utf-8")
+    dataset = Gsm8kDataset(dataset_path=str(path), random_seed=17)
+    tokenizer = TrailingTokenDroppingTokenizer()
+
+    batch = dataset.sample(
+        tokenizer,
+        num_requests=2,
+        input_len=100,
+        output_len=8,
+        prefix_len=32,
+        shared_prefix_ratio=0.7,
+        run_id="same-round",
+    )
+
+    assert batch.prompt_lens == [99, 99]
+    assert batch.shared_prefix_len == len(tokenizer.encode(batch.prompts[0][:70]))
+    assert batch.prompts[0][:batch.shared_prefix_len] == batch.prompts[1][:batch.shared_prefix_len]
 def test_gsm8k_dataset_maps_cli_and_run_id_into_batch(tmp_path) -> None:
     path = tmp_path / "gsm8k.jsonl"
     path.write_text(
