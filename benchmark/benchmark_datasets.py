@@ -196,7 +196,11 @@ class BenchmarkDataset(ABC):
             token_ids = (
                 prompt_ids * max(1, math.ceil(target_tokens / max(1, len(prompt_ids))))
             )[:target_tokens]
-            return tokenizer.decode(token_ids), len(token_ids), 0
+            prompt = tokenizer.decode(token_ids)
+            actual_len = len(
+                BenchmarkDataset._tokenizer_sequence(tokenizer, prompt)
+            )
+            return prompt, actual_len, 0
         shared_tokens_count = int(target_tokens * prefix_ratio)
         unique_tokens_count = target_tokens - shared_tokens_count
         shared_ids = tokenizer.encode(
@@ -211,7 +215,11 @@ class BenchmarkDataset(ABC):
             :unique_tokens_count
         ]
         token_ids = (shared_ids + unique_ids)[:target_tokens]
-        return tokenizer.decode(token_ids), len(token_ids), shared_tokens_count
+        prompt = tokenizer.decode(token_ids)
+        actual_len = len(
+            BenchmarkDataset._tokenizer_sequence(tokenizer, prompt)
+        )
+        return prompt, actual_len, shared_tokens_count
 
     @staticmethod
     def _shared_token_prefix(tokenizer: TokenizerLike, prompts: Sequence[str]) -> int:
@@ -325,7 +333,9 @@ class TextDataset(BenchmarkDataset):
                 tokenizer, target_tokens - len(prefix_ids)
             )
             token_ids = (prefix_ids + body_ids)[:target_tokens]
-            return tokenizer.decode(token_ids), len(token_ids), 0, len(token_ids)
+            prompt = tokenizer.decode(token_ids)
+            actual_len = len(self._tokenizer_sequence(tokenizer, prompt))
+            return prompt, actual_len, 0, actual_len
 
         shared_tokens_count = int(target_tokens * prefix_ratio)
         unique_tokens_count = target_tokens - shared_tokens_count
@@ -357,12 +367,11 @@ class TextDataset(BenchmarkDataset):
         else:
             unique_part = []
         token_ids = (shared_part + unique_part)[:target_tokens]
-        return (
-            tokenizer.decode(token_ids),
-            len(token_ids),
-            len(shared_part),
-            len(unique_part),
-        )
+        prompt = tokenizer.decode(token_ids)
+        actual_len = len(self._tokenizer_sequence(tokenizer, prompt))
+        shared_len = min(len(shared_part), actual_len)
+        unique_len = min(len(unique_part), max(0, actual_len - shared_len))
+        return prompt, actual_len, shared_len, unique_len
 
     def _filler_token_ids(self, tokenizer: TokenizerLike, needed_len: int) -> list[int]:
         if needed_len <= 0:
@@ -847,10 +856,15 @@ class BurstGptDataset(BenchmarkDataset):
             token_ids = [
                 (index + offset) % tokenizer.vocab_size for offset in range(input_len)
             ]
+            prompt = tokenizer.decode(token_ids)
             requests.append(
                 SampleRequest(
-                    prompt=tokenizer.decode(token_ids),
-                    prompt_len=input_len,
+                    prompt=prompt,
+                    prompt_len=(
+                        len(self._tokenizer_sequence(tokenizer, prompt))
+                        if prompt
+                        else 0
+                    ),
                     expected_output_len=output_len,
                     request_id=f"{request_id_prefix}{index}",
                 )
@@ -1004,17 +1018,18 @@ class HumanEvalDataset(BenchmarkDataset):
                 if output_len is not None
                 else len(tokenizer.encode(completion or "\n"))
             )
+            prompt, prompt_len, _ = self._build_prefix_prompt(
+                tokenizer,
+                prompt,
+                resolved_input_len,
+                prefix_ratio=prefix_ratio,
+                share_prefix=share_prefix,
+                request_index=index,
+            )
             requests.append(
                 SampleRequest(
-                    prompt=self._build_prefix_prompt(
-                        tokenizer,
-                        prompt,
-                        resolved_input_len,
-                        prefix_ratio=prefix_ratio,
-                        share_prefix=share_prefix,
-                        request_index=index,
-                    ),
-                    prompt_len=resolved_input_len or len(tokenizer.encode(prompt)),
+                    prompt=prompt,
+                    prompt_len=prompt_len,
                     expected_output_len=resolved_output_len,
                     request_id=f"{request_id_prefix}{index}",
                 )
@@ -1080,17 +1095,18 @@ class InstructCoderDataset(BenchmarkDataset):
             resolved_input_len = (
                 input_len if input_len is not None else self.DEFAULT_INPUT_LEN
             )
+            formatted_prompt, prompt_len, _ = self._build_prefix_prompt(
+                tokenizer,
+                prompt,
+                resolved_input_len,
+                prefix_ratio=prefix_ratio,
+                share_prefix=share_prefix,
+                request_index=index,
+            )
             requests.append(
                 SampleRequest(
-                    prompt=self._build_prefix_prompt(
-                        tokenizer,
-                        prompt,
-                        resolved_input_len,
-                        prefix_ratio=prefix_ratio,
-                        share_prefix=share_prefix,
-                        request_index=index,
-                    ),
-                    prompt_len=resolved_input_len or len(tokenizer.encode(prompt)),
+                    prompt=formatted_prompt,
+                    prompt_len=prompt_len,
                     expected_output_len=resolved_output_len,
                     request_id=f"{request_id_prefix}{index}",
                 )
@@ -1174,17 +1190,18 @@ class BlazeditDataset(BenchmarkDataset):
             resolved_input_len = (
                 input_len if input_len is not None else self.DEFAULT_INPUT_LEN
             )
+            padded_prompt, prompt_len, _ = self._build_prefix_prompt(
+                tokenizer,
+                prompt,
+                resolved_input_len,
+                prefix_ratio=prefix_ratio,
+                share_prefix=share_prefix,
+                request_index=index,
+            )
             requests.append(
                 SampleRequest(
-                    prompt=self._build_prefix_prompt(
-                        tokenizer,
-                        prompt,
-                        resolved_input_len,
-                        prefix_ratio=prefix_ratio,
-                        share_prefix=share_prefix,
-                        request_index=index,
-                    ),
-                    prompt_len=resolved_input_len or len(tokenizer.encode(prompt)),
+                    prompt=padded_prompt,
+                    prompt_len=prompt_len,
                     expected_output_len=resolved_output_len,
                     request_id=f"{request_id_prefix}{index}",
                 )
@@ -1307,17 +1324,18 @@ class BfclDataset(BenchmarkDataset):
             resolved_input_len = (
                 input_len if input_len is not None else self.DEFAULT_INPUT_LEN
             )
+            formatted_prompt, prompt_len, _ = self._build_prefix_prompt(
+                tokenizer,
+                prompt,
+                resolved_input_len,
+                prefix_ratio=prefix_ratio,
+                share_prefix=share_prefix,
+                request_index=index,
+            )
             requests.append(
                 SampleRequest(
-                    prompt=self._build_prefix_prompt(
-                        tokenizer,
-                        prompt,
-                        resolved_input_len,
-                        prefix_ratio=prefix_ratio,
-                        share_prefix=share_prefix,
-                        request_index=index,
-                    ),
-                    prompt_len=resolved_input_len or len(tokenizer.encode(prompt)),
+                    prompt=formatted_prompt,
+                    prompt_len=prompt_len,
                     expected_output_len=resolved_output_len,
                     request_id=f"{request_id_prefix}{index}",
                 )

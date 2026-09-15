@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -125,6 +126,25 @@ def test_text_dataset_validates_lengths_and_prefix_ratio() -> None:
         dataset.sample(
             tokenizer, num_requests=1, input_len=1, output_len=1, prefix_ratio=1.1
         )
+
+
+def test_text_dataset_reports_round_trip_prompt_length() -> None:
+    tokenizer = TrailingTokenDroppingTokenizer()
+
+    batch = TextDataset().sample(
+        tokenizer,
+        num_requests=1,
+        input_len=24,
+        output_len=5,
+        share_prefix=True,
+        prefix_ratio=0.5,
+        run_id="stable-run",
+    )
+
+    expected_prompt_len = len(tokenizer.encode(batch.prompts[0]))
+    assert batch.prompt_lens == [expected_prompt_len]
+    assert expected_prompt_len < 24
+    assert batch.shared_prefix_len <= expected_prompt_len
 
 
 def test_random_dataset_preserves_cached_shared_prefix_and_lengths() -> None:
@@ -390,11 +410,10 @@ def test_humaneval_dataset_uses_prompt_and_native_output_length(tmp_path) -> Non
         num_requests=1,
         request_id_prefix="humaneval-",
     )
-
     assert batch.prompt_lens == [10]
     assert batch.output_lens == [8]
     assert batch.requests[0].request_id == "humaneval-0"
-    assert batch.prompts[0][0] == "solve this"
+    assert batch.prompts[0] == "solve this"
 
 
 def test_instructcoder_dataset_formats_editing_prompt(tmp_path) -> None:
@@ -412,8 +431,8 @@ def test_instructcoder_dataset_formats_editing_prompt(tmp_path) -> None:
 
     assert batch.prompt_lens == [78]
     assert batch.output_lens == [7]
-    assert "original code" in batch.prompts[0][0]
-    assert "add tests" in batch.prompts[0][0]
+    assert "original code" in batch.prompts[0]
+    assert "add tests" in batch.prompts[0]
 
 
 def test_blazedit_dataset_filters_edit_distance(tmp_path) -> None:
@@ -432,8 +451,8 @@ def test_blazedit_dataset_filters_edit_distance(tmp_path) -> None:
     )
 
     assert batch.output_lens == [11]
-    assert "file body" in batch.prompts[0][0]
-    assert "rename old" in batch.prompts[0][0]
+    assert "file body" in batch.prompts[0]
+    assert "rename old" in batch.prompts[0]
 
 
 def test_bfcl_dataset_translates_function_schema(tmp_path) -> None:
@@ -451,8 +470,52 @@ def test_bfcl_dataset_translates_function_schema(tmp_path) -> None:
     )
 
     assert batch.output_lens == [9]
-    assert "Find area" in batch.prompts[0][0]
-    assert '"type":"object"' in batch.prompts[0][0]
+    assert "Find area" in batch.prompts[0]
+    assert '"type":"object"' in batch.prompts[0]
+
+
+@pytest.mark.parametrize(
+    ("dataset_name", "record"),
+    [
+        ("humaneval", {"prompt": "fix × 100"}),
+        ("swe_bench", {"problem_statement": "fix × 100", "patch": "patch"}),
+        (
+            "instructcoder",
+            {"input": "code × 100", "instruction": "add tests"},
+        ),
+        (
+            "blazedit",
+            {"code": "code × 100", "change_request": "rename old"},
+        ),
+        (
+            "bfcl",
+            {
+                "question": [[{"role": "user", "content": "Find area"}]],
+                "function": [{"name": "circle_area", "parameters": {"type": "dict"}}],
+            },
+        ),
+    ],
+)
+def test_target_length_datasets_report_round_trip_lengths(
+    tmp_path, dataset_name: str, record: dict[str, object]
+) -> None:
+    """Prevent length-padded workloads from reporting pre-round-trip counts."""
+    path = tmp_path / f"{dataset_name}.jsonl"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    dataset = create_dataset(dataset_name, dataset_path=str(path), disable_shuffle=True)
+
+    batch = dataset.sample(
+        TrailingTokenDroppingTokenizer(),
+        num_requests=1,
+        input_len=20,
+        output_len=5,
+    )
+
+    expected_prompt_len = len(
+        TrailingTokenDroppingTokenizer().encode(batch.prompts[0])
+    )
+    assert batch.prompt_lens == [expected_prompt_len]
+    assert expected_prompt_len < 20
 
 
 def test_swe_bench_dataset_uses_issue_and_patch_lengths(tmp_path) -> None:
@@ -470,7 +533,27 @@ def test_swe_bench_dataset_uses_issue_and_patch_lengths(tmp_path) -> None:
 
     assert batch.prompt_lens == [11]
     assert batch.output_lens == [4]
-    assert batch.prompts[0][0] == "fix the bug"
+    assert batch.prompts[0] == "fix the bug"
+
+
+def test_target_length_dataset_reports_shared_prefix_round_trip(tmp_path) -> None:
+    path = tmp_path / "humaneval.jsonl"
+    path.write_text('{"prompt":"fix × 100"}\n', encoding="utf-8")
+    dataset = HumanEvalDataset(dataset_path=str(path), disable_shuffle=True)
+
+    batch = dataset.sample(
+        TrailingTokenDroppingTokenizer(),
+        num_requests=1,
+        input_len=24,
+        output_len=5,
+        share_prefix=True,
+        prefix_ratio=0.5,
+    )
+
+    assert batch.prompt_lens == [
+        len(TrailingTokenDroppingTokenizer().encode(batch.prompts[0]))
+    ]
+    assert batch.prompt_lens[0] <= 24
 
 
 def test_burstgpt_dataset_filters_rows_and_synthesizes_tokens(tmp_path) -> None:
@@ -480,14 +563,16 @@ def test_burstgpt_dataset_filters_rows_and_synthesizes_tokens(tmp_path) -> None:
         encoding="utf-8",
     )
 
+    tokenizer = FakeTokenizer()
     batch = BurstGptDataset(dataset_path=str(path), random_seed=3).sample(
-        FakeTokenizer(),
+        tokenizer,
         num_requests=2,
         request_id_prefix="burstgpt-",
     )
 
     assert len(batch.requests) == 2
     assert sorted(batch.output_lens) == [1, 3]
+    assert batch.prompt_lens == [len(tokenizer.encode(prompt)) for prompt in batch.prompts]
     assert all(request.request_id.startswith("burstgpt-") for request in batch.requests)
 
 
