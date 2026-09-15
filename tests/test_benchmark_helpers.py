@@ -237,6 +237,47 @@ sglang:cache_hit_rate{engine="1"} 0.7
     assert "vllm_prefix_cache_counter_rate" not in summary
 
 
+def test_vllm_spec_decode_prometheus_snapshot_preserves_engine_labels(monkeypatch) -> None:
+    """Preserve engine/position labels when parsing spec-decode counters."""
+    snapshot_response = SimpleNamespace(
+        status_code=200,
+        text=(
+            'vllm:spec_decode_num_drafts_total{engine="0"} 2\n'
+            'vllm:spec_decode_num_draft_tokens_total{engine="0"} 10\n'
+            'vllm:spec_decode_num_accepted_tokens_total{engine="0"} 6\n'
+            'vllm:spec_decode_num_accepted_tokens_per_pos_total'
+            '{engine="0",position="0"} 3\n'
+            'vllm:spec_decode_num_accepted_tokens_per_pos_total'
+            '{engine="0",position="1"} 2\n'
+            'vllm:spec_decode_num_accepted_tokens_per_pos_total'
+            '{engine="0",position="2"} 1\n'
+        ),
+    )
+    monkeypatch.setattr(
+        benchmark_module,
+        "requests",
+        SimpleNamespace(get=lambda *_args, **_kwargs: snapshot_response),
+    )
+
+    snapshot = query_gpu_metrics("http://localhost:8000/v1")
+    counters = snapshot["_vllm_spec_decode_counters"]
+
+    assert counters["drafts"] == {'{engine="0"}': 2.0}
+    assert counters["draft_tokens"] == {'{engine="0"}': 10.0}
+    assert counters["accepted_tokens"] == {'{engine="0"}': 6.0}
+    assert counters["accepted_positions"] == {
+        '{engine="0",position="0"}': 3.0,
+        '{engine="0",position="1"}': 2.0,
+        '{engine="0",position="2"}': 1.0,
+    }
+    assert set(counters["sources"].keys()) == {
+        "drafts",
+        "draft_tokens",
+        "accepted_tokens",
+        "accepted_positions",
+    }
+
+
 def test_pd_ratio_uses_business_shapes_and_respects_ignore_eos(monkeypatch) -> None:
     """Use actual batch lengths for P:D sizing and preserve EOS configuration."""
     import sys

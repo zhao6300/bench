@@ -1360,6 +1360,23 @@ def _parse_prometheus_series_sample(line):
         return None
 
 
+def _record_spec_decode_counter(
+    info,
+    kind,
+    metric_name,
+    label_series,
+    value,
+):
+    """Record one label-preserving vLLM spec-decode counter sample."""
+    counters = info.setdefault(
+        "_vllm_spec_decode_counters",
+        {"drafts": {}, "draft_tokens": {}, "accepted_tokens": {}, "accepted_positions": {}, "sources": {}},
+    )
+    counters[kind][label_series] = value
+    if metric_name not in counters["sources"].setdefault(kind, []):
+        counters["sources"][kind].append(metric_name)
+
+
 def _parse_prometheus_sample(line):
     """Return a metric name and value from one Prometheus text-format sample."""
     sample = _parse_prometheus_series_sample(line)
@@ -1662,8 +1679,12 @@ def query_gpu_metrics(api_base, headers=None):
             for kind, metric_names in VLLM_SPEC_DECODE_COUNTER_METRICS.items():
                 if metric_name not in metric_names:
                     continue
-                _record_vllm_spec_decode_counter(
-                    info, kind, label_series, float(value),
+                _record_spec_decode_counter(
+                    info,
+                    kind,
+                    metric_name,
+                    label_series,
+                    value,
                 )
                 break
 
