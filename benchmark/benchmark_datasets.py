@@ -175,6 +175,45 @@ class BenchmarkDataset(ABC):
             return fallback_prompt
         return padded_prompt
 
+    @classmethod
+    def _repair_prompt_to_target_len(
+        cls,
+        tokenizer: TokenizerLike,
+        prompt_text: str,
+        target_len: int,
+        *,
+        padding_token_ids: Sequence[int] = (),
+    ) -> tuple[str, int]:
+        """Repair a decoded prompt to its target token length."""
+        if target_len < 1:
+            raise ValueError("target_len must be positive")
+        candidate_tokens = list(tokenizer.encode(prompt_text))
+        padding_tokens = list(padding_token_ids) or candidate_tokens.copy()
+        if not candidate_tokens or not padding_tokens:
+            raise ValueError("tokenizer produced no tokens for prompt repair")
+        padding_offset = 0
+        for _ in range(64):
+            final_prompt = tokenizer.decode(candidate_tokens)
+            final_tokens = tokenizer.encode(final_prompt)
+            delta = len(final_tokens) - target_len
+            if delta == 0:
+                return final_prompt, len(final_tokens)
+            if delta > 0:
+                candidate_tokens = final_tokens[:target_len]
+                continue
+            padding_len = -delta
+            padding_indices = (
+                padding_offset + index for index in range(padding_len)
+            )
+            candidate_tokens.extend(
+                padding_tokens[index % len(padding_tokens)]
+                for index in padding_indices
+            )
+            padding_offset += padding_len
+        raise ValueError(
+            f"prompt tokenization could not reach length {target_len}"
+        )
+
     @staticmethod
     def _build_prefix_prompt(
         tokenizer: TokenizerLike,
@@ -196,9 +235,11 @@ class BenchmarkDataset(ABC):
             token_ids = (
                 prompt_ids * max(1, math.ceil(target_tokens / max(1, len(prompt_ids))))
             )[:target_tokens]
-            prompt = tokenizer.decode(token_ids)
-            actual_len = len(
-                BenchmarkDataset._tokenizer_sequence(tokenizer, prompt)
+            prompt, actual_len = BenchmarkDataset._repair_prompt_to_target_len(
+                tokenizer,
+                tokenizer.decode(token_ids),
+                target_tokens,
+                padding_token_ids=prompt_ids,
             )
             return prompt, actual_len, 0
         shared_tokens_count = int(target_tokens * prefix_ratio)
@@ -215,9 +256,11 @@ class BenchmarkDataset(ABC):
             :unique_tokens_count
         ]
         token_ids = (shared_ids + unique_ids)[:target_tokens]
-        prompt = tokenizer.decode(token_ids)
-        actual_len = len(
-            BenchmarkDataset._tokenizer_sequence(tokenizer, prompt)
+        prompt, actual_len = BenchmarkDataset._repair_prompt_to_target_len(
+            tokenizer,
+            tokenizer.decode(token_ids),
+            target_tokens,
+            padding_token_ids=shared_ids + unique_ids,
         )
         return prompt, actual_len, shared_tokens_count
 
@@ -333,8 +376,12 @@ class TextDataset(BenchmarkDataset):
                 tokenizer, target_tokens - len(prefix_ids)
             )
             token_ids = (prefix_ids + body_ids)[:target_tokens]
-            prompt = tokenizer.decode(token_ids)
-            actual_len = len(self._tokenizer_sequence(tokenizer, prompt))
+            prompt, actual_len = self._repair_prompt_to_target_len(
+                tokenizer,
+                tokenizer.decode(token_ids),
+                target_tokens,
+                padding_token_ids=prefix_ids + body_ids,
+            )
             return prompt, actual_len, 0, actual_len
 
         shared_tokens_count = int(target_tokens * prefix_ratio)
@@ -367,8 +414,12 @@ class TextDataset(BenchmarkDataset):
         else:
             unique_part = []
         token_ids = (shared_part + unique_part)[:target_tokens]
-        prompt = tokenizer.decode(token_ids)
-        actual_len = len(self._tokenizer_sequence(tokenizer, prompt))
+        prompt, actual_len = self._repair_prompt_to_target_len(
+            tokenizer,
+            tokenizer.decode(token_ids),
+            target_tokens,
+            padding_token_ids=shared_part + unique_part,
+        )
         shared_len = min(len(shared_part), actual_len)
         unique_len = min(len(unique_part), max(0, actual_len - shared_len))
         return prompt, actual_len, shared_len, unique_len
@@ -1489,14 +1540,12 @@ class Gsm8kDataset(BenchmarkDataset):
             repeats = max(1, math.ceil(unique_length / len(source_ids)))
             body_ids = (source_ids * repeats)[:unique_length]
             prompt_ids = prefix_text_ids + body_ids
-            prompt = tokenizer.decode(prompt_ids)
-            actual_ids = self._tokenizer_sequence(tokenizer, prompt)
-            # The text is sent to the backend, so only a decodable prompt is accepted.
-            if len(actual_ids) != len(prompt_ids):
-                prompt_ids = actual_ids
-                prompt_len = len(actual_ids)
-            else:
-                prompt_len = len(prompt_ids)
+            prompt, prompt_len = BenchmarkDataset._repair_prompt_to_target_len(
+                tokenizer,
+                tokenizer.decode(prompt_ids),
+                input_len,
+                padding_token_ids=prefix_text_ids + body_ids,
+            )
             requests.append(
                 SampleRequest(
                     prompt=prompt,

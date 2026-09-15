@@ -128,7 +128,7 @@ def test_text_dataset_validates_lengths_and_prefix_ratio() -> None:
         )
 
 
-def test_text_dataset_reports_round_trip_prompt_length() -> None:
+def test_text_dataset_repairs_round_trip_prompt_length() -> None:
     tokenizer = TrailingTokenDroppingTokenizer()
 
     batch = TextDataset().sample(
@@ -143,8 +143,21 @@ def test_text_dataset_reports_round_trip_prompt_length() -> None:
 
     expected_prompt_len = len(tokenizer.encode(batch.prompts[0]))
     assert batch.prompt_lens == [expected_prompt_len]
-    assert expected_prompt_len < 24
+    assert expected_prompt_len == 24
     assert batch.shared_prefix_len <= expected_prompt_len
+
+
+def test_dataset_prompt_repair_appends_repeated_tokens() -> None:
+    """Dropped trailing tokens are replaced until the target length is exact."""
+    tokenizer = TrailingTokenDroppingTokenizer()
+    source_prompt = tokenizer.decode(tokenizer.encode("fix × 100"))
+
+    prompt, prompt_len = BenchmarkDataset._repair_prompt_to_target_len(
+        tokenizer, source_prompt, 16
+    )
+
+    assert prompt_len == 16
+    assert len(tokenizer.encode(prompt)) == 16
 
 
 def test_random_dataset_preserves_cached_shared_prefix_and_lengths() -> None:
@@ -515,7 +528,7 @@ def test_target_length_datasets_report_round_trip_lengths(
         TrailingTokenDroppingTokenizer().encode(batch.prompts[0])
     )
     assert batch.prompt_lens == [expected_prompt_len]
-    assert expected_prompt_len < 20
+    assert expected_prompt_len == 20
 
 
 def test_swe_bench_dataset_uses_issue_and_patch_lengths(tmp_path) -> None:
@@ -681,8 +694,8 @@ def test_gsm8k_dataset_supports_shared_prefix_ratio(tmp_path) -> None:
     assert batch.prompts[0][70:] != batch.prompts[1][70:]
 
 
-def test_gsm8k_dataset_accepts_tokenizer_round_trip_changes(tmp_path) -> None:
-    """Verify GSM8K prompts remain usable when a tokenizer re-encodes text differently."""
+def test_gsm8k_dataset_repairs_tokenizer_round_trip_changes(tmp_path) -> None:
+    """Verify GSM8K prompts stay at target length after tokenization repair."""
     path = tmp_path / "gsm8k.jsonl"
     path.write_text('{"question":"hello math","answer":"2"}\n', encoding="utf-8")
     dataset = Gsm8kDataset(dataset_path=str(path), random_seed=17)
@@ -698,7 +711,7 @@ def test_gsm8k_dataset_accepts_tokenizer_round_trip_changes(tmp_path) -> None:
         run_id="same-round",
     )
 
-    assert batch.prompt_lens == [99, 99]
+    assert batch.prompt_lens == [100, 100]
     assert batch.shared_prefix_len == len(tokenizer.encode(batch.prompts[0][:70]))
     assert batch.prompts[0][:batch.shared_prefix_len] == batch.prompts[1][:batch.shared_prefix_len]
 def test_gsm8k_dataset_maps_cli_and_run_id_into_batch(tmp_path) -> None:

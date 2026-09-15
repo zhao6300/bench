@@ -544,6 +544,8 @@ uv run --no-project .venv/bin/python -m web.serve
 
 对 `random` 数据集，`random_input_len`、`random_output_len` 和 `random_prefix_len` 是权威参数，分别表示独有输入、输出上限和共享前缀；它们优先于通用的 `context_len`/`max_tokens`。工具会在发送前以本地 tokenizer（不添加 special token）反复 decode/re-encode 并补充非 special token，直到最终 prompt 严格达到目标长度；如果 tokenizer 在有限次修复内无法产生该长度，工具会报错而不会静默发送长度不符的请求。API 服务端仍可因 chat template 或不同 tokenizer 而报告不同的 `usage.prompt_tokens`。`share_prefix` 与 `prefix_ratio` 仅对 `text` 生效。
 
+`text`、GSM8K 和设置了显式 `dataset_input_len` 的目标长度数据集也使用 decode/re-encode 校验。若真实 tokenizer 重新编码后变短，工具会按原 token 序列重复补充，并在有限尝试内把最终 prompt 修复到目标长度；无法达成时直接报错，不会静默发送长度漂移的请求。
+
 ### 本地离线数据集
 
 以下常用 vLLM serving benchmark 数据集整理为本地离线文件，默认只读取本地数据；使用时都必须显式设置 `dataset_path`：
