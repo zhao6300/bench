@@ -516,9 +516,22 @@ uv run --no-project .venv/bin/python -m web.serve
 
 ## 数据集与长度语义
 
-`text`（默认）使用中文填充文本。`context_len` 控制目标输入长度，`max_tokens` 控制输出上限；开启 `share_prefix` 后可用 `prefix_ratio` 设置共享部分。
+### `text` 与 `random`
 
-`random` 生成可复现的 token 序列，更适合精确压力测试。它在以下现有配置中使用：
+`text` 是默认数据集，使用中文填充文本：
+
+- `context_len` 控制目标输入长度。
+- `max_tokens` 控制输出上限。
+- `share_prefix` 与 `prefix_ratio` 只作用于 `text`，用于设置和校准共享前缀。
+
+`random` 生成可复现的合成 token 序列，适合需要精确控制长度的压力测试：
+
+- `random_input_len`、`random_output_len`、`random_prefix_len` 分别表示独立输入、输出上限与共享前缀。
+- 这三个参数优先于通用的 `context_len` / `max_tokens`。
+- 本地 tokenizer 不添加 special token，发送前会反复 decode/re-encode 并补充 non-special token，直到最终 prompt 严格达到目标长度；无法在有限次修复内达成时会报错。
+- 因为 chat template 与远端 tokenizer 可能不同，API 服务端报告的 `usage.prompt_tokens` 仍可能与本地统计不同。
+
+当前使用 `random` 的示例配置：
 
 - [`benchmark-config-throughput-sweep-128k-2k.json`](examples/benchmark-config-throughput-sweep-128k-2k.json)
 - [`benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json`](examples/benchmark-config-slo-capacity-128k-2k-cache-hit-0.7.json)
@@ -531,12 +544,37 @@ uv run --no-project .venv/bin/python -m web.serve
 
 对 `random` 数据集，`random_input_len`、`random_output_len` 和 `random_prefix_len` 是权威参数，分别表示独有输入、输出上限和共享前缀；它们优先于通用的 `context_len`/`max_tokens`。工具会在发送前以本地 tokenizer（不添加 special token）反复 decode/re-encode 并补充非 special token，直到最终 prompt 严格达到目标长度；如果 tokenizer 在有限次修复内无法产生该长度，工具会报错而不会静默发送长度不符的请求。API 服务端仍可因 chat template 或不同 tokenizer 而报告不同的 `usage.prompt_tokens`。`share_prefix` 与 `prefix_ratio` 仅对 `text` 生效。
 
-已移植 vLLM serving benchmark 中的 `sonnet`、`sharegpt`、`burstgpt`、`hf` 和 `gsm8k` 数据集；它们要求显式设置 `dataset_path`，且默认只读取本地文件，不会触发 Hugging Face 或 API 网络下载。`sonnet` 使用多行纯文本并支持 `sonnet_input_len`、`sonnet_output_len` 和共享的 `sonnet_prefix_len`；`sharegpt` 读取 `conversations[0..1].value` JSON/JSONL，输出默认取第二轮的自然 token 数；`burstgpt` 读取本地 CSV 的 GPT-4 行并从 integer token 字段构造请求；`hf` 是通用离线记录适配器，自动识别 `prompt/input/question` 与 `completion/response/answer` 等常见字段。数据源请求数不足时可继续循环复用，加入 `no_oversample: true` 可返回实际可用请求而非循环；`sharegpt`/`hf` 支持 `disable_shuffle: true` 保留原始顺序。
+### 移植数据集
 
-`gsm8k` 适合测试 GSM8K 风格文本的复制负载。文本源仍然使用本地 JSON/JSONL/CSV，不联网下载 Hugging Face 数据。参数 `gsm8k_input_len` 控制目标输入 token 数；超过单条题目的部分会重复该题目的 issue/answer 段。`gsm8k_output_len` 设置输出上限，便于观察 DSpark/DFlash2 等投机解码路径的收益。GSM8K 不再用 seed 打散全部记录，而是用 seed 在源数据中推导出一个起始偏移，随后按记录顺序连续取数：同样 seed 和数据集会重复得到同样的偏移和相邻序列，便于逐段复现。每轮生成前会注入 `gsm8k_round_prefix_len` 的 `run_id` 级随机前缀：同一轮内请求共享该前缀，不同 repeat/sweep 轮使用不同 `run_id`，从而避免前一轮的 KV cache 误判当前轮结果；`run_id` 未提供时会生成随机值，同一 `run_id` 在相同 seed 下可复现。支持 `gsm8k_shared_prefix_ratio`，设为 `0.7` 时同一轮请求共享 70% token 前缀，其余 30% 按请求变化。设置 `gsm8k_round_prefix_len: 0` 可关闭轮次隔离标记；`gsm8k_round_prefix_len: 32` 表示这个轮次标记占用 70% 共享前缀的开头 32 个 token，而不是额外加 32 个 token。需要精确对比投机解码器时，固定 `seed` 并使用不同 `run_id` 即可复现抽取顺序且保证轮次隔离。使用样例请复制 [`benchmark-config-ported-datasets.json`](examples/benchmark-config-ported-datasets.json) 并替换后端、模型与 tokenizer。
+以下 vLLM serving benchmark 数据集已移植，默认只读取本地文件，不会触发 Hugging Face 或 API 网络下载；使用时都必须显式设置 `dataset_path`：
 
-GSM8K 的完整 test split 已经整理到 `examples/datasets/gsm8k/openai-gsm8k-test.jsonl`，共 1319 条；完整 train split 也在 `openai-gsm8k-train.jsonl`。请使用本地路径作为 `dataset_path`，例如：
-`"dataset_path": "examples/datasets/gsm8k/openai-gsm8k-test.jsonl"`。源数据、revision、许可证和原始 parquet SHA256 见 `examples/datasets/gsm8k/_source.json`。
+- `sonnet`：多行诗句文本；参数为 `sonnet_input_len`、`sonnet_output_len`、`sonnet_prefix_len`。
+- `sharegpt`：读取 `conversations[0..1].value`，输出长度默认使用第二轮自然 token 数。
+- `burstgpt`：读取本地 CSV 中的 GPT-4 行，并从整数 token 字段构造请求。
+- `hf`：通用离线记录适配器，可识别 `prompt`、`input`、`question` 与 `completion`、`response`、`answer` 等常见字段。
+
+若数据源请求数不足，默认会按顺序循环复用；设置 `no_oversample: true` 时改为返回实际可用请求。`disable_shuffle: true` 对 `sharegpt` 和 `hf` 生效，用于保留源文件顺序。
+
+### GSM8K
+
+GSM8K 适合测试 GSM8K 风格文本的复制负载，便于观察 DSpark / DFlash2 等投机解码路径的收益。
+
+- `gsm8k_input_len`：目标输入 token 数。
+- `gsm8k_output_len`：输出 token 上限。
+- `gsm8k_round_prefix_len`：轮次隔离前缀 token 数；设为 `0` 可关闭轮次标记。
+- `gsm8k_shared_prefix_ratio`：共享前缀占比；例如 `0.7` 表示约 70% 输入为共享前缀。
+- `seed`：在源数据中推导出起始偏移；同样 seed 和数据集会生成相同相邻序列，`num_requests` 不影响起始偏移。
+- `run_id`：每轮生成轮次前缀；同一轮共享，跨轮变化。
+
+#### GSM8K 构造方法
+
+每个 GSM8K 请求由三段 token 组成：
+
+1. **轮次隔离前缀**：`gsm8k_round_prefix_len` 个 token 的 `【GSM8K-ROUND-{run_id}】` 标记；同一轮内请求共享，避免跨轮 KV cache 误命中。
+2. **共享前缀主体**：来自本轮第一条选中记录的 `Question:` 与 `Answer:` 段；与轮次前缀合计占 70% 或所配置共享比例。
+3. **每请求独有尾部**：来自每条请求自身对应记录的 `Question:` 与 `Answer:` 段；若单条不足，会循环补齐，保持目标输入长度。
+
+完整 test split 已整理到 `examples/datasets/gsm8k/openai-gsm8k-test.jsonl`，共 1319 条；完整 train split 位于 `examples/datasets/gsm8k/openai-gsm8k-train.jsonl`。源数据、revision、许可证与原始 parquet SHA256 见 `examples/datasets/gsm8k/_source.json`。
 
 ### GSM8K CLI 示例
 
