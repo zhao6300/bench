@@ -206,7 +206,7 @@ def test_vllm_spec_decode_counters_compute_round_delta() -> None:
 
     assert summary == {
         "source": "vllm_prometheus.spec_decode",
-        "aggregation": "round_counter_delta",
+        "aggregation": "server_counter_delta",
         "num_spec_steps": 2,
         "num_draft_tokens": 6,
         "num_accepted_draft_tokens": 8,
@@ -235,6 +235,57 @@ sglang:cache_hit_rate{engine="1"} 0.7
     assert snapshot["cache_hit_rate_source"] == "sglang:cache_hit_rate"
     assert summary["metrics"]["cache_hit_rate"]["max"] == 70.0
     assert "vllm_prefix_cache_counter_rate" not in summary
+
+
+def test_vllm_spec_decode_server_counter_summary_is_report_safe() -> None:
+    """Prometheus-only metrics omit request coverage instead of crashing reports."""
+    start = {
+        "_vllm_spec_decode_counters": {
+            "drafts": {'{engine="0"}': 2.0},
+            "draft_tokens": {'{engine="0"}': 6.0},
+            "accepted_tokens": {'{engine="0"}': 3.0},
+            "accepted_positions": {
+                '{engine="0",position="0"}': 2.0,
+                '{engine="0",position="1"}': 1.0,
+            },
+        },
+    }
+    end = {
+        "_vllm_spec_decode_counters": {
+            "drafts": {'{engine="0"}': 4.0},
+            "draft_tokens": {'{engine="0"}': 12.0},
+            "accepted_tokens": {'{engine="0"}': 9.0},
+            "accepted_positions": {
+                '{engine="0",position="0"}': 4.0,
+                '{engine="0",position="1"}': 4.0,
+            },
+        },
+    }
+
+    metrics = benchmark_module._spec_decode_server_counter_summary(start, end)
+
+    assert metrics is not None
+    assert metrics["aggregation"] == "server_counter_delta"
+    assert metrics["num_spec_steps"] == 2
+    assert metrics["num_draft_tokens"] == 6
+    assert metrics["num_accepted_draft_tokens"] == 6
+    assert metrics["num_spec_tokens"] == 2
+    assert metrics["mean_acceptance_length"] == 4.0
+    assert metrics["per_position"] == [
+        {
+            "position": 0,
+            "num_accepted_draft_tokens": 2,
+            "num_draft_tokens": 2,
+            "draft_acceptance_rate": 1.0,
+        },
+        {
+            "position": 1,
+            "num_accepted_draft_tokens": 3,
+            "num_draft_tokens": 2,
+            "draft_acceptance_rate": 1.5,
+        },
+    ]
+    assert "request_count" not in metrics
 
 
 def test_vllm_spec_decode_prometheus_snapshot_preserves_engine_labels(monkeypatch) -> None:

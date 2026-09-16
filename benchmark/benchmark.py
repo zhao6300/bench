@@ -1495,7 +1495,7 @@ def _vllm_spec_decode_server_metrics(
 
     summary = {
         "source": "vllm_prometheus.spec_decode",
-        "aggregation": "round_counter_delta",
+        "aggregation": "server_counter_delta",
         "num_spec_steps": int(deltas.get("drafts", 0.0)),
         "num_draft_tokens": int(deltas.get("draft_tokens", 0.0)),
         "num_accepted_draft_tokens": int(
@@ -2984,7 +2984,7 @@ def print_benchmark_metrics(metrics, workload):
         print("\n  ── 投机解码接受率 ──")
         if speculative_decoding.get("aggregation") == "server_counter_delta":
             print("    覆盖范围                  : 服务器 Prometheus counters（round 换算）")
-        else:
+        elif isinstance(speculative_decoding.get("request_count"), int):
             print(
                 f"    覆盖请求 / 成功请求      : "
                 f"{speculative_decoding['request_count']} / {m['successful']}"
